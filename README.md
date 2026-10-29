@@ -2,7 +2,8 @@
 
 UTOP14 is a streetwear e-commerce platform built for Well Architected SOC 14.
 
-**Current milestone:** Milestone 1 — Flask foundation only. Authentication,
+**Current milestone:** Milestone 2 — storefront homepage. The homepage is
+rendered from mock presentation content. Authentication, database-backed
 catalog, cart, checkout, orders and admin features are intentionally not
 implemented yet.
 
@@ -26,9 +27,13 @@ utop14/
 │   ├── config.py            # environment configuration and validation
 │   ├── extensions.py        # SQLAlchemy, Migrate, Login, CSRF instances
 │   ├── main/                # main blueprint and public routes
+│   ├── storefront/          # storefront blueprint, mock content, helpers
 │   ├── models/              # model registry imported by Alembic
-│   ├── static/              # CSS, JavaScript and images
-│   └── templates/           # Jinja2 templates
+│   ├── static/              # CSS, JavaScript, local SVG art and fonts
+│   └── templates/
+│       ├── base.html        # shared page layout
+│       ├── components/      # navigation, footer and card partials
+│       └── storefront/      # homepage template
 ├── migrations/              # Flask-Migrate/Alembic scaffold
 ├── tests/
 │   ├── integration/         # endpoint tests
@@ -144,6 +149,8 @@ Alternatively use the Flask CLI and WSGI entry point:
 flask --app wsgi run --debug
 ```
 
+Open the storefront homepage at <http://127.0.0.1:5000/>.
+
 Check the health endpoint:
 
 ```bash
@@ -154,6 +161,30 @@ curl http://127.0.0.1:5000/health
 The health endpoint is a liveness check only. It does not query the database
 or expose configuration, credentials, versions or environment details.
 
+## Storefront homepage
+
+`GET /` is served by the `storefront.home` endpoint. It renders the announcement
+bar, responsive navigation, hero, featured collection, mock product grid,
+category showcase, brand statement, marquee and footer from
+`app/templates/storefront/home.html`.
+
+Homepage content lives in `app/storefront/content.py` as frozen dataclasses with
+`Decimal` prices. It is intentionally static for this milestone: no database
+models, authentication, cart or checkout code is involved. Prices are rendered
+through a blueprint-scoped `money` template filter.
+
+Design assets are stored locally:
+
+- CSS: `tokens.css`, `base.css`, `components.css`, `home.css`
+- JavaScript: `nav.js` for progressive mobile-navigation enhancement
+- Fonts: Archivo, Instrument Serif and Space Mono (self-hosted, OFL licensed)
+- Original SVG artwork and favicon under `app/static/images/`
+
+The page remains usable without JavaScript, with the menu visible. When
+JavaScript is available, the disclosure toggle maintains `aria-expanded`, closes
+on Escape, outside interaction or link activation, and resets at desktop width.
+No external CDN, frontend framework or hotlinked image is used.
+
 ## Tests
 
 ```bash
@@ -162,7 +193,9 @@ pytest
 
 The current tests cover application startup, extension initialization,
 configuration validation, production security defaults, model discovery for
-migrations, and the health endpoint. They use deterministic test settings and
+migrations, the health endpoint, storefront blueprint registration, homepage
+branding and section content, mock catalog data, price formatting, and that every
+referenced local static asset resolves. They use deterministic test settings and
 do not require a running PostgreSQL server yet.
 
 ## Linting and formatting
@@ -214,6 +247,24 @@ explicit approval.
    to Gunicorn on the loopback interface.
 6. Keep `.env`, database credentials and secret keys out of source control,
    logs and error responses.
+
+## Milestone 2 scope
+
+Implemented:
+
+- Storefront blueprint with `GET /` served by `storefront.home`
+- Responsive editorial homepage with hero, featured collection, product grid,
+  category showcase, brand statement and footer
+- Frozen mock content dataclasses with `Decimal` prices
+- Original local SVG artwork and self-hosted fonts; no external CDNs or
+  frontend frameworks
+- Responsive CSS with accessible focus states and reduced-motion support
+- Progressive-enhancement mobile navigation in `nav.js`
+- Unit and integration tests for homepage content, routes and static assets
+
+Not yet implemented: database-backed products and categories, product detail
+pages, authentication, cart, checkout, order history and admin inventory
+management.
 
 ## Milestone 1 scope
 

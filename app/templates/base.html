@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    {% set page_title = "UTOP14 — Wear Your Own Reality" %}
+    {% set page_description = "UTOP14 is a streetwear label for the after-hours. Explore Drop 014: heavyweight tees, hoodies, pants and accessories built in limited runs." %}
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#0B0B0D">
+    <title>{% block title %}{{ page_title }}{% endblock %}</title>
+    <meta name="description" content="{% block meta_description %}{{ page_description }}{% endblock %}">
+    <link rel="icon" href="{{ url_for('static', filename='images/favicon.svg') }}" type="image/svg+xml">
+    <link rel="preload" href="{{ url_for('static', filename='fonts/archivo-variable-latin.woff2') }}" as="font" type="font/woff2" crossorigin>
+    <link rel="preload" href="{{ url_for('static', filename='fonts/instrument-serif-italic-latin.woff2') }}" as="font" type="font/woff2" crossorigin>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/tokens.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/base.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/components.css') }}">
+    {% block styles %}{% endblock %}
+  </head>
+  <body class="{% block body_class %}{% endblock %}">
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    {% include "components/announcement.html" %}
+    {% include "components/nav.html" %}
+    <main class="site-main" id="main-content" tabindex="-1">
+      {% block content %}{% endblock %}
+    </main>
+    {% include "components/footer.html" %}
+    <script src="{{ url_for('static', filename='js/nav.js') }}" defer></script>
+    {% block scripts %}{% endblock %}
+  </body>
+</html>

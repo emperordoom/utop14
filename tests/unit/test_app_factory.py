@@ -29,6 +29,12 @@ def test_main_blueprint_is_registered(app: Flask) -> None:
     assert endpoint == "main.health"
 
 
+def test_storefront_blueprint_is_registered(app: Flask) -> None:
+    assert "storefront" in app.blueprints
+    endpoint, _ = app.url_map.bind("").match("/", method="GET")
+    assert endpoint == "storefront.home"
+
+
 def test_models_package_is_imported_for_migrations(app: Flask) -> None:
     assert "app.models" in sys.modules
     assert app.extensions["migrate"].db.metadata is db.metadata

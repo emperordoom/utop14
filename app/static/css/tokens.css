@@ -1,0 +1,59 @@
+@font-face {
+  font-family: "Archivo";
+  src: url("../fonts/archivo-variable-latin.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 100 900;
+  font-stretch: 62% 125%;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Instrument Serif";
+  src: url("../fonts/instrument-serif-italic-latin.woff2") format("woff2");
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Space Mono";
+  src: url("../fonts/space-mono-regular-latin.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+:root {
+  color-scheme: dark;
+
+  --ink: #0b0b0d;
+  --surface: #151518;
+  --surface-raised: #1c1c20;
+  --paper: #f4f1ea;
+  --muted: #a3a3a3;
+  --acid: #a3e635;
+  --line: #303036;
+  --line-soft: #242429;
+
+  --font-display: "Archivo", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-editorial: "Instrument Serif", "Iowan Old Style", Georgia, serif;
+  --font-mono: "Space Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+
+  --container-max: 96rem;
+  --gutter: clamp(1.25rem, 4vw, 4.5rem);
+  --section-space: clamp(4.5rem, 9vw, 8.5rem);
+  --header-height: 4.75rem;
+
+  --text-xs: 0.6875rem;
+  --text-sm: 0.8125rem;
+  --text-base: clamp(0.9375rem, 0.9rem + 0.15vw, 1rem);
+  --text-lg: clamp(1.0625rem, 0.95rem + 0.4vw, 1.25rem);
+  --text-display: clamp(3.4rem, 8.3vw, 8.75rem);
+  --text-title: clamp(2.6rem, 5.7vw, 5.5rem);
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-fast: 180ms;
+  --dur-med: 420ms;
+  --dur-slow: 900ms;
+}

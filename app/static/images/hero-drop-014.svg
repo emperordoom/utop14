@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1500" viewBox="0 0 1200 1500">
+  <defs>
+    <linearGradient id="hero-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#101014"/>
+      <stop offset="0.55" stop-color="#0b0b0d"/>
+      <stop offset="1" stop-color="#17171b"/>
+    </linearGradient>
+    <linearGradient id="hero-beam" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#a3e635" stop-opacity="0.85"/>
+      <stop offset="0.55" stop-color="#a3e635" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#a3e635" stop-opacity="0"/>
+    </linearGradient>
+    <radialGradient id="hero-glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#a3e635" stop-opacity="0.5"/>
+      <stop offset="1" stop-color="#a3e635" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="hero-floor" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#101013"/>
+      <stop offset="1" stop-color="#08080a"/>
+    </linearGradient>
+    <filter id="hero-grain">
+      <feTurbulence type="fractalNoise" baseFrequency="0.82" numOctaves="3" stitchTiles="stitch"/>
+      <feColorMatrix type="saturate" values="0"/>
+    </filter>
+    <filter id="hero-soft" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="26"/>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="1500" fill="url(#hero-bg)"/>
+
+  <g stroke="#303036" stroke-opacity="0.28">
+    <path d="M 0 300 H 1200"/>
+    <path d="M 0 1258 H 1200"/>
+    <path d="M 150 0 V 1500"/>
+    <path d="M 1050 0 V 1500"/>
+  </g>
+
+  <g fill="#a3e635" opacity="0.09">
+    <path d="M 742 0 H 1074 L 1200 1258 H 664 Z" fill="url(#hero-beam)"/>
+    <path d="M 862 0 H 968 L 1092 1258 H 806 Z" fill="url(#hero-beam)" opacity="0.7"/>
+  </g>
+
+  <ellipse cx="880" cy="1230" rx="380" ry="120" fill="url(#hero-glow)" opacity="0.32"/>
+
+  <rect y="1258" width="1200" height="242" fill="url(#hero-floor)"/>
+  <path d="M 0 1258 H 1200" stroke="#a3e635" stroke-opacity="0.25"/>
+
+  <ellipse cx="604" cy="1310" rx="270" ry="34" fill="#000000" opacity="0.62"/>
+  <ellipse cx="760" cy="1300" rx="180" ry="22" fill="#a3e635" opacity="0.10" filter="url(#hero-soft)"/>
+
+  <g>
+    <path d="M 600 330 C 512 330 462 390 456 462 C 452 506 470 546 506 566 L 548 584 L 652 584 L 694 566 C 730 546 748 506 744 462 C 738 390 688 330 600 330 Z" fill="#1a1a1f" stroke="#34343c" stroke-width="2"/>
+    <path d="M 600 566 C 540 566 492 584 466 610 C 440 636 424 682 414 738 L 380 918 C 372 950 386 972 412 974 C 436 976 454 960 462 934 L 500 790 L 494 940 C 492 964 508 980 534 980 L 666 980 C 692 980 708 964 706 940 L 700 790 L 738 934 C 746 960 764 976 788 974 C 814 972 828 950 820 918 L 786 738 C 776 682 760 636 734 610 C 708 584 660 566 600 566 Z" fill="#1c1c21" stroke="#34343c" stroke-width="2"/>
+    <path d="M 512 966 L 688 966 L 706 1060 L 742 1268 C 743 1280 735 1288 723 1288 L 628 1288 C 618 1288 612 1282 611 1272 L 600 1120 L 589 1272 C 588 1282 582 1288 572 1288 L 477 1288 C 465 1288 457 1280 458 1268 L 494 1060 Z" fill="#16161a" stroke="#303038" stroke-width="2"/>
+    <path d="M 458 1270 L 596 1270 L 596 1308 C 596 1316 590 1322 580 1322 L 438 1322 C 430 1322 426 1314 430 1306 L 446 1280 Z" fill="#101013" stroke="#2e2e35" stroke-width="2"/>
+    <path d="M 604 1270 L 742 1270 L 754 1280 L 770 1306 C 774 1314 770 1322 762 1322 L 620 1322 C 610 1322 604 1316 604 1308 Z" fill="#101013" stroke="#2e2e35" stroke-width="2"/>
+
+    <path d="M 600 396 C 560 396 536 428 536 470 C 536 514 562 546 600 546 C 638 546 664 514 664 470 C 664 428 640 396 600 396 Z" fill="#070709"/>
+    <path d="M 548 470 C 558 480 570 486 584 488 M 652 470 C 642 480 630 486 616 488" stroke="#2a2a31" stroke-width="2" fill="none"/>
+
+    <path d="M 500 800 L 700 800 L 688 930 C 640 940 560 940 512 930 Z" fill="#17171c" stroke="#33333b" stroke-width="2"/>
+    <path d="M 508 806 L 692 806" stroke="#3b3b44" stroke-width="1.4" opacity="0.7"/>
+    <path d="M 566 604 C 560 650 558 690 562 722 M 634 604 C 640 650 642 690 638 722" stroke="#d8d4ca" stroke-width="3.5" stroke-linecap="round"/>
+    <path d="M 560 714 L 564 730 M 636 714 L 640 730" stroke="#a3e635" stroke-width="7" stroke-linecap="round"/>
+
+    <path d="M 454 640 C 438 690 428 760 420 820 M 746 640 C 762 690 772 760 780 820" stroke="#2b2b33" stroke-width="2" fill="none"/>
+    <path d="M 492 606 L 508 760 M 708 606 L 692 760" stroke="#2b2b33" stroke-width="2" fill="none"/>
+    <path d="M 474 858 C 512 872 548 878 584 878 M 726 858 C 688 872 652 878 616 878" stroke="#2d2d35" stroke-width="1.5" fill="none" opacity="0.8"/>
+
+    <path d="M 744 462 C 748 506 730 546 694 566 C 726 586 748 620 762 668 M 786 738 C 800 820 810 884 818 922" stroke="#a3e635" stroke-width="3" fill="none" opacity="0.55" stroke-linecap="round"/>
+    <path d="M 600 332 C 680 332 730 382 742 452" stroke="#a3e635" stroke-width="2.5" fill="none" opacity="0.7" stroke-linecap="round"/>
+    <path d="M 706 790 C 712 850 720 900 736 940" stroke="#a3e635" stroke-width="2" fill="none" opacity="0.4"/>
+
+    <rect x="562" y="746" width="76" height="14" fill="#a3e635" opacity="0.85"/>
+    <path d="M 570 753 H 630" stroke="#0b0b0d" stroke-width="2"/>
+    <text x="450" y="1060" font-family="'Space Mono', monospace" font-size="11" fill="#a3e635" letter-spacing="4" opacity="0.75">DROP 014</text>
+  </g>
+
+  <g font-family="'Space Mono', 'Courier New', monospace" fill="#a3a3a3">
+    <text x="60" y="78" font-family="Archivo, Arial, sans-serif" font-size="30" font-weight="800" letter-spacing="5" fill="#f4f1ea">UTOP14</text>
+    <text x="60" y="108" font-size="10" letter-spacing="3.5">DROP 014 / AFTER HOURS</text>
+    <text x="1140" y="78" font-size="10" letter-spacing="3" text-anchor="end" fill="#a3e635">CAMPAIGN 01</text>
+    <text x="1140" y="106" font-size="9" letter-spacing="2.5" text-anchor="end">LOW LIGHT STUDY</text>
+    <text x="60" y="1428" font-size="9" letter-spacing="3">DESIGNED AFTER DARK</text>
+    <text x="1140" y="1428" font-size="9" letter-spacing="3" text-anchor="end">WEAR YOUR OWN REALITY</text>
+    <text x="60" y="1452" font-size="8" letter-spacing="2" opacity="0.6">UTOP14 / AW26 COLLECTION</text>
+    <text x="1140" y="1452" font-size="8" letter-spacing="2" text-anchor="end" opacity="0.6">LIMITED RUN / 200 UNITS</text>
+  </g>
+
+  <g stroke="#a3e635" stroke-opacity="0.6" stroke-width="1.5">
+    <path d="M 36 60 V 36 H 60"/>
+    <path d="M 1164 60 V 36 H 1140"/>
+    <path d="M 36 1264 V 1288 H 60" stroke-opacity="0.3"/>
+    <path d="M 1164 1264 V 1288 H 1140" stroke-opacity="0.3"/>
+  </g>
+
+  <rect width="1200" height="1500" filter="url(#hero-grain)" opacity="0.09" style="mix-blend-mode:overlay"/>
+</svg>

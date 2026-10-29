@@ -1,0 +1,51 @@
+<footer class="site-footer" id="footer">
+  <div class="container">
+    <div class="footer__top">
+      <div class="footer__brand">
+        <a class="brand brand--footer" href="{{ url_for('storefront.home') }}" aria-label="UTOP14 home">
+          <span class="brand__word">UTOP14</span>
+          <span class="brand__mark" aria-hidden="true"></span>
+        </a>
+        <p class="footer__tagline">
+          Streetwear for the after-hours. Designed in low light and built to
+          outlast the night.
+        </p>
+        <p class="footer__edition mono">Drop 014 / AW26</p>
+      </div>
+
+      <nav class="footer__nav" aria-label="Footer">
+        <div class="footer__column">
+          <h2 class="footer__heading">Shop</h2>
+          <ul>
+            <li><a href="{{ url_for('storefront.home', _anchor='featured') }}">New arrivals</a></li>
+            <li><a href="{{ url_for('storefront.home', _anchor='categories') }}">Hoodies</a></li>
+            <li><a href="{{ url_for('storefront.home', _anchor='categories') }}">Pants</a></li>
+            <li><a href="{{ url_for('storefront.home', _anchor='categories') }}">Accessories</a></li>
+          </ul>
+        </div>
+        <div class="footer__column">
+          <h2 class="footer__heading">Explore</h2>
+          <ul>
+            <li><a href="{{ url_for('storefront.home', _anchor='collection') }}">The drop</a></li>
+            <li><a href="{{ url_for('storefront.home', _anchor='categories') }}">Categories</a></li>
+            <li><a href="{{ url_for('storefront.home', _anchor='about') }}">Our code</a></li>
+            <li><a href="{{ url_for('main.health') }}">System status</a></li>
+          </ul>
+        </div>
+        <div class="footer__column">
+          <h2 class="footer__heading">Contact</h2>
+          <ul>
+            <li><a href="mailto:studio@utop14.com">studio@utop14.com</a></li>
+            <li><a href="mailto:studio@utop14.com?subject=Drop%20014%20enquiry">Drop enquiries</a></li>
+          </ul>
+          <p class="footer__note">Limited runs. No restocks. No noise.</p>
+        </div>
+      </nav>
+    </div>
+
+    <div class="footer__bottom">
+      <p>© {{ current_year }} UTOP14. All rights reserved.</p>
+      <p class="mono">Wear your own reality.</p>
+    </div>
+  </div>
+</footer>

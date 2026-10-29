@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1125" viewBox="0 0 900 1125">
+  <defs>
+    <linearGradient id="cap-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1a1a21"/>
+      <stop offset="0.55" stop-color="#151519"/>
+      <stop offset="1" stop-color="#101014"/>
+    </linearGradient>
+    <radialGradient id="cap-glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#a3e635" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#a3e635" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="cap-grain">
+      <feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="3" stitchTiles="stitch"/>
+      <feColorMatrix type="saturate" values="0"/>
+    </filter>
+    <clipPath id="cap-clip">
+      <path d="M 270 640 C 264 470 340 366 450 366 C 560 366 636 470 630 640 Z"/>
+    </clipPath>
+  </defs>
+
+  <rect width="900" height="1125" fill="url(#cap-bg)"/>
+  <ellipse cx="670" cy="300" rx="400" ry="360" fill="url(#cap-glow)"/>
+
+  <g stroke="#303036" stroke-opacity="0.35">
+    <path d="M 0 190 H 900"/>
+    <path d="M 0 990 H 900"/>
+    <path d="M 70 0 V 1125"/>
+    <path d="M 830 0 V 1125"/>
+  </g>
+
+  <g fill="none" stroke="#3c3c44" stroke-width="1" opacity="0.55">
+    <circle cx="450" cy="550" r="280"/>
+  </g>
+
+  <ellipse cx="450" cy="758" rx="290" ry="30" fill="#000000" opacity="0.55"/>
+
+  <path d="M 270 640 C 264 470 340 366 450 366 C 560 366 636 470 630 640 Z" fill="#1c1c23" stroke="#3b3b45" stroke-width="2"/>
+  <g clip-path="url(#cap-clip)">
+    <ellipse cx="360" cy="480" rx="120" ry="160" fill="#25252d" opacity="0.45"/>
+    <ellipse cx="560" cy="600" rx="140" ry="90" fill="#24242c" opacity="0.4"/>
+    <path d="M 300 580 C 380 600 520 600 610 570" fill="none" stroke="#32323c" stroke-width="2" opacity="0.6"/>
+  </g>
+
+  <path d="M 450 366 C 410 460 380 560 366 640" fill="none" stroke="#35353f" stroke-width="2"/>
+  <path d="M 450 366 C 490 460 520 560 534 640" fill="none" stroke="#35353f" stroke-width="2"/>
+  <path d="M 450 366 C 436 460 430 560 430 640" fill="none" stroke="#2c2c35" stroke-width="1.2" opacity="0.6"/>
+
+  <circle cx="348" cy="520" r="5" fill="#0c0c0f" stroke="#45454f" stroke-width="1.5"/>
+  <circle cx="552" cy="520" r="5" fill="#0c0c0f" stroke="#45454f" stroke-width="1.5"/>
+  <circle cx="450" cy="366" r="9" fill="#a3e635" stroke="#0b0b0d" stroke-width="2"/>
+
+  <path d="M 250 638 C 330 606 570 606 664 652 C 692 666 688 704 656 708 L 282 708 C 248 708 232 672 250 638 Z" fill="#191920" stroke="#3b3b45" stroke-width="2"/>
+  <path d="M 270 660 C 350 630 566 630 654 668" fill="none" stroke="#45454f" stroke-width="1.5" opacity="0.8"/>
+  <path d="M 262 682 C 350 654 562 654 666 690" fill="none" stroke="#30303a" stroke-width="1.2" opacity="0.7"/>
+
+  <g>
+    <text x="450" y="600" font-family="Archivo, Arial, sans-serif" font-size="15" font-weight="700" letter-spacing="2" fill="#a3e635" text-anchor="middle">UTOP14</text>
+    <rect x="427" y="610" width="46" height="3" fill="#a3e635" opacity="0.7"/>
+  </g>
+
+  <path d="M 300 640 C 350 622 550 622 600 640" fill="none" stroke="#2b2b34" stroke-width="1.5" opacity="0.6"/>
+
+  <g font-family="'Space Mono', 'Courier New', monospace" fill="#a3a3a3">
+    <text x="60" y="70" font-family="Archivo, Arial, sans-serif" font-size="20" font-weight="800" letter-spacing="4" fill="#f4f1ea">UTOP14</text>
+    <text x="840" y="70" font-size="10" letter-spacing="3" text-anchor="end" fill="#a3e635">014</text>
+    <text x="60" y="1060" font-size="9" letter-spacing="2.5">ORBIT CAP / JET BLACK</text>
+    <text x="840" y="1060" font-size="9" letter-spacing="2.5" text-anchor="end" opacity="0.7">STUDIO 04</text>
+  </g>
+
+  <g stroke="#a3e635" stroke-opacity="0.55" stroke-width="1.5">
+    <path d="M 36 60 V 36 H 60"/>
+    <path d="M 864 60 V 36 H 840"/>
+  </g>
+
+  <rect width="900" height="1125" filter="url(#cap-grain)" opacity="0.08" style="mix-blend-mode:overlay"/>
+</svg>

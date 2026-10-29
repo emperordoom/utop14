@@ -1,0 +1,104 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1125" viewBox="0 0 900 1125">
+  <defs>
+    <linearGradient id="pant-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#191920"/>
+      <stop offset="0.55" stop-color="#151519"/>
+      <stop offset="1" stop-color="#101014"/>
+    </linearGradient>
+    <radialGradient id="pant-glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#a3e635" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#a3e635" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="pant-grain">
+      <feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="3" stitchTiles="stitch"/>
+      <feColorMatrix type="saturate" values="0"/>
+    </filter>
+    <path id="pant-left" d="M 300 300 L 450 300 L 450 560 C 440 700 422 840 414 950 L 232 950 C 240 808 266 560 286 430 Z"/>
+    <path id="pant-right" d="M 450 300 L 600 300 L 614 430 C 634 560 660 808 668 950 L 486 950 C 478 840 460 700 450 560 Z"/>
+    <clipPath id="pant-clip">
+      <use href="#pant-left"/>
+      <use href="#pant-right"/>
+    </clipPath>
+  </defs>
+
+  <rect width="900" height="1125" fill="url(#pant-bg)"/>
+  <ellipse cx="660" cy="260" rx="380" ry="340" fill="url(#pant-glow)"/>
+
+  <g stroke="#303036" stroke-opacity="0.35">
+    <path d="M 0 190 H 900"/>
+    <path d="M 0 990 H 900"/>
+    <path d="M 70 0 V 1125"/>
+    <path d="M 830 0 V 1125"/>
+  </g>
+
+  <g fill="none" stroke="#3c3c44" stroke-width="1" opacity="0.5">
+    <circle cx="450" cy="600" r="330"/>
+  </g>
+
+  <ellipse cx="450" cy="972" rx="280" ry="24" fill="#000000" opacity="0.5"/>
+
+  <use href="#pant-left" fill="#1c1c23"/>
+  <use href="#pant-right" fill="#1e1e25"/>
+
+  <g clip-path="url(#pant-clip)">
+    <ellipse cx="330" cy="600" rx="120" ry="260" fill="#24242c" opacity="0.4"/>
+    <ellipse cx="580" cy="760" rx="140" ry="200" fill="#25252d" opacity="0.38"/>
+    <path d="M 260 560 Q 340 590 430 560" fill="none" stroke="#30303a" stroke-width="2" opacity="0.6"/>
+    <path d="M 480 700 Q 560 730 650 700" fill="none" stroke="#30303a" stroke-width="2" opacity="0.5"/>
+  </g>
+
+  <use href="#pant-left" fill="none" stroke="#3a3a44" stroke-width="2"/>
+  <use href="#pant-right" fill="none" stroke="#3a3a44" stroke-width="2"/>
+
+  <rect x="292" y="238" width="316" height="84" rx="4" fill="#22222a" stroke="#3d3d47" stroke-width="2"/>
+  <path d="M 292 320 H 608" stroke="#3d3d47" stroke-width="1.5" opacity="0.8"/>
+
+  <g fill="#121216" stroke="#3d3d47" stroke-width="1.2">
+    <rect x="326" y="238" width="14" height="84"/>
+    <rect x="443" y="238" width="14" height="84"/>
+    <rect x="558" y="238" width="14" height="84"/>
+  </g>
+
+  <path d="M 450 322 V 420 C 450 440 442 452 432 462" fill="none" stroke="#35353f" stroke-width="2"/>
+  <path d="M 450 560 L 438 618 L 452 640" fill="none" stroke="#35353f" stroke-width="2" opacity="0.8"/>
+
+  <path d="M 306 334 C 332 360 358 378 388 388 M 594 334 C 568 360 542 378 512 388" fill="none" stroke="#35353f" stroke-width="2"/>
+  <path d="M 306 340 C 332 366 356 384 384 394 M 594 340 C 568 366 544 384 516 394" fill="none" stroke="#2a2a32" stroke-width="1" opacity="0.7"/>
+
+  <g>
+    <rect x="254" y="596" width="116" height="158" rx="2" fill="#1e1e26" stroke="#3b3b45" stroke-width="2"/>
+    <rect x="254" y="596" width="116" height="36" fill="#22222b" stroke="#3b3b45" stroke-width="2"/>
+    <rect x="263" y="607" width="98" height="136" rx="2" fill="none" stroke="#a3e635" stroke-width="1" stroke-dasharray="4 5" opacity="0.5"/>
+    <circle cx="312" cy="614" r="4" fill="#a3e635"/>
+    <path d="M 254 632 H 370" stroke="#36363f" stroke-width="1.5"/>
+  </g>
+
+  <g>
+    <path d="M 562 640 L 592 640 L 592 710 L 562 710 Z" fill="none" stroke="#35353f" stroke-width="1.5"/>
+    <path d="M 562 640 L 550 626 M 592 640 L 604 626" stroke="#35353f" stroke-width="1.5"/>
+  </g>
+
+  <path d="M 356 440 L 330 940 M 546 440 L 570 940" stroke="#2e2e38" stroke-width="2" opacity="0.8"/>
+  <path d="M 400 440 L 384 940 M 504 440 L 520 940" stroke="#2b2b34" stroke-width="1.5" opacity="0.5"/>
+
+  <g stroke="#34343e" stroke-width="1.4">
+    <path d="M 238 910 H 410 M 242 920 H 412 M 246 930 H 414"/>
+    <path d="M 490 910 H 662 M 488 920 H 660 M 486 930 H 658"/>
+  </g>
+
+  <path d="M 300 300 C 340 312 380 316 450 316 C 520 316 560 312 600 300" fill="none" stroke="#3a3a44" stroke-width="2" opacity="0.7"/>
+
+  <g font-family="'Space Mono', 'Courier New', monospace" fill="#a3a3a3">
+    <text x="60" y="70" font-family="Archivo, Arial, sans-serif" font-size="20" font-weight="800" letter-spacing="4" fill="#f4f1ea">UTOP14</text>
+    <text x="840" y="70" font-size="10" letter-spacing="3" text-anchor="end" fill="#a3e635">014</text>
+    <text x="60" y="1060" font-size="9" letter-spacing="2.5">UTILITY PANT / STORM GREY</text>
+    <text x="840" y="1060" font-size="9" letter-spacing="2.5" text-anchor="end" opacity="0.7">STUDIO 03</text>
+  </g>
+
+  <g stroke="#a3e635" stroke-opacity="0.55" stroke-width="1.5">
+    <path d="M 36 60 V 36 H 60"/>
+    <path d="M 864 60 V 36 H 840"/>
+  </g>
+
+  <rect width="900" height="1125" filter="url(#pant-grain)" opacity="0.08" style="mix-blend-mode:overlay"/>
+</svg>

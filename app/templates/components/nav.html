@@ -1,0 +1,34 @@
+<header class="site-header">
+  <div class="site-header__inner container">
+    <a class="brand" href="{{ url_for('storefront.home') }}" aria-label="UTOP14 home">
+      <span class="brand__word">UTOP14</span>
+      <span class="brand__mark" aria-hidden="true"></span>
+    </a>
+
+    <nav class="site-nav" aria-label="Primary" data-nav>
+      <button
+        class="site-nav__toggle"
+        type="button"
+        aria-expanded="false"
+        aria-controls="primary-menu"
+        aria-label="Open menu"
+        data-nav-toggle
+        hidden
+      >
+        <span class="site-nav__toggle-label">Menu</span>
+        <span class="site-nav__toggle-icon" aria-hidden="true"></span>
+      </button>
+      <ul class="site-nav__menu" id="primary-menu">
+        <li><a class="site-nav__link" href="{{ url_for('storefront.home', _anchor='featured') }}">Shop</a></li>
+        <li><a class="site-nav__link" href="{{ url_for('storefront.home', _anchor='collection') }}">Collection</a></li>
+        <li><a class="site-nav__link" href="{{ url_for('storefront.home', _anchor='categories') }}">Categories</a></li>
+        <li><a class="site-nav__link" href="{{ url_for('storefront.home', _anchor='about') }}">About</a></li>
+      </ul>
+    </nav>
+
+    <a class="header-cta" href="{{ url_for('storefront.home', _anchor='featured') }}">
+      <span>Drop 014</span>
+      <span aria-hidden="true">↗</span>
+    </a>
+  </div>
+</header>

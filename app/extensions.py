@@ -21,3 +21,14 @@ csrf = CSRFProtect()
 login_manager.session_protection = "strong"
 login_manager.login_message = "Please sign in to continue."
 login_manager.login_message_category = "info"
+
+
+@login_manager.user_loader
+def load_user(user_id: str) -> None:
+    """Keep every visitor anonymous until authentication is implemented.
+
+    Flask-Login loads ``current_user`` for every template render, so a loader
+    must be registered even while all routes are public.  The user model and
+    real lookup arrive with the authentication milestone.
+    """
+    return None

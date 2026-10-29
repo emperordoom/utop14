@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1500" viewBox="0 0 1200 1500">
+  <defs>
+    <linearGradient id="col-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0c0c0f"/>
+      <stop offset="0.5" stop-color="#121216"/>
+      <stop offset="1" stop-color="#0a0a0c"/>
+    </linearGradient>
+    <radialGradient id="col-glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#a3e635" stop-opacity="0.42"/>
+      <stop offset="1" stop-color="#a3e635" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="col-beam" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#a3e635" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#a3e635" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="col-floor" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#131317"/>
+      <stop offset="1" stop-color="#070709"/>
+    </linearGradient>
+    <filter id="col-grain">
+      <feTurbulence type="fractalNoise" baseFrequency="0.8" numOctaves="3" stitchTiles="stitch"/>
+      <feColorMatrix type="saturate" values="0"/>
+    </filter>
+    <filter id="col-soft" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="30"/>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="1500" fill="url(#col-bg)"/>
+
+  <g fill="#a3e635" opacity="0.1">
+    <path d="M 500 0 H 700 L 780 1200 H 420 Z" fill="url(#col-beam)"/>
+    <path d="M 0 0 H 220 L 380 1200 H 120 Z" fill="url(#col-beam)" opacity="0.35"/>
+  </g>
+
+  <ellipse cx="600" cy="470" rx="420" ry="330" fill="url(#col-glow)" opacity="0.22"/>
+
+  <g font-family="Archivo, Arial, sans-serif" fill="none" stroke="#303036" stroke-width="2" opacity="0.55">
+    <text x="600" y="700" font-size="620" font-weight="800" letter-spacing="-30" text-anchor="middle">014</text>
+  </g>
+
+  <path d="M 0 1240 H 1200" stroke="#a3e635" stroke-opacity="0.28"/>
+  <rect y="1240" width="1200" height="260" fill="url(#col-floor)"/>
+  <ellipse cx="420" cy="1284" rx="220" ry="28" fill="#000000" opacity="0.6"/>
+  <ellipse cx="780" cy="1284" rx="220" ry="28" fill="#000000" opacity="0.6"/>
+  <ellipse cx="600" cy="1268" rx="420" ry="44" fill="#a3e635" opacity="0.08" filter="url(#col-soft)"/>
+
+  <g>
+    <path d="M 420 350 C 352 350 312 400 306 460 C 302 502 318 536 350 554 L 386 570 L 454 570 L 490 554 C 522 536 538 502 534 460 C 528 400 488 350 420 350 Z" fill="#1a1a20" stroke="#34343c" stroke-width="2"/>
+    <path d="M 420 408 C 388 408 370 434 370 466 C 370 500 390 524 420 524 C 450 524 470 500 470 466 C 470 434 452 408 420 408 Z" fill="#060608"/>
+    <path d="M 420 570 C 372 570 334 586 312 610 C 290 634 278 674 274 720 L 250 904 C 246 932 260 950 282 952 C 302 954 316 940 322 918 L 348 800 L 344 940 C 343 962 356 976 378 976 L 462 976 C 484 976 497 962 496 940 L 492 800 L 518 918 C 524 940 538 954 558 952 C 580 950 594 932 590 904 L 566 720 C 562 674 550 634 528 610 C 506 586 468 570 420 570 Z" fill="#1d1d23" stroke="#34343c" stroke-width="2"/>
+    <path d="M 356 964 L 484 964 L 496 1040 L 518 1244 C 519 1256 512 1264 500 1264 L 440 1264 C 431 1264 425 1258 424 1249 L 420 1120 L 416 1249 C 415 1258 409 1264 400 1264 L 340 1264 C 328 1264 321 1256 322 1244 L 344 1040 Z" fill="#15151a" stroke="#2e2e36" stroke-width="2"/>
+    <path d="M 320 1248 L 418 1248 L 418 1290 C 418 1298 412 1304 402 1304 L 300 1304 C 292 1304 288 1296 292 1288 L 306 1256 Z" fill="#0e0e11" stroke="#2c2c33" stroke-width="2"/>
+    <path d="M 422 1248 L 520 1248 L 534 1256 L 548 1288 C 552 1296 548 1304 540 1304 L 438 1304 C 428 1304 422 1298 422 1290 Z" fill="#0e0e11" stroke="#2c2c33" stroke-width="2"/>
+
+    <path d="M 336 780 L 504 780 L 492 912 C 448 920 392 920 348 912 Z" fill="#17171c" stroke="#32323a" stroke-width="2"/>
+    <path d="M 390 586 C 386 626 384 660 388 690 M 450 586 C 454 626 456 660 452 690" stroke="#d8d4ca" stroke-width="3" stroke-linecap="round"/>
+    <path d="M 386 684 L 390 698 M 454 684 L 458 698" stroke="#a3e635" stroke-width="6" stroke-linecap="round"/>
+    <path d="M 534 460 C 538 502 522 536 490 554 C 516 574 534 606 544 648 M 590 720 C 600 790 606 848 612 880" stroke="#a3e635" stroke-width="2.5" fill="none" opacity="0.55" stroke-linecap="round"/>
+    <path d="M 420 352 C 486 352 526 396 534 454" stroke="#a3e635" stroke-width="2" fill="none" opacity="0.65" stroke-linecap="round"/>
+  </g>
+
+  <g>
+    <path d="M 790 300 C 750 300 726 322 720 352 C 716 374 726 394 746 404 L 772 416 L 808 416 L 834 404 C 854 394 864 374 860 352 C 854 322 830 300 790 300 Z" fill="#1b1b21" stroke="#34343c" stroke-width="2"/>
+    <path d="M 790 430 C 740 430 702 452 684 482 C 666 512 656 560 652 610 L 634 900 C 632 924 644 940 664 942 C 682 944 696 930 702 910 L 722 790 L 718 948 C 717 968 730 982 750 982 L 830 982 C 850 982 863 968 862 948 L 858 790 L 878 910 C 884 930 898 944 916 942 C 936 940 948 924 946 900 L 928 610 C 924 560 914 512 896 482 C 878 452 840 430 790 430 Z" fill="#202027" stroke="#36363e" stroke-width="2"/>
+    <path d="M 726 970 L 850 970 L 866 1060 L 892 1248 C 893 1259 886 1267 874 1267 L 810 1267 C 801 1267 795 1261 794 1252 L 790 1140 L 786 1252 C 785 1261 779 1267 770 1267 L 706 1267 C 694 1267 687 1259 688 1248 L 714 1060 Z" fill="#191920" stroke="#31313a" stroke-width="2"/>
+    <path d="M 686 1252 L 784 1252 L 784 1294 C 784 1302 778 1308 768 1308 L 664 1308 C 656 1308 652 1300 656 1292 L 670 1258 Z" fill="#0f0f12" stroke="#2d2d35" stroke-width="2"/>
+    <path d="M 788 1252 L 886 1252 L 900 1258 L 916 1292 C 920 1300 916 1308 908 1308 L 804 1308 C 794 1308 788 1302 788 1294 Z" fill="#0f0f12" stroke="#2d2d35" stroke-width="2"/>
+
+    <path d="M 742 330 L 838 330" stroke="#a3e635" stroke-width="2" opacity="0.7"/>
+    <text x="790" y="640" font-family="Archivo, Arial, sans-serif" font-size="34" font-weight="800" fill="#a3e635" letter-spacing="2" text-anchor="middle">UTOP14</text>
+    <path d="M 736 660 H 844" stroke="#a3e635" stroke-width="3"/>
+    <path d="M 684 900 C 724 910 766 914 790 914" stroke="#2f2f37" stroke-width="1.5" fill="none"/>
+    <path d="M 946 610 C 938 690 930 780 926 860 M 860 352 C 896 366 916 394 924 434" stroke="#a3e635" stroke-width="2" fill="none" opacity="0.4" stroke-linecap="round"/>
+  </g>
+
+  <g font-family="'Space Mono', 'Courier New', monospace">
+    <text x="60" y="78" font-family="Archivo, Arial, sans-serif" font-size="26" font-weight="800" letter-spacing="5" fill="#f4f1ea">AFTER HOURS</text>
+    <text x="60" y="108" font-size="10" letter-spacing="3.5" fill="#a3a3a3">CHAPTER 014 / AW26</text>
+    <text x="1140" y="78" font-size="10" letter-spacing="3" text-anchor="end" fill="#a3e635">LOOK 01 / 04</text>
+    <text x="1140" y="106" font-size="9" letter-spacing="2.5" text-anchor="end" fill="#a3a3a3">STUDIO STUDY</text>
+    <text x="60" y="1424" font-size="9" letter-spacing="3" fill="#a3a3a3">WASHED BLACK / STORM GREY</text>
+    <text x="1140" y="1424" font-size="9" letter-spacing="3" text-anchor="end" fill="#a3a3a3">LIMITED RUN / NO RESTOCK</text>
+  </g>
+
+  <g stroke="#a3e635" stroke-opacity="0.6" stroke-width="1.5">
+    <path d="M 36 60 V 36 H 60"/>
+    <path d="M 1164 60 V 36 H 1140"/>
+  </g>
+
+  <rect width="1200" height="1500" filter="url(#col-grain)" opacity="0.09" style="mix-blend-mode:overlay"/>
+</svg>

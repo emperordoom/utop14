@@ -1,0 +1,23 @@
+<li class="product-card">
+  <a class="product-card__media" href="{{ url_for('storefront.home', _anchor='featured') }}" aria-label="View {{ product.name }}">
+    {% if product.badge %}
+      <span class="product-card__badge">{{ product.badge }}</span>
+    {% endif %}
+    <img
+      src="{{ url_for('static', filename=product.image) }}"
+      alt="{{ product.image_alt }}"
+      width="900"
+      height="1125"
+      loading="lazy"
+      decoding="async"
+    >
+    <span class="product-card__index" aria-hidden="true">{{ "%02d"|format(item_index) }}</span>
+  </a>
+  <div class="product-card__info">
+    <div>
+      <h3><a href="{{ url_for('storefront.home', _anchor='featured') }}">{{ product.name }}</a></h3>
+      <p class="product-card__meta">{{ product.category }} / {{ product.colour }}</p>
+    </div>
+    <p class="product-card__price">{{ product.price|money }}</p>
+  </div>
+</li>

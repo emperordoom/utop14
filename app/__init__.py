@@ -61,8 +61,10 @@ def create_app(
 def _register_blueprints(app: Flask) -> None:
     """Register application blueprints."""
     from app.main import main_bp
+    from app.storefront import storefront_bp
 
     app.register_blueprint(main_bp)
+    app.register_blueprint(storefront_bp)
 
 
 def _register_models() -> None:
