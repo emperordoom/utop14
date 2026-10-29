@@ -1,11 +1,14 @@
 {% extends "base.html" %}
 
+{% from "components/badges.html" import status_badge, payment_badge %}
+
 {% block title %}{{ order.order_number }} — UTOP14{% endblock %}
 
 {% block meta_description %}Your UTOP14 order confirmation and itemised summary.{% endblock %}
 
 {% block styles %}
   <link rel="stylesheet" href="{{ url_for('static', filename='css/cart.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/orders.css') }}">
 {% endblock %}
 
 {% block body_class %}page-order{% endblock %}
@@ -21,6 +24,10 @@
         <p class="order-hero__meta">
           {{ order.order_number }} · {{ order.created_at.strftime("%d %b %Y, %H:%M UTC") }}
         </p>
+        <a class="text-link order-hero__link" href="{{ url_for('orders.history') }}">
+          All orders
+          <span aria-hidden="true">↗</span>
+        </a>
       </header>
 
       <div class="order-layout">
@@ -50,17 +57,17 @@
         <aside class="order-summary" aria-labelledby="order-summary-title">
           <div class="order-panel__header">
             <p class="mono" id="order-summary-title">Order summary</p>
-            <p class="mono">{{ order.status|replace('_', ' ')|title }}</p>
+            {{ status_badge(order.status) }}
           </div>
 
           <dl class="order-status">
             <div>
               <dt>Status</dt>
-              <dd>{{ order.status|replace('_', ' ')|title }}</dd>
+              <dd>{{ status_badge(order.status) }}</dd>
             </div>
             <div>
               <dt>Payment</dt>
-              <dd>{{ order.payment_status|replace('_', ' ')|title }}</dd>
+              <dd>{{ payment_badge(order.payment_status) }}</dd>
             </div>
           </dl>
 
@@ -87,15 +94,55 @@
             <p>{{ order.recipient_phone }}</p>
           </div>
 
+          {% if order.status == 'cancelled' %}
+            <div class="order-cancellation">
+              <p class="mono">Cancellation</p>
+              <p>
+                Cancelled
+                {% if order.cancelled_at %}
+                  {{ order.cancelled_at.strftime("%d %b %Y, %H:%M UTC") }}
+                {% endif %}
+              </p>
+              {% if order.cancellation_reason %}
+                <p class="order-cancellation__reason">{{ order.cancellation_reason }}</p>
+              {% endif %}
+            </div>
+          {% endif %}
+
           <p class="order-summary__note">
-            Stock has been deducted for this order. Payment collection and
-            shipping integrations are not part of this milestone.
+            {% if order.status == 'cancelled' %}
+              This order was cancelled and its stock was restored where the
+              original variant still existed.
+            {% else %}
+              Stock has been deducted for this order. Payment collection and
+              shipping integrations are not part of this milestone.
+            {% endif %}
           </p>
+
+          {% if can_cancel %}
+            <details class="order-cancel">
+              <summary class="button button--ghost order-cancel__summary">Cancel order</summary>
+              <form class="order-cancel__form" method="post" action="{{ url_for('orders.cancel', order_number=order.order_number) }}">
+                {{ cancel_form.hidden_tag() }}
+                <label class="cart-label" for="cancellation-reason">Reason (optional)</label>
+                {{ cancel_form.reason(class_="cart-control order-cancel__reason", id="cancellation-reason", rows="3", maxlength="500") }}
+                <p class="order-cancel__note">
+                  Cancellation restores stock immediately and cannot be undone.
+                </p>
+                <button class="button button--primary order-cancel__submit" type="submit">Confirm cancellation</button>
+              </form>
+            </details>
+          {% elif order.status == 'pending' %}
+            <p class="order-summary__note">
+              This order cannot be cancelled because it is no longer unpaid.
+            </p>
+          {% endif %}
 
           <a class="button button--primary order-summary__action" href="{{ url_for('storefront.shop') }}">
             Continue shopping
             <span class="button__arrow" aria-hidden="true">→</span>
           </a>
+          <a class="text-link order-summary__account" href="{{ url_for('orders.history') }}">Back to your orders</a>
           <a class="text-link order-summary__account" href="{{ url_for('auth.account') }}">Back to your account</a>
         </aside>
       </div>

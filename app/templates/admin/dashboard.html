@@ -18,14 +18,15 @@
         Drop 014 <em>control.</em>
       </h1>
       <p class="staff-hero__copy">
-        A read-only view of the catalog and account base. Product and inventory
-        write tools arrive in a later milestone.
+        Catalog and account counts remain read-only. Order lifecycle management
+        is available for operators and admins through the order queue.
       </p>
       <div class="staff-hero__actions">
-        <a class="button button--primary" href="{{ url_for('storefront.shop') }}">
-          View storefront
+        <a class="button button--primary" href="{{ url_for('admin.order_list') }}">
+          Manage orders
           <span class="button__arrow" aria-hidden="true">→</span>
         </a>
+        <a class="button button--ghost" href="{{ url_for('storefront.shop') }}">View storefront</a>
         <a class="button button--ghost" href="{{ url_for('admin.operations') }}">Operator console</a>
       </div>
     </div>

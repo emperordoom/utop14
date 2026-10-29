@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+
+{% from "components/badges.html" import status_badge, payment_badge %}
+
+{% block title %}{{ order.order_number }} — Order management{% endblock %}
+
+{% block meta_description %}Operator and admin detail view for a UTOP14 order.{% endblock %}
+
+{% block styles %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/auth.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/cart.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/orders.css') }}">
+{% endblock %}
+
+{% block body_class %}page-admin-order-detail{% endblock %}
+
+{% block content %}
+  <section class="staff-hero" aria-labelledby="admin-order-title">
+    <div class="container">
+      <p class="section-kicker">Operations / Order detail</p>
+      <div class="admin-order-heading">
+        <div>
+          <h1 class="staff-hero__title" id="admin-order-title">{{ order.order_number }}</h1>
+          <p class="staff-hero__copy">
+            Placed {{ order.created_at.strftime("%d %b %Y, %H:%M UTC") }} by
+            {{ order.user.full_name }} ({{ order.user.email }}).
+          </p>
+        </div>
+        <div class="admin-order-heading__badges">
+          {{ status_badge(order.status) }}
+          {{ payment_badge(order.payment_status) }}
+        </div>
+      </div>
+      <div class="staff-hero__actions">
+        <a class="button button--ghost" href="{{ url_for('admin.order_list') }}">Back to orders</a>
+        <a class="button button--ghost" href="{{ url_for('auth.account') }}">Your account</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="section order-admin-section" aria-labelledby="admin-order-summary-title">
+    <div class="container admin-order-layout">
+      <div class="admin-order-main">
+        <div class="admin-order-card">
+          <div class="order-panel__header">
+            <p class="mono">Customer &amp; delivery</p>
+            <p class="mono">{{ order.item_count }} item{% if order.item_count != 1 %}s{% endif %}</p>
+          </div>
+          <div class="admin-order-customer">
+            <div>
+              <p class="cart-label">Customer</p>
+              <p>{{ order.user.full_name }}</p>
+              <p class="mono">{{ order.user.email }}</p>
+            </div>
+            <div>
+              <p class="cart-label">Recipient</p>
+              <p>{{ order.recipient_name }}</p>
+              <p class="mono">{{ order.recipient_phone }}</p>
+            </div>
+            <div class="admin-order-customer__address">
+              <p class="cart-label">Shipping address</p>
+              <p>{{ order.shipping_address }}</p>
+              <p>{{ order.shipping_city }} {{ order.shipping_postal_code }}</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="admin-order-card">
+          <div class="order-panel__header">
+            <p class="mono">Item snapshots</p>
+            <p class="mono">{{ order.item_count }} item{% if order.item_count != 1 %}s{% endif %}</p>
+          </div>
+          <ul class="order-items" role="list">
+            {% for item in order.items %}
+              <li class="order-line">
+                <div class="order-line__info">
+                  <p class="mono">{{ item.sku }}</p>
+                  <h2 class="order-line__title">{{ item.product_name }}</h2>
+                  <p class="order-line__meta">{{ item.size }} / {{ item.color }} × {{ item.quantity }}</p>
+                </div>
+                <div class="order-line__prices">
+                  <p class="order-line__unit">{{ item.unit_price|money }} each</p>
+                  <p class="order-line__total">{{ item.line_total|money }}</p>
+                </div>
+              </li>
+            {% endfor %}
+          </ul>
+        </div>
+      </div>
+
+      <aside class="admin-order-side">
+        <div class="admin-order-card">
+          <div class="order-panel__header">
+            <p class="mono" id="admin-order-summary-title">Financials</p>
+            <p class="mono">USD</p>
+          </div>
+          <dl class="checkout-totals">
+            <div>
+              <dt>Subtotal</dt>
+              <dd>{{ order.subtotal|money }}</dd>
+            </div>
+            <div>
+              <dt>Shipping</dt>
+              <dd>{% if order.shipping_cost == 0 %}Free{% else %}{{ order.shipping_cost|money }}{% endif %}</dd>
+            </div>
+            <div class="checkout-totals__grand">
+              <dt>Total</dt>
+              <dd>{{ order.total|money }}</dd>
+            </div>
+          </dl>
+        </div>
+
+        <div class="admin-order-card">
+          <div class="order-panel__header">
+            <p class="mono">Lifecycle</p>
+            {{ status_badge(order.status) }}
+          </div>
+          <dl class="order-status">
+            <div>
+              <dt>Payment</dt>
+              <dd>{{ payment_badge(order.payment_status) }}</dd>
+            </div>
+          </dl>
+
+          {% if order.status == 'cancelled' %}
+            <div class="order-cancellation">
+              <p class="mono">Cancelled</p>
+              <p>
+                {% if order.cancelled_at %}
+                  {{ order.cancelled_at.strftime("%d %b %Y, %H:%M UTC") }}
+                {% endif %}
+              </p>
+              {% if order.cancelled_by %}
+                <p class="mono">By {{ order.cancelled_by.email }}</p>
+              {% endif %}
+              {% if order.cancellation_reason %}
+                <p class="order-cancellation__reason">{{ order.cancellation_reason }}</p>
+              {% endif %}
+            </div>
+          {% endif %}
+
+          {% if allowed_transitions %}
+            <form class="order-status-form" method="post" action="{{ url_for('admin.update_order_status', order_number=order.order_number) }}">
+              {{ form.hidden_tag() }}
+
+              <div class="cart-form-field">
+                <label class="cart-label" for="status">New status</label>
+                {{ form.status(class_="cart-control", id="status") }}
+              </div>
+
+              <div class="cart-form-field">
+                <label class="cart-label" for="status-reason">Cancellation reason (optional)</label>
+                {{ form.reason(class_="cart-control", id="status-reason", rows="3", maxlength="500") }}
+                <p class="form-hint">Only used when the new status is Cancelled.</p>
+              </div>
+
+              <p class="order-summary__note">
+                Allowed next states: {{ allowed_transitions|join(', ')|replace('_', ' ')|title }}.
+                Payment status is not changed automatically.
+              </p>
+
+              <button class="button button--primary" type="submit">Update status</button>
+            </form>
+          {% else %}
+            <p class="order-summary__note">
+              No further status transitions are available for this order.
+            </p>
+          {% endif %}
+        </div>
+      </aside>
+    </div>
+  </section>
+{% endblock %}

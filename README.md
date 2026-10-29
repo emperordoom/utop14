@@ -2,12 +2,12 @@
 
 UTOP14 is a streetwear e-commerce platform built for Well Architected SOC 14.
 
-**Current milestone:** Milestone 5 — shopping cart and checkout. The storefront,
-catalog, authentication and RBAC from M1–M4 remain in place. Signed-in customers
-now have a persistent PostgreSQL cart, a transactional checkout that snapshots
-prices and deducts stock, and a private order confirmation page. Payment gateway
-integration, shipping APIs, cancellation and stock restoration are intentionally
-out of scope for this milestone.
+**Current milestone:** Milestone 6 — order management and lifecycle. The
+storefront, catalog, authentication, RBAC, cart and checkout from M1–M5 remain
+in place. Customers now have order history and safe cancellation with atomic
+stock restoration; operators and admins have a filtered order queue and
+validated lifecycle transitions. Payment gateway integration remains out of
+scope.
 
 ## Technology
 
@@ -293,8 +293,53 @@ themselves.
 
 Shipping is a flat `$12.00`, waived at subtotal `$200.00` or above. No payment
 gateway or shipping provider is integrated. Stock is deducted when the order is
-created; cancellation and stock restoration belong to M6. Order confirmation is
-visible only to the account that owns the order.
+created. Cancellation and stock restoration are handled by the M6 order
+lifecycle. Order confirmation is visible only to the account that owns the order.
+
+## Order lifecycle and management
+
+Customer routes:
+
+| Route | Method | Purpose |
+| --- | --- | --- |
+| `/orders` | GET | Paginated order history for the signed-in customer |
+| `/orders/<order_number>` | GET | Owner-only order detail |
+| `/orders/<order_number>/cancel` | POST | Cancel a pending unpaid order |
+
+Staff routes (operator and admin only):
+
+| Route | Method | Purpose |
+| --- | --- | --- |
+| `/admin/orders` | GET | All orders with status/payment filters and order-number search |
+| `/admin/orders/<order_number>` | GET | Customer, delivery, snapshots and lifecycle detail |
+| `/admin/orders/<order_number>/status` | POST | Apply one permitted lifecycle transition |
+
+Status transition matrix:
+
+| Current | Allowed next | Notes |
+| --- | --- | --- |
+| `pending` | `processing`, `cancelled` | Customer cancellation requires unpaid payment |
+| `processing` | `shipped`, `cancelled` | Cancellation allowed only while unpaid |
+| `shipped` | `delivered` | No cancellation after dispatch |
+| `delivered` | — | Terminal |
+| `cancelled` | — | Terminal |
+
+Payment status is never changed automatically by a status transition. Paid
+orders cannot be cancelled until a refund workflow exists; this is intentional.
+
+Cancellation runs in one transaction:
+
+1. Lock the order row with `SELECT FOR UPDATE`.
+2. Validate ownership and the current status/payment state.
+3. Read order items deterministically.
+4. Restore stock for each item whose original variant still exists.
+5. Skip deleted variants safely; never match by SKU.
+6. Set `cancelled_at`, `cancelled_by_user_id`, optional
+   `cancellation_reason` and `status = cancelled`.
+7. Commit only if all restoration succeeds; otherwise roll back everything.
+
+Concurrent cancellations serialize on the order row lock, so stock is restored
+once at most. The second request observes the cancelled state and is rejected.
 
 ## Tests
 
@@ -312,7 +357,8 @@ defaults, catalog models and constraints, catalog service queries, storefront
 pages, seeds, registration, password hashing, login/logout, CSRF, open-redirect
 prevention, inactive accounts, role-based access control, the admin CLI, cart
 constraints and concurrency behavior, checkout totals, price snapshots, stock
-deduction, transaction rollback, order ownership and order confirmation.
+deduction, transaction rollback, order ownership, order history, cancellation,
+stock restoration, lifecycle transitions and operator/admin order management.
 
 ## Linting and formatting
 
@@ -347,9 +393,10 @@ Current revision chain in source:
 - `b93e6a5d9742` — catalog models
 - `5b9c540efff4` — users and role constraint
 - `f003cabb1f4f` — carts, cart items, orders and order items
+- `b042768520c0` — order cancellation fields
 
-The M5 cart/orders migration is generated and reviewed; apply it through the
-normal controlled migration step after review.
+The M6 cancellation-fields migration is generated and reviewed; apply it through
+the normal controlled migration step after review.
 
 ## Production notes
 
@@ -372,6 +419,23 @@ normal controlled migration step after review.
    to Gunicorn on the loopback interface.
 6. Keep `.env`, database credentials and secret keys out of source control,
    logs and error responses.
+
+## Milestone 6 scope
+
+Implemented:
+
+- Customer order history with pagination and newest-first ordering
+- Customer cancellation for pending unpaid orders with stock restoration
+- Cancellation audit fields: timestamp, actor and optional reason
+- Atomic cancellation transaction with order row locking and rollback
+- Concurrent cancellation idempotency through row locks
+- Operator/admin order queue with status/payment filters and order-number search
+- Operator/admin order detail with customer, delivery and snapshot data
+- Explicit lifecycle transition validation and CSRF-protected status updates
+- Status badges, responsive order UI and branded empty states
+
+Not yet implemented: payment refunds, shipping provider integration, audit table,
+fulfillment notes and customer notifications.
 
 ## Milestone 5 scope
 

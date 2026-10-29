@@ -18,14 +18,16 @@ from alembic import command
 from alembic.config import Config
 from flask import Flask
 from flask.testing import FlaskClient
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.engine import make_url
 
 from app import create_app
 from app.catalog.seed import SeedSummary, seed_catalog
 from app.extensions import db
-from app.models import User
+from app.models import Order, ProductVariant, User
 from app.models.user import ROLE_CUSTOMER
+from app.services.cart import add_to_cart
+from app.services.checkout import checkout
 
 PROJECT_ROOT: Final = Path(__file__).resolve().parents[1]
 MIGRATIONS_DIR: Final = PROJECT_ROOT / "migrations"
@@ -175,3 +177,44 @@ def login(
         return response
 
     return _login
+
+
+@pytest.fixture()
+def make_order(
+    app: Flask,
+    seeded_catalog: SeedSummary,
+) -> Callable[..., Order]:
+    """Create a committed order for a test user through real checkout."""
+
+    def _make_order(
+        user: User,
+        *,
+        sku: str = "UT014-VT-WBK-M",
+        quantity: int = 1,
+        status: str | None = None,
+        payment_status: str | None = None,
+    ) -> Order:
+        variant = db.session.scalar(select(ProductVariant).where(ProductVariant.sku == sku))
+        if variant is None:
+            raise AssertionError(f"Missing seed variant: {sku}")
+
+        add_to_cart(user.id, variant.id, quantity)
+        order = checkout(
+            user.id,
+            recipient_name=user.full_name,
+            recipient_phone="+1 555 0100",
+            shipping_address="14 After Hours Street",
+            shipping_city="Night City",
+            shipping_postal_code="01400",
+        )
+
+        if status is not None:
+            order.status = status
+        if payment_status is not None:
+            order.payment_status = payment_status
+        if status is not None or payment_status is not None:
+            db.session.commit()
+
+        return order
+
+    return _make_order
