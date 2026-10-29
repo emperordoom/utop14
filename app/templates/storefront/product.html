@@ -6,6 +6,7 @@
 
 {% block styles %}
   <link rel="stylesheet" href="{{ url_for('static', filename='css/catalog.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/cart.css') }}">
 {% endblock %}
 
 {% block body_class %}page-product{% endblock %}
@@ -113,9 +114,62 @@
         </dl>
 
         <p class="product-info__note">
-          Cart and checkout arrive in the next milestone. For now, use the
-          catalog to find your size and colour.
+          Stock is checked again at checkout. Payment and shipping integration
+          arrive in a later milestone.
         </p>
+
+        {% if current_user.is_authenticated %}
+          <form class="add-to-cart-panel" method="post" action="{{ url_for('cart.add_item') }}">
+            {{ add_to_cart_form.hidden_tag() }}
+            <div class="add-to-cart-panel__header">
+              <p class="mono">Add to cart</p>
+              <p class="mono">{{ product.price|money }}</p>
+            </div>
+
+            {% if product.available_variants %}
+              <div class="add-to-cart__field">
+                <label class="cart-label" for="variant_id">Size / colour</label>
+                <select class="cart-control" id="variant_id" name="variant_id" required>
+                  <option value="" disabled selected>Select a combination</option>
+                  {% for variant in product.available_variants %}
+                    <option value="{{ variant.id }}"{% if variant.stock == 0 %} disabled{% endif %}>
+                      {{ variant.size }} / {{ variant.color }}{% if variant.stock == 0 %} — Sold out{% endif %}
+                    </option>
+                  {% endfor %}
+                </select>
+              </div>
+
+              <div class="add-to-cart__row">
+                <div class="add-to-cart__field add-to-cart__field--qty">
+                  <label class="cart-label" for="quantity">Quantity</label>
+                  <input class="cart-control" id="quantity" name="quantity" type="number" min="1" max="99" value="1" required>
+                </div>
+                <button class="button button--primary add-to-cart__submit" type="submit"{% if not product.is_in_stock %} disabled{% endif %}>
+                  Add to cart
+                  <span class="button__arrow" aria-hidden="true">→</span>
+                </button>
+              </div>
+
+              {% if not product.is_in_stock %}
+                <p class="cart-error">Sold out for this drop.</p>
+              {% endif %}
+            {% else %}
+              <p class="cart-error">No variants are available right now.</p>
+            {% endif %}
+          </form>
+        {% else %}
+          <div class="add-to-cart-panel add-to-cart-panel--guest">
+            <div class="add-to-cart-panel__header">
+              <p class="mono">Add to cart</p>
+              <p class="mono">{{ product.price|money }}</p>
+            </div>
+            <p class="add-to-cart__guest-copy">Sign in to save your size, colour and cart.</p>
+            <a class="button button--primary" href="{{ url_for('auth.login', next=request.path) }}">
+              Sign in to add
+              <span class="button__arrow" aria-hidden="true">→</span>
+            </a>
+          </div>
+        {% endif %}
       </div>
     </div>
   </section>

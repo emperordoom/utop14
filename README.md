@@ -2,11 +2,12 @@
 
 UTOP14 is a streetwear e-commerce platform built for Well Architected SOC 14.
 
-**Current milestone:** Milestone 4 — authentication and role-based access
-control. The storefront and catalog are database-backed (M3). Accounts support
-customer, operator and admin roles, CSRF-protected registration/login/logout,
-and server-side protected staff pages. Cart, checkout, orders and admin
-inventory write tools are intentionally not implemented yet.
+**Current milestone:** Milestone 5 — shopping cart and checkout. The storefront,
+catalog, authentication and RBAC from M1–M4 remain in place. Signed-in customers
+now have a persistent PostgreSQL cart, a transactional checkout that snapshots
+prices and deducts stock, and a private order confirmation page. Payment gateway
+integration, shipping APIs, cancellation and stock restoration are intentionally
+out of scope for this milestone.
 
 ## Technology
 
@@ -31,8 +32,11 @@ utop14/
 │   ├── storefront/          # storefront blueprint and presentation helpers
 │   ├── auth/                # registration, login, logout, account, RBAC
 │   ├── admin/               # protected admin and operator dashboards
+│   ├── cart/                # persistent cart routes and forms
+│   ├── checkout/            # checkout form and transactional placement
+│   ├── orders/              # private order confirmation
 │   ├── catalog/             # deterministic launch catalog seed
-│   ├── services/            # catalog and dashboard read models
+│   ├── services/            # catalog, cart, checkout and dashboard services
 │   ├── models/              # model registry imported by Alembic
 │   ├── static/              # CSS, JavaScript, local SVG art and fonts
 │   └── templates/
@@ -40,6 +44,9 @@ utop14/
 │       ├── components/      # navigation, footer and card partials
 │       ├── auth/            # login, registration and account pages
 │       ├── admin/           # staff dashboards
+│       ├── cart/            # cart page
+│       ├── checkout/        # checkout page
+│       ├── orders/          # order confirmation
 │       ├── errors/          # branded 403 and 404 pages
 │       └── storefront/      # home, shop and product templates
 ├── migrations/              # Flask-Migrate/Alembic scaffold and revisions
@@ -236,6 +243,59 @@ The command prompts for email, full name and password with hidden password
 input, refuses a duplicate email or a second admin, and never prints the
 password. There is no public admin-registration endpoint.
 
+## Shopping cart and checkout
+
+Each signed-in account has exactly one persistent PostgreSQL cart. Cart routes
+require authentication and every state-changing request is CSRF protected:
+
+| Route | Method | Purpose |
+| --- | --- | --- |
+| `/cart` | GET | View the current user's cart |
+| `/cart/add` | POST | Add or merge a variant |
+| `/cart/update/<item_id>` | POST | Change a line quantity |
+| `/cart/remove/<item_id>` | POST | Remove a line |
+| `/checkout` | GET/POST | Review totals and place an order |
+| `/orders/<order_number>` | GET | Owner-only order confirmation |
+
+Cart rules:
+
+- Only active products, active categories and active variants can be added.
+- Quantities are positive integers, capped at 99 per line and current stock.
+- Duplicate adds merge through the unique `(cart_id, variant_id)` constraint and
+  PostgreSQL `ON CONFLICT` upserts.
+- Prices and subtotals are always recalculated from current database prices.
+- Cart ownership is enforced in every query; item IDs from other users return
+  not-found behavior.
+
+Checkout runs in one PostgreSQL transaction:
+
+1. Lock the user's cart and cart lines.
+2. Revalidate product, category, variant and stock state.
+3. Recalculate line prices, subtotal, shipping and total with `Decimal`.
+4. Create the order with status `pending` and payment status `unpaid`.
+5. Create immutable order-item snapshots for product name, SKU, size, colour,
+   unit price, quantity and line total.
+6. Decrement stock with a conditional atomic `UPDATE ... WHERE stock >= quantity`
+   and check the affected row count.
+7. Clear the cart lines and commit only if every step succeeds.
+
+Monetary invariants enforced by the checkout service and its tests:
+
+- `OrderItem.line_total = OrderItem.unit_price × OrderItem.quantity`
+- `Order.total = Order.subtotal + Order.shipping_cost`
+- `Order.subtotal = sum of all OrderItem.line_total values`
+
+These are application-level invariants. The M5 database schema enforces
+non-negative monetary values with CHECK constraints, but it does not enforce the
+arithmetic relationships above with database CHECK constraints or triggers.
+Direct SQL writes outside the service must preserve these relationships
+themselves.
+
+Shipping is a flat `$12.00`, waived at subtotal `$200.00` or above. No payment
+gateway or shipping provider is integrated. Stock is deducted when the order is
+created; cancellation and stock restoration belong to M6. Order confirmation is
+visible only to the account that owns the order.
+
 ## Tests
 
 ```bash
@@ -244,13 +304,15 @@ pytest
 
 The suite runs against PostgreSQL `utop14_test`. Fixtures apply the committed
 Alembic migrations, reject any database whose name does not end in `_test`, and
-truncate account/catalog tables between tests. The development database is
-never modified by the test suite.
+truncate account, catalog, cart and order tables between tests. The development
+database is never modified by the test suite.
 
 Coverage includes application startup, configuration and production security
 defaults, catalog models and constraints, catalog service queries, storefront
 pages, seeds, registration, password hashing, login/logout, CSRF, open-redirect
-prevention, inactive accounts, role-based access control and the admin CLI.
+prevention, inactive accounts, role-based access control, the admin CLI, cart
+constraints and concurrency behavior, checkout totals, price snapshots, stock
+deduction, transaction rollback, order ownership and order confirmation.
 
 ## Linting and formatting
 
@@ -284,9 +346,10 @@ Current revision chain in source:
 
 - `b93e6a5d9742` — catalog models
 - `5b9c540efff4` — users and role constraint
+- `f003cabb1f4f` — carts, cart items, orders and order items
 
-The M4 users migration is generated and reviewed; apply it through the normal
-controlled migration step after review.
+The M5 cart/orders migration is generated and reviewed; apply it through the
+normal controlled migration step after review.
 
 ## Production notes
 
@@ -309,6 +372,22 @@ controlled migration step after review.
    to Gunicorn on the loopback interface.
 6. Keep `.env`, database credentials and secret keys out of source control,
    logs and error responses.
+
+## Milestone 5 scope
+
+Implemented:
+
+- Persistent one-cart-per-user `Cart` and unique `CartItem` lines
+- `Order` and immutable `OrderItem` price snapshots with historical foreign keys
+- Atomic cart upserts, stock validation and cross-user isolation
+- Cart page, add-to-cart variant selection, quantity update and removal
+- Transactional checkout with server-calculated Decimal totals
+- Conditional atomic stock deduction and full rollback on failure
+- Flat `$12` shipping, free at `$200` subtotal
+- Owner-only order confirmation with status and payment state
+
+Not yet implemented: payment gateway, shipping provider, cancellation, stock
+restoration, order history, refunds and admin order management.
 
 ## Milestone 4 scope
 

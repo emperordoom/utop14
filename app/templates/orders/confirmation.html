@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+
+{% block title %}{{ order.order_number }} — UTOP14{% endblock %}
+
+{% block meta_description %}Your UTOP14 order confirmation and itemised summary.{% endblock %}
+
+{% block styles %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/cart.css') }}">
+{% endblock %}
+
+{% block body_class %}page-order{% endblock %}
+
+{% block content %}
+  <section class="section order-page" aria-labelledby="order-title">
+    <div class="container">
+      <header class="order-hero">
+        <p class="section-kicker">Order / Confirmed</p>
+        <h1 class="order-title" id="order-title">
+          Signal <em>locked in.</em>
+        </h1>
+        <p class="order-hero__meta">
+          {{ order.order_number }} · {{ order.created_at.strftime("%d %b %Y, %H:%M UTC") }}
+        </p>
+      </header>
+
+      <div class="order-layout">
+        <div class="order-items-panel">
+          <div class="order-panel__header">
+            <p class="mono">Order items</p>
+            <p class="mono">{{ order.item_count }} item{% if order.item_count != 1 %}s{% endif %}</p>
+          </div>
+
+          <ul class="order-items" role="list">
+            {% for item in order.items %}
+              <li class="order-line">
+                <div class="order-line__info">
+                  <p class="mono">{{ item.sku }}</p>
+                  <h2 class="order-line__title">{{ item.product_name }}</h2>
+                  <p class="order-line__meta">{{ item.size }} / {{ item.color }} × {{ item.quantity }}</p>
+                </div>
+                <div class="order-line__prices">
+                  <p class="order-line__unit">{{ item.unit_price|money }} each</p>
+                  <p class="order-line__total">{{ item.line_total|money }}</p>
+                </div>
+              </li>
+            {% endfor %}
+          </ul>
+        </div>
+
+        <aside class="order-summary" aria-labelledby="order-summary-title">
+          <div class="order-panel__header">
+            <p class="mono" id="order-summary-title">Order summary</p>
+            <p class="mono">{{ order.status|replace('_', ' ')|title }}</p>
+          </div>
+
+          <dl class="order-status">
+            <div>
+              <dt>Status</dt>
+              <dd>{{ order.status|replace('_', ' ')|title }}</dd>
+            </div>
+            <div>
+              <dt>Payment</dt>
+              <dd>{{ order.payment_status|replace('_', ' ')|title }}</dd>
+            </div>
+          </dl>
+
+          <dl class="checkout-totals">
+            <div>
+              <dt>Subtotal</dt>
+              <dd>{{ order.subtotal|money }}</dd>
+            </div>
+            <div>
+              <dt>Shipping</dt>
+              <dd>{% if order.shipping_cost == 0 %}Free{% else %}{{ order.shipping_cost|money }}{% endif %}</dd>
+            </div>
+            <div class="checkout-totals__grand">
+              <dt>Total</dt>
+              <dd>{{ order.total|money }}</dd>
+            </div>
+          </dl>
+
+          <div class="order-address">
+            <p class="mono">Ship to</p>
+            <p>{{ order.recipient_name }}</p>
+            <p>{{ order.shipping_address }}</p>
+            <p>{{ order.shipping_city }} {{ order.shipping_postal_code }}</p>
+            <p>{{ order.recipient_phone }}</p>
+          </div>
+
+          <p class="order-summary__note">
+            Stock has been deducted for this order. Payment collection and
+            shipping integrations are not part of this milestone.
+          </p>
+
+          <a class="button button--primary order-summary__action" href="{{ url_for('storefront.shop') }}">
+            Continue shopping
+            <span class="button__arrow" aria-hidden="true">→</span>
+          </a>
+          <a class="text-link order-summary__account" href="{{ url_for('auth.account') }}">Back to your account</a>
+        </aside>
+      </div>
+    </div>
+  </section>
+{% endblock %}

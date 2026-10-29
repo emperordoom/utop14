@@ -1,0 +1,195 @@
+{% extends "base.html" %}
+
+{% block title %}Checkout — UTOP14{% endblock %}
+
+{% block meta_description %}Enter your shipping details and place your UTOP14 Drop 014 order.{% endblock %}
+
+{% block styles %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/cart.css') }}">
+{% endblock %}
+
+{% block body_class %}page-checkout{% endblock %}
+
+{% block content %}
+  <section class="section checkout-page" aria-labelledby="checkout-title">
+    <div class="container">
+      <header class="checkout-header">
+        <div>
+          <p class="section-kicker">Checkout / Drop 014</p>
+          <h1 class="checkout-title" id="checkout-title">
+            Lock in the <em>signal.</em>
+          </h1>
+        </div>
+        <a class="text-link" href="{{ url_for('cart.view_cart') }}">
+          Back to cart
+          <span aria-hidden="true">↗</span>
+        </a>
+      </header>
+
+      <div class="checkout-layout">
+        <div class="checkout-panel">
+          <div class="checkout-panel__header">
+            <p class="mono">Shipping details</p>
+            <p class="mono">Step 02 / 02</p>
+          </div>
+
+          {% if checkout_error %}
+            <p class="cart-alert" role="alert">{{ checkout_error }}</p>
+          {% endif %}
+
+          <form class="checkout-form" method="post" action="{{ url_for('checkout.place_order') }}" novalidate>
+            {{ form.hidden_tag() }}
+
+            <div class="cart-form-field">
+              <label class="cart-label" for="recipient_name">Recipient name</label>
+              <input
+                class="cart-control{% if form.recipient_name.errors %} cart-control--invalid{% endif %}"
+                id="recipient_name"
+                name="recipient_name"
+                type="text"
+                value="{{ form.recipient_name.data or '' }}"
+                maxlength="120"
+                autocomplete="name"
+                required
+                {% if form.recipient_name.errors %}aria-invalid="true" aria-describedby="recipient-name-error"{% endif %}
+              >
+              {% if form.recipient_name.errors %}
+                <p class="cart-error" id="recipient-name-error">{{ form.recipient_name.errors[0] }}</p>
+              {% endif %}
+            </div>
+
+            <div class="cart-form-field">
+              <label class="cart-label" for="recipient_phone">Phone</label>
+              <input
+                class="cart-control{% if form.recipient_phone.errors %} cart-control--invalid{% endif %}"
+                id="recipient_phone"
+                name="recipient_phone"
+                type="tel"
+                value="{{ form.recipient_phone.data or '' }}"
+                maxlength="32"
+                autocomplete="tel"
+                required
+                {% if form.recipient_phone.errors %}aria-invalid="true" aria-describedby="recipient-phone-error"{% endif %}
+              >
+              {% if form.recipient_phone.errors %}
+                <p class="cart-error" id="recipient-phone-error">{{ form.recipient_phone.errors[0] }}</p>
+              {% endif %}
+            </div>
+
+            <div class="cart-form-field">
+              <label class="cart-label" for="shipping_address">Address</label>
+              <input
+                class="cart-control{% if form.shipping_address.errors %} cart-control--invalid{% endif %}"
+                id="shipping_address"
+                name="shipping_address"
+                type="text"
+                value="{{ form.shipping_address.data or '' }}"
+                maxlength="255"
+                autocomplete="street-address"
+                required
+                {% if form.shipping_address.errors %}aria-invalid="true" aria-describedby="shipping-address-error"{% endif %}
+              >
+              {% if form.shipping_address.errors %}
+                <p class="cart-error" id="shipping-address-error">{{ form.shipping_address.errors[0] }}</p>
+              {% endif %}
+            </div>
+
+            <div class="checkout-form__row">
+              <div class="cart-form-field">
+                <label class="cart-label" for="shipping_city">City</label>
+                <input
+                  class="cart-control{% if form.shipping_city.errors %} cart-control--invalid{% endif %}"
+                  id="shipping_city"
+                  name="shipping_city"
+                  type="text"
+                  value="{{ form.shipping_city.data or '' }}"
+                  maxlength="120"
+                  autocomplete="address-level2"
+                  required
+                  {% if form.shipping_city.errors %}aria-invalid="true" aria-describedby="shipping-city-error"{% endif %}
+                >
+                {% if form.shipping_city.errors %}
+                  <p class="cart-error" id="shipping-city-error">{{ form.shipping_city.errors[0] }}</p>
+                {% endif %}
+              </div>
+
+              <div class="cart-form-field">
+                <label class="cart-label" for="shipping_postal_code">Postal code</label>
+                <input
+                  class="cart-control{% if form.shipping_postal_code.errors %} cart-control--invalid{% endif %}"
+                  id="shipping_postal_code"
+                  name="shipping_postal_code"
+                  type="text"
+                  value="{{ form.shipping_postal_code.data or '' }}"
+                  maxlength="20"
+                  autocomplete="postal-code"
+                  required
+                  {% if form.shipping_postal_code.errors %}aria-invalid="true" aria-describedby="shipping-postal-error"{% endif %}
+                >
+                {% if form.shipping_postal_code.errors %}
+                  <p class="cart-error" id="shipping-postal-error">{{ form.shipping_postal_code.errors[0] }}</p>
+                {% endif %}
+              </div>
+            </div>
+
+            {% if has_unavailable %}
+              <p class="cart-alert" role="alert">
+                Some cart items are no longer available. <a href="{{ url_for('cart.view_cart') }}">Review your cart</a> before placing the order.
+              </p>
+              <button class="button button--ghost checkout-submit" type="button" disabled>Place order</button>
+            {% else %}
+              <button class="button button--primary checkout-submit" type="submit">
+                Place order
+                <span class="button__arrow" aria-hidden="true">→</span>
+              </button>
+            {% endif %}
+
+            <p class="checkout-panel__note">
+              Payment is not collected in this milestone. Your order will be
+              created as unpaid and stock will be deducted immediately.
+            </p>
+          </form>
+        </div>
+
+        <aside class="checkout-summary" aria-labelledby="checkout-summary-title">
+          <div class="checkout-summary__header">
+            <p class="mono" id="checkout-summary-title">Order summary</p>
+            <p class="mono">{{ cart.item_count }} item{% if cart.item_count != 1 %}s{% endif %}</p>
+          </div>
+
+          <ul class="checkout-lines" role="list">
+            {% for item in cart.items %}
+              <li class="checkout-line">
+                <div>
+                  <p class="checkout-line__name">{{ item.variant.product.name }}</p>
+                  <p class="checkout-line__meta">{{ item.variant.size }} / {{ item.variant.color }} × {{ item.quantity }}</p>
+                </div>
+                <p class="checkout-line__price">{{ item.line_total|money }}</p>
+              </li>
+            {% endfor %}
+          </ul>
+
+          <dl class="checkout-totals">
+            <div>
+              <dt>Subtotal</dt>
+              <dd>{{ totals.subtotal|money }}</dd>
+            </div>
+            <div>
+              <dt>Shipping</dt>
+              <dd>{% if totals.shipping_cost == 0 %}Free{% else %}{{ totals.shipping_cost|money }}{% endif %}</dd>
+            </div>
+            <div class="checkout-totals__grand">
+              <dt>Total</dt>
+              <dd>{{ totals.total|money }}</dd>
+            </div>
+          </dl>
+
+          <p class="checkout-summary__note">
+            All prices are calculated from the current catalog. Shipping is
+            free on orders over $200; otherwise a flat $12 applies.
+          </p>
+        </aside>
+      </div>
+    </div>
+  </section>
+{% endblock %}

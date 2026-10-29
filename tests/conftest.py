@@ -30,6 +30,10 @@ from app.models.user import ROLE_CUSTOMER
 PROJECT_ROOT: Final = Path(__file__).resolve().parents[1]
 MIGRATIONS_DIR: Final = PROJECT_ROOT / "migrations"
 RESET_TABLES: Final = (
+    "order_items",
+    "orders",
+    "cart_items",
+    "carts",
     "users",
     "product_images",
     "product_variants",
@@ -142,3 +146,32 @@ def csrf_token(client: FlaskClient) -> Callable[[str], str]:
         return match.group(1)
 
     return _csrf_token
+
+
+@pytest.fixture()
+def login(
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+) -> Callable[..., object]:
+    """Log the test client in as an existing account."""
+
+    def _login(
+        email: str,
+        password: str = "ValidPass123",
+        *,
+        follow_redirects: bool = False,
+    ) -> object:
+        response = client.post(
+            "/auth/login",
+            data={
+                "csrf_token": csrf_token("/auth/login"),
+                "email": email,
+                "password": password,
+            },
+            follow_redirects=follow_redirects,
+        )
+        if response.status_code != 302:
+            raise AssertionError(f"Login failed for {email}: {response.status_code}")
+        return response
+
+    return _login

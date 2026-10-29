@@ -64,13 +64,19 @@ def _register_blueprints(app: Flask) -> None:
     """Register application blueprints."""
     from app.admin import admin_bp
     from app.auth import auth_bp
+    from app.cart import cart_bp
+    from app.checkout import checkout_bp
     from app.main import main_bp
+    from app.orders import orders_bp
     from app.storefront import storefront_bp
 
     app.register_blueprint(main_bp)
     app.register_blueprint(storefront_bp)
     app.register_blueprint(auth_bp)
     app.register_blueprint(admin_bp)
+    app.register_blueprint(cart_bp)
+    app.register_blueprint(checkout_bp)
+    app.register_blueprint(orders_bp)
 
 
 def _register_models() -> None:
