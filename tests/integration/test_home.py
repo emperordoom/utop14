@@ -7,6 +7,8 @@ import re
 from flask import Flask
 from flask.testing import FlaskClient
 
+from app.catalog.seed import SeedSummary
+
 
 def test_homepage_returns_server_rendered_html(client: FlaskClient) -> None:
     response = client.get("/")
@@ -46,7 +48,10 @@ def test_homepage_contains_all_major_sections(client: FlaskClient) -> None:
         assert heading in html
 
 
-def test_homepage_presents_featured_products_and_prices(client: FlaskClient) -> None:
+def test_homepage_presents_featured_products_and_prices(
+    client: FlaskClient,
+    seeded_catalog: SeedSummary,
+) -> None:
     html = client.get("/").get_data(as_text=True)
 
     for product in ("Void Tee", "Signal Hoodie", "Utility Pant", "Orbit Cap"):
@@ -82,7 +87,10 @@ def test_homepage_uses_only_local_assets(client: FlaskClient) -> None:
         assert response.status_code == 200, f"Missing static asset: {asset}"
 
 
-def test_homepage_references_expected_assets(client: FlaskClient) -> None:
+def test_homepage_references_expected_assets(
+    client: FlaskClient,
+    seeded_catalog: SeedSummary,
+) -> None:
     html = client.get("/").get_data(as_text=True)
 
     expected = (

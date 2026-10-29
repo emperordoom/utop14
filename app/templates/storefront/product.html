@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+
+{% block title %}{{ product.name }} — UTOP14{% endblock %}
+
+{% block meta_description %}{{ product.description|truncate(155) }}{% endblock %}
+
+{% block styles %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/catalog.css') }}">
+{% endblock %}
+
+{% block body_class %}page-product{% endblock %}
+
+{% block content %}
+  <div class="container">
+    <nav class="breadcrumb" aria-label="Breadcrumb">
+      <ol class="breadcrumb__list" role="list">
+        <li><a href="{{ url_for('storefront.home') }}">Home</a></li>
+        <li><a href="{{ url_for('storefront.shop') }}">Shop</a></li>
+        <li><a href="{{ url_for('storefront.shop', category=product.category.slug) }}">{{ product.category.name }}</a></li>
+        <li aria-current="page">{{ product.name }}</li>
+      </ol>
+    </nav>
+  </div>
+
+  <section class="section product-detail" aria-labelledby="product-title">
+    <div class="container product-detail__grid">
+      <div class="product-gallery">
+        {% set display_image = product.images[0].image_path if product.images else product.image_path %}
+        <figure class="product-gallery__main">
+          <img
+            src="{{ url_for('static', filename=display_image) }}"
+            alt="{{ product.images[0].alt_text if product.images else product.image_alt }}"
+            width="900"
+            height="1125"
+            fetchpriority="high"
+            decoding="async"
+          >
+          {% if product.badge %}
+            <figcaption class="product-gallery__badge">{{ product.badge }}</figcaption>
+          {% endif %}
+        </figure>
+        {% if product.images|length > 1 %}
+          <ul class="product-gallery__thumbs" role="list">
+            {% for image in product.images %}
+              <li>
+                <img
+                  src="{{ url_for('static', filename=image.image_path) }}"
+                  alt="{{ image.alt_text }}"
+                  width="180"
+                  height="225"
+                  loading="lazy"
+                  decoding="async"
+                >
+              </li>
+            {% endfor %}
+          </ul>
+        {% endif %}
+      </div>
+
+      <div class="product-info">
+        <p class="section-kicker">{{ product.category.name }} / Drop 014</p>
+        <h1 class="product-info__title" id="product-title">{{ product.name }}</h1>
+        <p class="product-info__price">{{ product.price|money }}</p>
+        <p class="product-info__description">{{ product.description }}</p>
+
+        <div class="product-info__stock">
+          <span class="product-info__stock-dot{% if product.is_in_stock %} product-info__stock-dot--live{% endif %}" aria-hidden="true"></span>
+          {% if product.is_in_stock %}
+            In stock and ready to ship
+          {% else %}
+            Sold out for this drop
+          {% endif %}
+        </div>
+
+        <section class="variant-panel" aria-labelledby="variants-title">
+          <div class="variant-panel__header">
+            <h2 class="variant-panel__title" id="variants-title">Sizes &amp; colours</h2>
+            <p class="mono">{{ product.available_variants|length }} combinations</p>
+          </div>
+          {% if product.available_variants %}
+            <ul class="variant-list" role="list">
+              {% for variant in product.available_variants %}
+                <li class="variant-list__item{% if variant.stock == 0 %} variant-list__item--sold-out{% endif %}">
+                  <span class="variant-list__size">{{ variant.size }}</span>
+                  <span class="variant-list__color">{{ variant.color }}</span>
+                  <span class="variant-list__sku mono">{{ variant.sku }}</span>
+                  {% if variant.stock > 0 %}
+                    <span class="variant-list__stock">{{ variant.stock }} in stock</span>
+                  {% else %}
+                    <span class="variant-list__stock variant-list__stock--out">Sold out</span>
+                  {% endif %}
+                </li>
+              {% endfor %}
+            </ul>
+          {% else %}
+            <p class="variant-panel__empty">No variants are available right now.</p>
+          {% endif %}
+        </section>
+
+        <dl class="product-specs">
+          <div>
+            <dt>Collection</dt>
+            <dd>After Hours / AW26</dd>
+          </div>
+          <div>
+            <dt>Release</dt>
+            <dd>Drop 014 / Limited run</dd>
+          </div>
+          <div>
+            <dt>Care</dt>
+            <dd>Cold wash / Dry flat</dd>
+          </div>
+        </dl>
+
+        <p class="product-info__note">
+          Cart and checkout arrive in the next milestone. For now, use the
+          catalog to find your size and colour.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  {% if related_products %}
+    <section class="section related" aria-labelledby="related-title">
+      <div class="container">
+        <div class="section-heading section-heading--split">
+          <div>
+            <p class="section-kicker">More from {{ product.category.name }}</p>
+            <h2 class="section-title" id="related-title">Keep the <em>signal.</em></h2>
+          </div>
+          <a class="text-link" href="{{ url_for('storefront.shop', category=product.category.slug) }}">
+            Shop {{ product.category.name }}
+            <span aria-hidden="true">↗</span>
+          </a>
+        </div>
+        <ul class="product-grid" role="list">
+          {% for related in related_products %}
+            {% with product = related, item_index = loop.index %}
+              {% include "components/product-card.html" %}
+            {% endwith %}
+          {% endfor %}
+        </ul>
+      </div>
+    </section>
+  {% endif %}
+{% endblock %}

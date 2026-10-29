@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from importlib import import_module
 from typing import Any
 
-from flask import Flask
+from flask import Flask, render_template
 
 from app.config import get_config, load_environment, validate_config
 from app.extensions import csrf, db, login_manager, migrate
@@ -54,6 +54,8 @@ def create_app(
 
     _register_blueprints(app)
     _register_models()
+    _register_cli(app)
+    _register_error_handlers(app)
 
     return app
 
@@ -75,3 +77,19 @@ def _register_models() -> None:
     avoiding automatic table creation at application startup.
     """
     import_module("app.models")
+
+
+def _register_cli(app: Flask) -> None:
+    """Attach maintenance commands without importing them at module load time."""
+    from app.cli import catalog_cli
+
+    app.cli.add_command(catalog_cli)
+
+
+def _register_error_handlers(app: Flask) -> None:
+    """Render public errors with the storefront shell instead of Flask's default."""
+
+    def not_found(_error: Exception) -> tuple[str, int]:
+        return render_template("errors/404.html"), 404
+
+    app.register_error_handler(404, not_found)

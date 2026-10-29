@@ -1,10 +1,11 @@
+{% set card_image = product.primary_image.image_path if product.primary_image else product.image_path %}
 <li class="product-card">
-  <a class="product-card__media" href="{{ url_for('storefront.home', _anchor='featured') }}" aria-label="View {{ product.name }}">
+  <a class="product-card__media" href="{{ url_for('storefront.product_detail', slug=product.slug) }}" aria-label="View {{ product.name }}">
     {% if product.badge %}
       <span class="product-card__badge">{{ product.badge }}</span>
     {% endif %}
     <img
-      src="{{ url_for('static', filename=product.image) }}"
+      src="{{ url_for('static', filename=card_image) }}"
       alt="{{ product.image_alt }}"
       width="900"
       height="1125"
@@ -15,8 +16,8 @@
   </a>
   <div class="product-card__info">
     <div>
-      <h3><a href="{{ url_for('storefront.home', _anchor='featured') }}">{{ product.name }}</a></h3>
-      <p class="product-card__meta">{{ product.category }} / {{ product.colour }}</p>
+      <h3><a href="{{ url_for('storefront.product_detail', slug=product.slug) }}">{{ product.name }}</a></h3>
+      <p class="product-card__meta">{{ product.category.name }} / {{ product.colour_label }}</p>
     </div>
     <p class="product-card__price">{{ product.price|money }}</p>
   </div>

@@ -1,5 +1,5 @@
 <li class="category-card">
-  <a class="category-card__link" href="{{ category.href }}">
+  <a class="category-card__link" href="{{ url_for('storefront.shop', category=category.slug) }}">
     <span class="category-card__number mono" aria-hidden="true">{{ "%02d"|format(item_index) }}</span>
     <img
       class="category-card__icon"

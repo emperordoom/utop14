@@ -25,7 +25,7 @@
           runs for people who dress for themselves.
         </p>
         <div class="hero__actions">
-          <a class="button button--primary" href="#featured">
+          <a class="button button--primary" href="{{ url_for('storefront.shop') }}">
             Shop the drop
             <span class="button__arrow" aria-hidden="true">→</span>
           </a>
@@ -89,7 +89,7 @@
       </div>
 
       <article class="collection-card">
-        <a class="collection-card__media" href="#featured" aria-label="Shop the After Hours collection">
+        <a class="collection-card__media" href="{{ url_for('storefront.shop') }}" aria-label="Shop the After Hours collection">
           <img
             src="{{ url_for('static', filename=collection.image) }}"
             alt="{{ collection.image_alt }}"
@@ -109,7 +109,7 @@
               <li>{{ detail }}</li>
             {% endfor %}
           </ul>
-          <a class="button button--light" href="#featured">
+          <a class="button button--light" href="{{ url_for('storefront.shop') }}">
             View the collection
             <span class="button__arrow" aria-hidden="true">→</span>
           </a>
@@ -128,8 +128,8 @@
             <em>One signal.</em>
           </h2>
         </div>
-        <a class="text-link" href="#categories">
-          Shop all categories
+        <a class="text-link" href="{{ url_for('storefront.shop') }}">
+          Shop all pieces
           <span aria-hidden="true">↗</span>
         </a>
       </div>
