@@ -2,9 +2,11 @@
 
 UTOP14 is a streetwear e-commerce platform built for Well Architected SOC 14.
 
-**Current milestone:** Milestone 1 — Flask foundation only. Authentication,
-catalog, cart, checkout, orders and admin features are intentionally not
-implemented yet.
+**Current milestone:** Milestone 4 — authentication and role-based access
+control. The storefront and catalog are database-backed (M3). Accounts support
+customer, operator and admin roles, CSRF-protected registration/login/logout,
+and server-side protected staff pages. Cart, checkout, orders and admin
+inventory write tools are intentionally not implemented yet.
 
 ## Technology
 
@@ -26,13 +28,24 @@ utop14/
 │   ├── config.py            # environment configuration and validation
 │   ├── extensions.py        # SQLAlchemy, Migrate, Login, CSRF instances
 │   ├── main/                # main blueprint and public routes
+│   ├── storefront/          # storefront blueprint and presentation helpers
+│   ├── auth/                # registration, login, logout, account, RBAC
+│   ├── admin/               # protected admin and operator dashboards
+│   ├── catalog/             # deterministic launch catalog seed
+│   ├── services/            # catalog and dashboard read models
 │   ├── models/              # model registry imported by Alembic
-│   ├── static/              # CSS, JavaScript and images
-│   └── templates/           # Jinja2 templates
-├── migrations/              # Flask-Migrate/Alembic scaffold
+│   ├── static/              # CSS, JavaScript, local SVG art and fonts
+│   └── templates/
+│       ├── base.html        # shared page layout
+│       ├── components/      # navigation, footer and card partials
+│       ├── auth/            # login, registration and account pages
+│       ├── admin/           # staff dashboards
+│       ├── errors/          # branded 403 and 404 pages
+│       └── storefront/      # home, shop and product templates
+├── migrations/              # Flask-Migrate/Alembic scaffold and revisions
 ├── tests/
-│   ├── integration/         # endpoint tests
-│   └── unit/                # configuration and factory tests
+│   ├── integration/         # endpoint, model, service and RBAC tests
+│   └── unit/                # configuration, factory and helper tests
 ├── instance/                # local instance data (not committed)
 ├── run.py                   # development entry point
 ├── wsgi.py                  # WSGI entry point (wsgi:app)
@@ -112,7 +125,7 @@ environment take precedence. `.env` is ignored by Git.
 | `FLASK_DEBUG` | No | Development debug toggle; defaults to `1` in development |
 | `FLASK_RUN_HOST` | No | `run.py` bind address; defaults to `127.0.0.1` |
 | `FLASK_RUN_PORT` | No | `run.py` port; defaults to `5000` |
-| `TEST_DATABASE_URL` | No | Optional isolated database for future DB-backed tests |
+| `TEST_DATABASE_URL` | No | Optional isolated PostgreSQL database for tests; must end in `_test` |
 | `TEST_SECRET_KEY` | No | Optional test-only secret override |
 
 Startup validation fails with a clear `ConfigurationError` when `SECRET_KEY`
@@ -144,6 +157,8 @@ Alternatively use the Flask CLI and WSGI entry point:
 flask --app wsgi run --debug
 ```
 
+Open the storefront homepage at <http://127.0.0.1:5000/>.
+
 Check the health endpoint:
 
 ```bash
@@ -154,16 +169,88 @@ curl http://127.0.0.1:5000/health
 The health endpoint is a liveness check only. It does not query the database
 or expose configuration, credentials, versions or environment details.
 
+## Storefront and catalog
+
+`GET /` is served by the `storefront.home` endpoint from
+`app/templates/storefront/home.html`. Products and categories are loaded from
+PostgreSQL through `app.services.catalog`; `GET /shop` supports `category`,
+`size`, `color` and `q` filters, and `GET /product/<slug>` renders variants,
+stock state, gallery images and related pieces.
+
+Editorial campaign copy and the shared `money` filter live in
+`app/storefront/content.py`. Product prices are stored as PostgreSQL
+`NUMERIC(12,2)` values and handled as `Decimal` in application code.
+
+Design assets are stored locally:
+
+- CSS: `tokens.css`, `base.css`, `components.css`, `home.css`, `catalog.css`,
+  `auth.css`
+- JavaScript: `nav.js` for progressive mobile-navigation enhancement
+- Fonts: Archivo, Instrument Serif and Space Mono (self-hosted, OFL licensed)
+- Original SVG artwork and favicon under `app/static/images/`
+
+The page remains usable without JavaScript, with the menu visible. When
+JavaScript is available, the disclosure toggle maintains `aria-expanded`, closes
+on Escape, outside interaction or link activation, and resets at desktop width.
+No external CDN, frontend framework or hotlinked image is used.
+
+## Authentication and RBAC
+
+Accounts use Flask-Login, Flask-WTF CSRF protection and Werkzeug password
+hashing. The supported roles are:
+
+| Role | Access |
+| --- | --- |
+| `customer` | Own account and public storefront |
+| `operator` | Operator console plus customer access |
+| `admin` | Admin dashboard plus all lower-level access |
+
+Public authentication routes:
+
+- `GET/POST /auth/register` — customer self-registration; the server always
+  assigns the `customer` role.
+- `GET/POST /auth/login` — session login with a safe local `next` redirect.
+- `POST /auth/logout` — CSRF-protected logout.
+- `GET /auth/account` — signed-in account details.
+
+Protected staff routes:
+
+- `GET /ops` — operator and admin only.
+- `GET /admin` — admin only.
+
+Authorization is enforced by the `role_required()` decorator in
+`app/auth/permissions.py`; hiding navigation links is not relied upon for
+security. Unauthenticated users are redirected to login, while authenticated
+users without sufficient access receive a branded HTTP 403 page.
+
+### Provisioning the initial admin
+
+Privileged accounts are never created through public registration. Provision
+the initial admin interactively:
+
+```bash
+flask --app wsgi users create-admin
+```
+
+The command prompts for email, full name and password with hidden password
+input, refuses a duplicate email or a second admin, and never prints the
+password. There is no public admin-registration endpoint.
+
 ## Tests
 
 ```bash
 pytest
 ```
 
-The current tests cover application startup, extension initialization,
-configuration validation, production security defaults, model discovery for
-migrations, and the health endpoint. They use deterministic test settings and
-do not require a running PostgreSQL server yet.
+The suite runs against PostgreSQL `utop14_test`. Fixtures apply the committed
+Alembic migrations, reject any database whose name does not end in `_test`, and
+truncate account/catalog tables between tests. The development database is
+never modified by the test suite.
+
+Coverage includes application startup, configuration and production security
+defaults, catalog models and constraints, catalog service queries, storefront
+pages, seeds, registration, password hashing, login/logout, CSRF, open-redirect
+prevention, inactive accounts, role-based access control and the admin CLI.
 
 ## Linting and formatting
 
@@ -193,6 +280,14 @@ Always review generated migration files before applying them. Do not run
 destructive migration commands against production data without a backup and
 explicit approval.
 
+Current revision chain in source:
+
+- `b93e6a5d9742` — catalog models
+- `5b9c540efff4` — users and role constraint
+
+The M4 users migration is generated and reviewed; apply it through the normal
+controlled migration step after review.
+
 ## Production notes
 
 1. Set `APP_ENV=production` and provide a strong `SECRET_KEY` and the
@@ -214,6 +309,54 @@ explicit approval.
    to Gunicorn on the loopback interface.
 6. Keep `.env`, database credentials and secret keys out of source control,
    logs and error responses.
+
+## Milestone 4 scope
+
+Implemented:
+
+- `User` model with normalized unique email, Werkzeug password hash, role,
+  active flag, timestamps and nullable last-login timestamp
+- Database role check constraint for `customer`, `operator` and `admin`
+- Registration, login, logout and account pages with CSRF protection
+- Server-assigned customer role; no client role escalation on registration
+- Safe local `next` redirect handling and session clearing on authentication
+- Inactive-account rejection and session invalidation
+- Server-side `role_required()` decorator with customer/operator/admin hierarchy
+- Admin-only `/admin` dashboard and operator-level `/ops` console
+- Branded HTTP 403 page
+- Interactive `flask --app wsgi users create-admin` bootstrap command
+- Authentication, RBAC, CSRF, open-redirect and CLI tests
+
+Not yet implemented: admin product/inventory CRUD, customer cart, checkout,
+orders, rate limiting and password reset.
+
+## Milestone 3 scope
+
+Implemented:
+
+- PostgreSQL catalog models: Category, Product, ProductVariant, ProductImage
+- Database-backed homepage, shop listing, filtering and product detail pages
+- Idempotent `flask --app wsgi catalog seed` launch catalog
+- Catalog constraints, indexes, foreign-key behavior and image-path validation
+- Initial catalog Alembic migration and PostgreSQL-backed catalog tests
+
+## Milestone 2 scope
+
+Implemented:
+
+- Storefront blueprint with `GET /` served by `storefront.home`
+- Responsive editorial homepage with hero, featured collection, product grid,
+  category showcase, brand statement and footer
+- Frozen mock content dataclasses with `Decimal` prices
+- Original local SVG artwork and self-hosted fonts; no external CDNs or
+  frontend frameworks
+- Responsive CSS with accessible focus states and reduced-motion support
+- Progressive-enhancement mobile navigation in `nav.js`
+- Unit and integration tests for homepage content, routes and static assets
+
+Not yet implemented: database-backed products and categories, product detail
+pages, authentication, cart, checkout, order history and admin inventory
+management.
 
 ## Milestone 1 scope
 

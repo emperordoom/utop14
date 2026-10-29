@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+
+{% block title %}Admin dashboard — UTOP14{% endblock %}
+
+{% block meta_description %}Read-only UTOP14 administration overview for catalog and account counts.{% endblock %}
+
+{% block styles %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/auth.css') }}">
+{% endblock %}
+
+{% block body_class %}page-admin{% endblock %}
+
+{% block content %}
+  <section class="staff-hero" aria-labelledby="admin-title">
+    <div class="container">
+      <p class="section-kicker">Admin / Control room</p>
+      <h1 class="staff-hero__title" id="admin-title">
+        Drop 014 <em>control.</em>
+      </h1>
+      <p class="staff-hero__copy">
+        A read-only view of the catalog and account base. Product and inventory
+        write tools arrive in a later milestone.
+      </p>
+      <div class="staff-hero__actions">
+        <a class="button button--primary" href="{{ url_for('storefront.shop') }}">
+          View storefront
+          <span class="button__arrow" aria-hidden="true">→</span>
+        </a>
+        <a class="button button--ghost" href="{{ url_for('admin.operations') }}">Operator console</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="section staff-section" aria-labelledby="catalog-stats-title">
+    <div class="container">
+      <div class="section-heading">
+        <p class="section-kicker">01 / Catalog</p>
+        <h2 class="section-title" id="catalog-stats-title">Inventory <em>snapshot.</em></h2>
+      </div>
+
+      <div class="stat-grid">
+        <article class="stat-card">
+          <p class="stat-card__label">Categories</p>
+          <p class="stat-card__value">{{ stats.categories }}</p>
+        </article>
+        <article class="stat-card">
+          <p class="stat-card__label">Products</p>
+          <p class="stat-card__value stat-card__value--acid">{{ stats.products }}</p>
+        </article>
+        <article class="stat-card">
+          <p class="stat-card__label">Variants</p>
+          <p class="stat-card__value">{{ stats.variants }}</p>
+        </article>
+        <article class="stat-card">
+          <p class="stat-card__label">Accounts</p>
+          <p class="stat-card__value">{{ stats.users }}</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="section staff-section" aria-labelledby="account-stats-title">
+    <div class="container">
+      <div class="section-heading">
+        <p class="section-kicker">02 / Access</p>
+        <h2 class="section-title" id="account-stats-title">Role <em>distribution.</em></h2>
+      </div>
+
+      <div class="role-grid">
+        <article class="role-row">
+          <p class="stat-card__label">Customers</p>
+          <p class="stat-card__value">{{ stats.customers }}</p>
+        </article>
+        <article class="role-row">
+          <p class="stat-card__label">Operators</p>
+          <p class="stat-card__value">{{ stats.operators }}</p>
+        </article>
+        <article class="role-row">
+          <p class="stat-card__label">Admins</p>
+          <p class="stat-card__value stat-card__value--acid">{{ stats.admins }}</p>
+        </article>
+      </div>
+
+      <div class="staff-panel">
+        <div class="staff-panel__header">
+          <p class="mono">Milestone note</p>
+          <p class="mono">Read-only</p>
+        </div>
+        <div class="staff-panel__body">
+          <p>
+            This dashboard is protected by server-side role checks. It exposes
+            aggregate counts only; no customer password material or personal
+            account records are rendered here.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+{% endblock %}

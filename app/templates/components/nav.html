@@ -1,0 +1,51 @@
+<header class="site-header">
+  <div class="site-header__inner container">
+    <a class="brand" href="{{ url_for('storefront.home') }}" aria-label="UTOP14 home">
+      <span class="brand__word">UTOP14</span>
+      <span class="brand__mark" aria-hidden="true"></span>
+    </a>
+
+    <nav class="site-nav" aria-label="Primary" data-nav>
+      <button
+        class="site-nav__toggle"
+        type="button"
+        aria-expanded="false"
+        aria-controls="primary-menu"
+        aria-label="Open menu"
+        data-nav-toggle
+        hidden
+      >
+        <span class="site-nav__toggle-label">Menu</span>
+        <span class="site-nav__toggle-icon" aria-hidden="true"></span>
+      </button>
+      <ul class="site-nav__menu" id="primary-menu">
+        <li><a class="site-nav__link" href="{{ url_for('storefront.shop') }}">Shop</a></li>
+        <li><a class="site-nav__link" href="{{ url_for('storefront.home', _anchor='collection') }}">Collection</a></li>
+        <li><a class="site-nav__link" href="{{ url_for('storefront.home', _anchor='categories') }}">Categories</a></li>
+        <li><a class="site-nav__link" href="{{ url_for('storefront.home', _anchor='about') }}">About</a></li>
+        {% if current_user.is_authenticated %}
+          {% if current_user.is_admin %}
+            <li><a class="site-nav__link" href="{{ url_for('admin.dashboard') }}">Admin</a></li>
+          {% elif current_user.is_operator %}
+            <li><a class="site-nav__link" href="{{ url_for('admin.operations') }}">Ops</a></li>
+          {% endif %}
+          <li><a class="site-nav__link" href="{{ url_for('auth.account') }}">Account</a></li>
+          <li>
+            <form class="site-nav__form" method="post" action="{{ url_for('auth.logout') }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button class="site-nav__link site-nav__link--button" type="submit">Log out</button>
+            </form>
+          </li>
+        {% else %}
+          <li><a class="site-nav__link" href="{{ url_for('auth.login') }}">Sign in</a></li>
+          <li><a class="site-nav__link" href="{{ url_for('auth.register') }}">Join</a></li>
+        {% endif %}
+      </ul>
+    </nav>
+
+    <a class="header-cta" href="{{ url_for('storefront.shop') }}">
+      <span>Drop 014</span>
+      <span aria-hidden="true">↗</span>
+    </a>
+  </div>
+</header>

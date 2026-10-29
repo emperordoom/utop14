@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="1125" viewBox="0 0 900 1125">
+  <defs>
+    <linearGradient id="tee-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#191920"/>
+      <stop offset="0.55" stop-color="#151518"/>
+      <stop offset="1" stop-color="#111115"/>
+    </linearGradient>
+    <radialGradient id="tee-glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#a3e635" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#a3e635" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="tee-grain">
+      <feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="3" stitchTiles="stitch"/>
+      <feColorMatrix type="saturate" values="0"/>
+    </filter>
+    <path id="tee-shape" d="M 350 270 C 330 274 312 284 298 296 L 132 460 C 123 469 124 483 134 490 L 226 552 C 236 559 250 557 258 548 L 300 500 L 296 850 C 296 868 310 882 328 884 C 380 890 520 890 572 884 C 590 882 604 868 604 850 L 600 500 L 642 548 C 650 557 664 559 674 552 L 766 490 C 776 483 777 469 768 460 L 602 296 C 588 284 570 274 550 270 L 514 266 C 502 306 478 324 450 324 C 422 324 398 306 386 266 Z"/>
+    <clipPath id="tee-clip">
+      <use href="#tee-shape"/>
+    </clipPath>
+  </defs>
+
+  <rect width="900" height="1125" fill="url(#tee-bg)"/>
+  <ellipse cx="700" cy="240" rx="360" ry="320" fill="url(#tee-glow)"/>
+
+  <g stroke="#303036" stroke-opacity="0.35">
+    <path d="M 0 190 H 900"/>
+    <path d="M 0 990 H 900"/>
+    <path d="M 70 0 V 1125"/>
+    <path d="M 830 0 V 1125"/>
+  </g>
+
+  <g fill="none" stroke="#3c3c44" stroke-width="1" opacity="0.55">
+    <circle cx="450" cy="590" r="296"/>
+    <path d="M 450 280 V 900"/>
+  </g>
+
+  <ellipse cx="450" cy="920" rx="250" ry="22" fill="#000000" opacity="0.5"/>
+
+  <use href="#tee-shape" fill="#1b1b21"/>
+  <g clip-path="url(#tee-clip)">
+    <ellipse cx="330" cy="520" rx="160" ry="230" fill="#24242b" opacity="0.45"/>
+    <ellipse cx="566" cy="740" rx="180" ry="160" fill="#232329" opacity="0.4"/>
+    <ellipse cx="450" cy="858" rx="230" ry="64" fill="#2a2a32" opacity="0.35"/>
+    <path d="M 250 610 Q 380 650 520 610 T 700 630" fill="none" stroke="#2f2f38" stroke-width="3" opacity="0.5"/>
+    <path d="M 270 760 Q 400 790 540 760 T 700 780" fill="none" stroke="#2f2f38" stroke-width="2" opacity="0.4"/>
+    <path d="M 300 470 Q 360 500 420 480" fill="none" stroke="#33333c" stroke-width="2" opacity="0.5"/>
+    <path d="M 500 500 Q 560 520 610 490" fill="none" stroke="#33333c" stroke-width="2" opacity="0.5"/>
+  </g>
+  <use href="#tee-shape" fill="none" stroke="#3a3a43" stroke-width="2"/>
+
+  <path d="M 386 266 C 398 306 422 324 450 324 C 478 324 502 306 514 266" fill="none" stroke="#3d3d46" stroke-width="9" stroke-linecap="round"/>
+  <path d="M 394 276 C 406 308 424 320 450 320 C 476 320 494 308 506 276" fill="none" stroke="#0f0f12" stroke-width="2" opacity="0.8"/>
+
+  <g clip-path="url(#tee-clip)">
+    <path d="M 296 690 C 336 712 372 720 402 722" fill="none" stroke="#2c2c34" stroke-width="2"/>
+    <path d="M 604 690 C 564 712 528 720 498 722" fill="none" stroke="#2c2c34" stroke-width="2"/>
+    <path d="M 306 830 C 380 845 520 845 594 830" fill="none" stroke="#303039" stroke-width="2" opacity="0.8"/>
+    <path d="M 158 468 C 194 490 226 508 252 520" fill="none" stroke="#2d2d35" stroke-width="2"/>
+    <path d="M 742 468 C 706 490 674 508 648 520" fill="none" stroke="#2d2d35" stroke-width="2"/>
+    <path d="M 296 858 H 604" stroke="#34343d" stroke-width="1.4" opacity="0.7"/>
+  </g>
+
+  <g>
+    <rect x="402" y="432" width="96" height="27" fill="#a3e635"/>
+    <text x="450" y="451" font-family="Archivo, Arial, sans-serif" font-size="10" font-weight="700" letter-spacing="2.4" fill="#0b0b0d" text-anchor="middle">UTOP14</text>
+    <path d="M 424 472 H 476" stroke="#a3e635" stroke-width="2"/>
+  </g>
+
+  <g font-family="'Space Mono', 'Courier New', monospace" fill="#a3a3a3">
+    <text x="60" y="70" font-family="Archivo, Arial, sans-serif" font-size="20" font-weight="800" letter-spacing="4" fill="#f4f1ea">UTOP14</text>
+    <text x="840" y="70" font-size="10" letter-spacing="3" text-anchor="end" fill="#a3e635">014</text>
+    <text x="60" y="1060" font-size="9" letter-spacing="2.5">VOID TEE / WASHED BLACK</text>
+    <text x="840" y="1060" font-size="9" letter-spacing="2.5" text-anchor="end" opacity="0.7">STUDIO 01</text>
+  </g>
+
+  <g stroke="#a3e635" stroke-opacity="0.55" stroke-width="1.5">
+    <path d="M 36 60 V 36 H 60"/>
+    <path d="M 864 60 V 36 H 840"/>
+  </g>
+
+  <rect width="900" height="1125" filter="url(#tee-grain)" opacity="0.08" style="mix-blend-mode:overlay"/>
+</svg>

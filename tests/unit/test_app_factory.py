@@ -29,6 +29,28 @@ def test_main_blueprint_is_registered(app: Flask) -> None:
     assert endpoint == "main.health"
 
 
+def test_storefront_blueprint_is_registered(app: Flask) -> None:
+    assert "storefront" in app.blueprints
+    endpoint, _ = app.url_map.bind("").match("/", method="GET")
+    assert endpoint == "storefront.home"
+
+
+def test_auth_and_admin_blueprints_are_registered(app: Flask) -> None:
+    assert "auth" in app.blueprints
+    assert "admin" in app.blueprints
+
+    login_endpoint, _ = app.url_map.bind("").match("/auth/login", method="GET")
+    admin_endpoint, _ = app.url_map.bind("").match("/admin", method="GET")
+    assert login_endpoint == "auth.login"
+    assert admin_endpoint == "admin.dashboard"
+    assert app.login_manager.login_view == "auth.login"
+
+
+def test_user_cli_group_is_registered(app: Flask) -> None:
+    assert "users" in app.cli.commands
+    assert "catalog" in app.cli.commands
+
+
 def test_models_package_is_imported_for_migrations(app: Flask) -> None:
     assert "app.models" in sys.modules
     assert app.extensions["migrate"].db.metadata is db.metadata

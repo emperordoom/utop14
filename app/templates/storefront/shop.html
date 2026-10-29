@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+
+{% block title %}Shop — UTOP14{% endblock %}
+
+{% block meta_description %}Shop Drop 014 from UTOP14: heavyweight tees, hoodies, pants and accessories built in limited runs for the after-hours.{% endblock %}
+
+{% block styles %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/catalog.css') }}">
+{% endblock %}
+
+{% block body_class %}page-catalog{% endblock %}
+
+{% block content %}
+  <section class="catalog-hero" aria-labelledby="catalog-title">
+    <div class="container catalog-hero__inner">
+      <p class="section-kicker">Drop 014 / Catalog</p>
+      <h1 class="catalog-hero__title" id="catalog-title">
+        Shop the <em>signal.</em>
+      </h1>
+      <p class="catalog-hero__copy">
+        Every piece is cut in a limited run. Filter by category, size or colour
+        to find the shape that fits the version of you that exists after dark.
+      </p>
+    </div>
+  </section>
+
+  <section class="section catalog" aria-label="Catalog results">
+    <div class="container catalog__layout">
+      <aside class="filter-panel" aria-labelledby="filter-title">
+        <div class="filter-panel__header">
+          <h2 class="filter-panel__title" id="filter-title">Filter</h2>
+          {% if page.filters.active_count %}
+            <a class="filter-panel__clear" href="{{ url_for('storefront.shop') }}">Clear all</a>
+          {% endif %}
+        </div>
+
+        <form class="filter-form" method="get" action="{{ url_for('storefront.shop') }}">
+          <div class="filter-group">
+            <label class="filter-label" for="filter-q">Search</label>
+            <input
+              class="filter-control"
+              id="filter-q"
+              name="q"
+              type="search"
+              maxlength="80"
+              value="{{ page.filters.q or '' }}"
+              placeholder="Tee, hoodie, signal…"
+              autocomplete="off"
+            >
+          </div>
+
+          <div class="filter-group">
+            <label class="filter-label" for="filter-category">Category</label>
+            <select class="filter-control" id="filter-category" name="category">
+              <option value="">All categories</option>
+              {% for category in page.categories %}
+                <option value="{{ category.slug }}"{% if page.filters.category == category.slug %} selected{% endif %}>
+                  {{ category.name }}
+                </option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <div class="filter-group">
+            <label class="filter-label" for="filter-size">Size</label>
+            <select class="filter-control" id="filter-size" name="size">
+              <option value="">All sizes</option>
+              {% for size in page.sizes %}
+                <option value="{{ size }}"{% if page.filters.size and page.filters.size|lower == size|lower %} selected{% endif %}>{{ size }}</option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <div class="filter-group">
+            <label class="filter-label" for="filter-color">Colour</label>
+            <select class="filter-control" id="filter-color" name="color">
+              <option value="">All colours</option>
+              {% for color in page.colors %}
+                <option value="{{ color }}"{% if page.filters.color and page.filters.color|lower == color|lower %} selected{% endif %}>{{ color }}</option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <button class="button button--primary filter-form__submit" type="submit">
+            Apply filters
+            <span class="button__arrow" aria-hidden="true">→</span>
+          </button>
+        </form>
+      </aside>
+
+      <div class="catalog__results">
+        <div class="catalog__toolbar">
+          <p class="catalog__count mono" aria-live="polite">
+            {{ page.total }} piece{% if page.total != 1 %}s{% endif %}
+            {% if active_category %} / {{ active_category.name }}{% endif %}
+          </p>
+          {% if page.filters.active_count %}
+            <p class="catalog__filter-note">
+              {{ page.filters.active_count }} active filter{% if page.filters.active_count != 1 %}s{% endif %}
+            </p>
+          {% endif %}
+        </div>
+
+        {% if page.products %}
+          <ul class="product-grid" role="list">
+            {% for product in page.products %}
+              {% with item_index = loop.index %}
+                {% include "components/product-card.html" %}
+              {% endwith %}
+            {% endfor %}
+          </ul>
+          {% if page.is_truncated %}
+            <p class="catalog__limit-note">
+              Showing the first {{ page.products|length }} pieces. Narrow the
+              filters to see a more specific selection.
+            </p>
+          {% endif %}
+        {% else %}
+          <div class="catalog-empty">
+            <p class="mono">No signal found</p>
+            <h2>Nothing matches that combination.</h2>
+            <p>Try a different size or colour, or clear the filters to see the full drop.</p>
+            <a class="button button--ghost" href="{{ url_for('storefront.shop') }}">Reset the catalog</a>
+          </div>
+        {% endif %}
+      </div>
+    </div>
+  </section>
+{% endblock %}

@@ -1,0 +1,19 @@
+<li class="category-card">
+  <a class="category-card__link" href="{{ url_for('storefront.shop', category=category.slug) }}">
+    <span class="category-card__number mono" aria-hidden="true">{{ "%02d"|format(item_index) }}</span>
+    <img
+      class="category-card__icon"
+      src="{{ url_for('static', filename=category.icon) }}"
+      alt=""
+      width="64"
+      height="64"
+      loading="lazy"
+      decoding="async"
+    >
+    <span class="category-card__body">
+      <span class="category-card__name">{{ category.name }}</span>
+      <span class="category-card__description">{{ category.description }}</span>
+    </span>
+    <span class="category-card__arrow" aria-hidden="true">↗</span>
+  </a>
+</li>

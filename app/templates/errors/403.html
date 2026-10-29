@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+
+{% block title %}Access denied — UTOP14{% endblock %}
+
+{% block meta_description %}This UTOP14 area requires an access level your account does not have.{% endblock %}
+
+{% block styles %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/catalog.css') }}">
+{% endblock %}
+
+{% block body_class %}page-error{% endblock %}
+
+{% block content %}
+  <section class="section error-page" aria-labelledby="error-title">
+    <div class="container error-page__inner">
+      <p class="section-kicker">403 / Restricted signal</p>
+      <p class="error-page__code" aria-hidden="true">403</p>
+      <h1 class="error-page__title" id="error-title">
+        This area is <em>off limits.</em>
+      </h1>
+      <p class="error-page__copy">
+        Your account is signed in, but it does not have the access level required
+        for this page. Role permissions are enforced on the server, not by the
+        navigation alone.
+      </p>
+      <div class="error-page__actions">
+        {% if current_user.is_authenticated %}
+          <a class="button button--primary" href="{{ url_for('auth.account') }}">
+            Back to your account
+            <span class="button__arrow" aria-hidden="true">→</span>
+          </a>
+        {% else %}
+          <a class="button button--primary" href="{{ url_for('auth.login') }}">
+            Sign in
+            <span class="button__arrow" aria-hidden="true">→</span>
+          </a>
+        {% endif %}
+        <a class="button button--ghost" href="{{ url_for('storefront.shop') }}">Return to the drop</a>
+      </div>
+    </div>
+  </section>
+{% endblock %}

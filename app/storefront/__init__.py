@@ -1,0 +1,28 @@
+"""Storefront blueprint and template helpers."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from decimal import Decimal
+from typing import Any
+
+from flask import Blueprint
+
+from app.storefront.content import format_money
+
+storefront_bp = Blueprint("storefront", __name__)
+
+
+@storefront_bp.app_template_filter("money")
+def money(value: Decimal) -> str:
+    """Render a price using the UTOP14 storefront format."""
+    return format_money(value)
+
+
+@storefront_bp.app_context_processor
+def inject_storefront_globals() -> dict[str, Any]:
+    """Expose small, non-sensitive values required by the shared layout."""
+    return {"current_year": datetime.now(UTC).year}
+
+
+from app.storefront import routes  # noqa: E402, F401

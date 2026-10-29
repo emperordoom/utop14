@@ -14,6 +14,8 @@ from typing import Any, Final
 
 from dotenv import load_dotenv
 from flask import Flask
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ArgumentError
 
 PROJECT_ROOT: Final = Path(__file__).resolve().parent.parent
 ENV_FILE: Final = PROJECT_ROOT / ".env"
@@ -126,8 +128,11 @@ class ProductionConfig(BaseConfig):
 class TestingConfig(BaseConfig):
     """Deterministic test settings.
 
-    Tests never inherit the production database URL or secret.  Database-backed
-    tests may opt in later through ``TEST_DATABASE_URL``.
+    ``TEST_DATABASE_URL`` takes precedence.  When it is absent, the configured
+    development URL is reused with its database name replaced by
+    ``utop14_test`` so tests keep the same credentials and host without ever
+    touching ``utop14_db``.  Database tests are guarded by a ``_test`` suffix
+    check in :func:`validate_config`.
     """
 
     ENVIRONMENT = "testing"
@@ -143,9 +148,38 @@ class TestingConfig(BaseConfig):
         return {
             "SECRET_KEY": _env_str("TEST_SECRET_KEY")
             or "utop14-testing-only-secret-not-for-production",
-            "SQLALCHEMY_DATABASE_URI": _env_str("TEST_DATABASE_URL")
-            or "postgresql+psycopg://localhost:5432/utop14_test",
+            "SQLALCHEMY_DATABASE_URI": _test_database_url(),
         }
+
+
+def _test_database_url() -> str:
+    """Resolve the isolated test database URL without touching development data."""
+    explicit_url = _env_str("TEST_DATABASE_URL")
+    if explicit_url:
+        return explicit_url
+
+    development_url = _env_str("DATABASE_URL")
+    fallback_url = "postgresql+psycopg://localhost:5432/utop14_test"
+    if not development_url:
+        return fallback_url
+
+    try:
+        url = make_url(development_url)
+    except ArgumentError:
+        # Let validate_config report the malformed URL without echoing secrets.
+        return development_url
+
+    if url.database and url.database.endswith("_test"):
+        return development_url
+    return url.set(database="utop14_test").render_as_string(hide_password=False)
+
+
+def _database_name(database_url: str) -> str:
+    """Return the database name without exposing credentials."""
+    try:
+        return make_url(database_url).database or ""
+    except ArgumentError:
+        return ""
 
 
 _CONFIGURATIONS: Final = {
@@ -202,6 +236,9 @@ def validate_config(app: Flask) -> None:
         raise ConfigurationError(
             "DATABASE_URL must use the PostgreSQL Psycopg 3 driver ('postgresql+psycopg://...')."
         )
+
+    if environment == "testing" and not _database_name(database_url).endswith("_test"):
+        raise ConfigurationError("Test database names must end with '_test'.")
 
     if environment == "production":
         _validate_production(secret_key, app)
