@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+
+{% block title %}Operator console — UTOP14{% endblock %}
+
+{% block meta_description %}Read-only UTOP14 operator console for catalog and account counts.{% endblock %}
+
+{% block styles %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/auth.css') }}">
+{% endblock %}
+
+{% block body_class %}page-ops{% endblock %}
+
+{% block content %}
+  <section class="staff-hero" aria-labelledby="ops-title">
+    <div class="container">
+      <p class="section-kicker">Operator / Floor view</p>
+      <h1 class="staff-hero__title" id="ops-title">
+        Keep the <em>signal</em> moving.
+      </h1>
+      <p class="staff-hero__copy">
+        Operator access covers day-to-day catalog visibility. This console is
+        read-only until inventory management is introduced in a later milestone.
+      </p>
+      <div class="staff-hero__actions">
+        <a class="button button--primary" href="{{ url_for('storefront.shop') }}">
+          View storefront
+          <span class="button__arrow" aria-hidden="true">→</span>
+        </a>
+        <a class="button button--ghost" href="{{ url_for('auth.account') }}">Your account</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="section staff-section" aria-labelledby="ops-stats-title">
+    <div class="container">
+      <div class="section-heading">
+        <p class="section-kicker">01 / Catalog</p>
+        <h2 class="section-title" id="ops-stats-title">Current <em>floor.</em></h2>
+      </div>
+
+      <div class="stat-grid">
+        <article class="stat-card">
+          <p class="stat-card__label">Categories</p>
+          <p class="stat-card__value">{{ stats.categories }}</p>
+        </article>
+        <article class="stat-card">
+          <p class="stat-card__label">Products</p>
+          <p class="stat-card__value stat-card__value--acid">{{ stats.products }}</p>
+        </article>
+        <article class="stat-card">
+          <p class="stat-card__label">Variants</p>
+          <p class="stat-card__value">{{ stats.variants }}</p>
+        </article>
+        <article class="stat-card">
+          <p class="stat-card__label">Accounts</p>
+          <p class="stat-card__value">{{ stats.users }}</p>
+        </article>
+      </div>
+
+      <div class="staff-panel">
+        <div class="staff-panel__header">
+          <p class="mono">Operator scope</p>
+          <p class="mono">Read-only</p>
+        </div>
+        <div class="staff-panel__body">
+          <p>
+            Catalog write operations, stock adjustments and order handling are
+            intentionally not available in this milestone. Admin-only pages
+            remain inaccessible from an operator account.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+{% endblock %}

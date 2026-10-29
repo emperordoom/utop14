@@ -21,6 +21,15 @@
     {% include "components/announcement.html" %}
     {% include "components/nav.html" %}
     <main class="site-main" id="main-content" tabindex="-1">
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          <div class="flash-stack container" role="status" aria-live="polite">
+            {% for category, message in messages %}
+              <p class="flash flash--{{ category }}">{{ message }}</p>
+            {% endfor %}
+          </div>
+        {% endif %}
+      {% endwith %}
       {% block content %}{% endblock %}
     </main>
     {% include "components/footer.html" %}

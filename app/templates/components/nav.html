@@ -23,6 +23,23 @@
         <li><a class="site-nav__link" href="{{ url_for('storefront.home', _anchor='collection') }}">Collection</a></li>
         <li><a class="site-nav__link" href="{{ url_for('storefront.home', _anchor='categories') }}">Categories</a></li>
         <li><a class="site-nav__link" href="{{ url_for('storefront.home', _anchor='about') }}">About</a></li>
+        {% if current_user.is_authenticated %}
+          {% if current_user.is_admin %}
+            <li><a class="site-nav__link" href="{{ url_for('admin.dashboard') }}">Admin</a></li>
+          {% elif current_user.is_operator %}
+            <li><a class="site-nav__link" href="{{ url_for('admin.operations') }}">Ops</a></li>
+          {% endif %}
+          <li><a class="site-nav__link" href="{{ url_for('auth.account') }}">Account</a></li>
+          <li>
+            <form class="site-nav__form" method="post" action="{{ url_for('auth.logout') }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button class="site-nav__link site-nav__link--button" type="submit">Log out</button>
+            </form>
+          </li>
+        {% else %}
+          <li><a class="site-nav__link" href="{{ url_for('auth.login') }}">Sign in</a></li>
+          <li><a class="site-nav__link" href="{{ url_for('auth.register') }}">Join</a></li>
+        {% endif %}
       </ul>
     </nav>
 

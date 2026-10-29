@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+
+{% block title %}Create account — UTOP14{% endblock %}
+
+{% block meta_description %}Create a UTOP14 customer account for Drop 014 and future releases.{% endblock %}
+
+{% block styles %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/auth.css') }}">
+{% endblock %}
+
+{% block body_class %}page-auth{% endblock %}
+
+{% block content %}
+  <section class="section auth-page" aria-labelledby="register-title">
+    <div class="container auth-layout">
+      <div class="auth-editorial">
+        <p class="section-kicker">Account / Join</p>
+        <h1 class="auth-title" id="register-title">
+          Enter the <em>signal.</em>
+        </h1>
+        <p class="auth-copy">
+          Create a customer account for Drop 014. Registration is open to
+          everyone, and every new account starts with customer access.
+        </p>
+        <ul class="auth-points" role="list">
+          <li>One account, one email address.</li>
+          <li>Passwords are hashed before they reach the database.</li>
+          <li>Operator and admin access are never self-assigned.</li>
+        </ul>
+      </div>
+
+      <div class="auth-card">
+        <div class="auth-card__header">
+          <p class="mono">Create account</p>
+          <p class="auth-card__index" aria-hidden="true">02 / 02</p>
+        </div>
+
+        <form class="auth-form" method="post" action="{{ url_for('auth.register') }}" novalidate>
+          {{ form.hidden_tag() }}
+
+          <div class="form-field">
+            <label class="form-label" for="full_name">Full name</label>
+            <input
+              class="form-control{% if form.full_name.errors %} form-control--invalid{% endif %}"
+              id="full_name"
+              name="full_name"
+              type="text"
+              value="{{ form.full_name.data or '' }}"
+              maxlength="120"
+              autocomplete="name"
+              required
+              {% if form.full_name.errors %}aria-invalid="true" aria-describedby="full-name-error"{% endif %}
+            >
+            {% if form.full_name.errors %}
+              <p class="form-error" id="full-name-error">{{ form.full_name.errors[0] }}</p>
+            {% endif %}
+          </div>
+
+          <div class="form-field">
+            <label class="form-label" for="email">Email</label>
+            <input
+              class="form-control{% if form.email.errors %} form-control--invalid{% endif %}"
+              id="email"
+              name="email"
+              type="email"
+              value="{{ form.email.data or '' }}"
+              maxlength="255"
+              autocomplete="email"
+              required
+              {% if form.email.errors %}aria-invalid="true" aria-describedby="email-error"{% endif %}
+            >
+            {% if form.email.errors %}
+              <p class="form-error" id="email-error">{{ form.email.errors[0] }}</p>
+            {% endif %}
+          </div>
+
+          <div class="form-field">
+            <label class="form-label" for="password">Password</label>
+            <input
+              class="form-control{% if form.password.errors %} form-control--invalid{% endif %}"
+              id="password"
+              name="password"
+              type="password"
+              minlength="8"
+              maxlength="128"
+              autocomplete="new-password"
+              required
+              {% if form.password.errors %}aria-invalid="true" aria-describedby="password-error"{% endif %}
+            >
+            <p class="form-hint">Use at least 8 characters.</p>
+            {% if form.password.errors %}
+              <p class="form-error" id="password-error">{{ form.password.errors[0] }}</p>
+            {% endif %}
+          </div>
+
+          <div class="form-field">
+            <label class="form-label" for="confirm_password">Confirm password</label>
+            <input
+              class="form-control{% if form.confirm_password.errors %} form-control--invalid{% endif %}"
+              id="confirm_password"
+              name="confirm_password"
+              type="password"
+              minlength="8"
+              maxlength="128"
+              autocomplete="new-password"
+              required
+              {% if form.confirm_password.errors %}aria-invalid="true" aria-describedby="confirm-password-error"{% endif %}
+            >
+            {% if form.confirm_password.errors %}
+              <p class="form-error" id="confirm-password-error">{{ form.confirm_password.errors[0] }}</p>
+            {% endif %}
+          </div>
+
+          <button class="button button--primary auth-submit" type="submit">
+            Create account
+            <span class="button__arrow" aria-hidden="true">→</span>
+          </button>
+        </form>
+
+        <p class="auth-switch">
+          Already have an account?
+          <a href="{{ url_for('auth.login') }}">Sign in</a>
+        </p>
+      </div>
+    </div>
+  </section>
+{% endblock %}

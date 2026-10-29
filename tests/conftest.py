@@ -2,13 +2,14 @@
 
 Database tests run only against the isolated PostgreSQL test database.  The
 fixtures apply the real Alembic migrations, refuse databases whose name does not
-end in ``_test``, and truncate only catalog tables between tests so the
+end in ``_test``, and truncate account and catalog tables between tests so the
 development database is never touched.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import re
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Final
 
@@ -23,10 +24,18 @@ from sqlalchemy.engine import make_url
 from app import create_app
 from app.catalog.seed import SeedSummary, seed_catalog
 from app.extensions import db
+from app.models import User
+from app.models.user import ROLE_CUSTOMER
 
 PROJECT_ROOT: Final = Path(__file__).resolve().parents[1]
 MIGRATIONS_DIR: Final = PROJECT_ROOT / "migrations"
-CATALOG_TABLES: Final = ("product_images", "product_variants", "products", "categories")
+RESET_TABLES: Final = (
+    "users",
+    "product_images",
+    "product_variants",
+    "products",
+    "categories",
+)
 
 
 def _database_name(application: Flask) -> str:
@@ -51,10 +60,10 @@ def _run_migrations(application: Flask) -> None:
         command.upgrade(alembic_config, "head")
 
 
-def _truncate_catalog() -> None:
-    """Remove catalog rows only, leaving the migration history intact."""
+def _reset_tables() -> None:
+    """Remove account and catalog rows, leaving migration history intact."""
     db.session.rollback()
-    db.session.execute(text(f"TRUNCATE TABLE {', '.join(CATALOG_TABLES)} RESTART IDENTITY CASCADE"))
+    db.session.execute(text(f"TRUNCATE TABLE {', '.join(RESET_TABLES)} RESTART IDENTITY CASCADE"))
     db.session.commit()
 
 
@@ -71,12 +80,12 @@ def _database_app() -> Flask:
 def app(_database_app: Flask) -> Iterator[Flask]:
     """Return a clean application context backed by the migrated test database."""
     with _database_app.app_context():
-        _truncate_catalog()
+        _reset_tables()
         try:
             yield _database_app
         finally:
             db.session.remove()
-            _truncate_catalog()
+            _reset_tables()
 
 
 @pytest.fixture()
@@ -89,3 +98,47 @@ def client(app: Flask) -> FlaskClient:
 def seeded_catalog(app: Flask) -> SeedSummary:
     """Populate the launch catalog for storefront tests."""
     return seed_catalog()
+
+
+@pytest.fixture()
+def make_user(app: Flask) -> Callable[..., User]:
+    """Return a factory that creates committed test accounts."""
+
+    def _make_user(
+        *,
+        email: str = "customer@example.com",
+        password: str = "ValidPass123",
+        full_name: str = "Test Customer",
+        role: str = ROLE_CUSTOMER,
+        is_active: bool = True,
+    ) -> User:
+        user = User(
+            email=email,
+            full_name=full_name,
+            role=role,
+            is_active=is_active,
+        )
+        user.set_password(password)
+        db.session.add(user)
+        db.session.commit()
+        return user
+
+    return _make_user
+
+
+@pytest.fixture()
+def csrf_token(client: FlaskClient) -> Callable[[str], str]:
+    """Return a helper that extracts a CSRF token from a rendered page."""
+
+    def _csrf_token(path: str) -> str:
+        response = client.get(path)
+        if response.status_code != 200:
+            raise AssertionError(f"Expected 200 from {path}, got {response.status_code}")
+
+        html = response.get_data(as_text=True)
+        match = re.search(r'name="csrf_token"[^>]*value="([^"]+)"', html)
+        if match is None:
+            raise AssertionError(f"No CSRF token found at {path}")
+        return match.group(1)
+
+    return _csrf_token

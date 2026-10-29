@@ -157,6 +157,47 @@
   color: var(--ink);
 }
 
+.site-nav__form {
+  margin: 0;
+}
+
+.site-nav__link--button {
+  cursor: pointer;
+}
+
+/* Flash messages */
+.flash-stack {
+  display: grid;
+  gap: 0.5rem;
+  padding-top: 1.25rem;
+}
+
+.flash {
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--paper);
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  letter-spacing: 0.06em;
+  line-height: 1.6;
+  text-transform: uppercase;
+}
+
+.flash--success {
+  border-color: var(--acid);
+  color: var(--acid);
+}
+
+.flash--error {
+  border-color: #f87171;
+  color: #fca5a5;
+}
+
+.flash--info {
+  color: var(--muted);
+}
+
 .site-nav__toggle {
   display: none;
   align-items: center;
