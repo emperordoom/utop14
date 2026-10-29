@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from flask import abort, render_template, request
 
+from app.cart.forms import AddToCartForm
 from app.services.catalog import (
     CatalogFilters,
     get_catalog_page,
@@ -66,4 +67,5 @@ def product_detail(slug: str) -> str:
         "storefront/product.html",
         product=product,
         related_products=get_related_products(product),
+        add_to_cart_form=AddToCartForm(),
     )
