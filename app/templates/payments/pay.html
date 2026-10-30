@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+
+{% from "components/badges.html" import payment_badge %}
+
+{% block title %}Pay order {{ order.order_number }} — UTOP14{% endblock %}
+
+{% block meta_description %}Start a simulated UTOP14 payment attempt for your order.{% endblock %}
+
+{% block styles %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/orders.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/payments.css') }}">
+{% endblock %}
+
+{% block body_class %}page-payment{% endblock %}
+
+{% block content %}
+  <section class="section payments-page" aria-labelledby="pay-title">
+    <div class="container">
+      <header class="payment-hero">
+        <div>
+          <p class="section-kicker">Payment / {{ order.order_number }}</p>
+          <h1 class="payment-title" id="pay-title">
+            Settle the <em>signal.</em>
+          </h1>
+          <p class="payment-copy">
+            Payment attempts are priced from the order total on the server. This
+            milestone uses a simulated provider only.
+          </p>
+        </div>
+        <a class="text-link" href="{{ url_for('orders.confirmation', order_number=order.order_number) }}">
+          Back to order
+          <span aria-hidden="true">↗</span>
+        </a>
+      </header>
+
+      <p class="simulation-banner">SIMULATION ONLY — NO REAL MONEY</p>
+
+      <div class="payment-layout">
+        <div class="payment-panel">
+          <div class="payment-panel__header">
+            <p class="mono">Order total</p>
+            <p class="mono">IDR</p>
+          </div>
+          <p class="payment-amount">{{ order.total|money }}</p>
+          <dl class="payment-meta">
+            <div>
+              <dt>Order</dt>
+              <dd>{{ order.order_number }}</dd>
+            </div>
+            <div>
+              <dt>Order status</dt>
+              <dd>{{ order.status|replace('_', ' ')|title }}</dd>
+            </div>
+            <div>
+              <dt>Payment status</dt>
+              <dd>{{ payment_badge(order.payment_status) }}</dd>
+            </div>
+            <div>
+              <dt>Payment deadline</dt>
+              <dd>15 minutes from attempt creation</dd>
+            </div>
+          </dl>
+
+          {% if not payments_available %}
+            <p class="payment-alert" role="alert">
+              Payments are unavailable in this environment. No real provider is
+              configured for this deployment.
+            </p>
+          {% elif eligible %}
+            <form class="payment-start-form" method="post" action="{{ url_for('payments.create_attempt', order_number=order.order_number) }}">
+              {{ form.hidden_tag() }}
+              <p class="payment-form__note">
+                A new attempt expires 15 minutes after creation. Reusing this page
+                form reuses the same idempotency key.
+              </p>
+              <button class="button button--primary" type="submit">
+                Start simulated payment
+                <span class="button__arrow" aria-hidden="true">→</span>
+              </button>
+            </form>
+          {% else %}
+            <p class="payment-alert" role="alert">
+              This order is not currently eligible for a new payment attempt.
+            </p>
+          {% endif %}
+        </div>
+
+        <aside class="payment-attempts" aria-labelledby="attempts-title">
+          <div class="payment-panel__header">
+            <p class="mono" id="attempts-title">Payment attempts</p>
+            <p class="mono">{{ order.payments|length }}</p>
+          </div>
+
+          {% if order.payments %}
+            <ul class="payment-attempt-list" role="list">
+              {% for payment in order.payments %}
+                <li class="payment-attempt">
+                  <div>
+                    <p class="mono">{{ payment.payment_reference }}</p>
+                    <p class="payment-attempt__amount">{{ payment.amount|money }}</p>
+                    <p class="payment-attempt__meta">
+                      {% if payment.status == 'pending' %}
+                        Expires {{ payment.expires_at.strftime("%d %b %Y, %H:%M UTC") }}
+                      {% elif payment.paid_at %}
+                        Paid {{ payment.paid_at.strftime("%d %b %Y, %H:%M UTC") }}
+                      {% elif payment.failed_at %}
+                        Failed {{ payment.failed_at.strftime("%d %b %Y, %H:%M UTC") }}
+                      {% elif payment.expired_at %}
+                        Expired {{ payment.expired_at.strftime("%d %b %Y, %H:%M UTC") }}
+                      {% endif %}
+                    </p>
+                  </div>
+                  <div class="payment-attempt__side">
+                    {{ payment_badge(payment.status) }}
+                    <a class="text-link" href="{{ url_for('payments.detail', payment_reference=payment.payment_reference) }}">Open</a>
+                  </div>
+                </li>
+              {% endfor %}
+            </ul>
+          {% else %}
+            <p class="payment-empty">No payment attempt has been started for this order.</p>
+          {% endif %}
+        </aside>
+      </div>
+    </div>
+  </section>
+{% endblock %}

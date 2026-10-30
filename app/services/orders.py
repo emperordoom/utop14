@@ -11,7 +11,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import joinedload, selectinload
 
 from app.extensions import db
-from app.models import Order, OrderItem, ProductVariant
+from app.models import Order, OrderItem, Payment, ProductVariant
 from app.models.order import (
     ORDER_STATUS_CANCELLED,
     ORDER_STATUS_PENDING,
@@ -19,6 +19,7 @@ from app.models.order import (
     PAYMENT_STATUS_UNPAID,
     PAYMENT_STATUSES,
 )
+from app.models.payment import PAYMENT_STATUS_EXPIRED, PAYMENT_STATUS_PENDING
 
 STAFF_TRANSITIONS: Final[dict[str, frozenset[str]]] = {
     "pending": frozenset({"processing", "cancelled"}),
@@ -85,9 +86,22 @@ def _cancel_locked_order(order: Order, *, actor_user_id: int, reason: str | None
         ):
             raise OrderStateError("Order could not be cancelled safely. No changes were saved.")
 
+    now = datetime.now(UTC)
+    pending_payments = db.session.scalars(
+        select(Payment)
+        .where(
+            Payment.order_id == order.id,
+            Payment.status == PAYMENT_STATUS_PENDING,
+        )
+        .with_for_update()
+    ).all()
+    for payment in pending_payments:
+        payment.status = PAYMENT_STATUS_EXPIRED
+        payment.expired_at = now
+
     cleaned_reason = (reason or "").strip()
     order.status = ORDER_STATUS_CANCELLED
-    order.cancelled_at = datetime.now(UTC)
+    order.cancelled_at = now
     order.cancelled_by_user_id = actor_user_id
     order.cancellation_reason = cleaned_reason[:500] or None
 
@@ -282,6 +296,7 @@ def get_staff_order(order_number: str) -> Order | None:
             joinedload(Order.user),
             joinedload(Order.cancelled_by),
             selectinload(Order.items),
+            selectinload(Order.payments),
         )
         .where(Order.order_number == normalized)
     )

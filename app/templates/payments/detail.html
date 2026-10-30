@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+
+{% from "components/badges.html" import payment_badge %}
+
+{% block title %}Payment {{ payment.payment_reference }} — UTOP14{% endblock %}
+
+{% block meta_description %}Review a simulated UTOP14 payment attempt and its server-side status.{% endblock %}
+
+{% block styles %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/orders.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/payments.css') }}">
+{% endblock %}
+
+{% block body_class %}page-payment{% endblock %}
+
+{% block content %}
+  <section class="section payments-page" aria-labelledby="payment-title">
+    <div class="container">
+      <header class="payment-hero">
+        <div>
+          <p class="section-kicker">Payment / {{ payment.payment_reference }}</p>
+          <h1 class="payment-title" id="payment-title">
+            Attempt <em>status.</em>
+          </h1>
+          <p class="payment-copy">
+            This page shows a simulated payment attempt for
+            {{ order.order_number }}. It never represents a real money transfer.
+          </p>
+        </div>
+        <a class="text-link" href="{{ url_for('orders.confirmation', order_number=order.order_number) }}">
+          Back to order
+          <span aria-hidden="true">↗</span>
+        </a>
+      </header>
+
+      <p class="simulation-banner">SIMULATION ONLY — NO REAL MONEY</p>
+
+      <div class="payment-layout">
+        <div class="payment-panel">
+          <div class="payment-panel__header">
+            <p class="mono">Payment amount</p>
+            {{ payment_badge(payment.status) }}
+          </div>
+          <p class="payment-amount">{{ payment.amount|money }}</p>
+          <p class="payment-currency">{{ payment.currency }} / {{ payment.provider }}</p>
+
+          <dl class="payment-meta">
+            <div>
+              <dt>Order</dt>
+              <dd>
+                <a class="text-link" href="{{ url_for('orders.confirmation', order_number=order.order_number) }}">{{ order.order_number }}</a>
+              </dd>
+            </div>
+            <div>
+              <dt>Payment reference</dt>
+              <dd class="mono">{{ payment.payment_reference }}</dd>
+            </div>
+            <div>
+              <dt>Method</dt>
+              <dd>{{ payment.payment_method }}</dd>
+            </div>
+            <div>
+              <dt>Provider reference</dt>
+              <dd class="mono">{{ payment.provider_reference or '—' }}</dd>
+            </div>
+            <div>
+              <dt>Deadline</dt>
+              <dd>{{ payment.expires_at.strftime("%d %b %Y, %H:%M UTC") }}</dd>
+            </div>
+            {% if payment.paid_at %}
+              <div>
+                <dt>Paid</dt>
+                <dd>{{ payment.paid_at.strftime("%d %b %Y, %H:%M UTC") }}</dd>
+              </div>
+            {% elif payment.failed_at %}
+              <div>
+                <dt>Failed</dt>
+                <dd>{{ payment.failed_at.strftime("%d %b %Y, %H:%M UTC") }}</dd>
+              </div>
+            {% elif payment.expired_at %}
+              <div>
+                <dt>Expired</dt>
+                <dd>{{ payment.expired_at.strftime("%d %b %Y, %H:%M UTC") }}</dd>
+              </div>
+            {% endif %}
+          </dl>
+
+          {% if payment.status == 'failed' %}
+            <p class="payment-alert">This attempt failed. The order remains unpaid; start a new attempt from the order page.</p>
+          {% elif payment.status == 'expired' %}
+            <p class="payment-alert">This attempt expired. The order remains unpaid; start a new attempt from the order page.</p>
+          {% elif payment.status == 'paid' %}
+            <p class="payment-success">Simulated payment marked paid. The order payment status is paid.</p>
+          {% endif %}
+        </div>
+
+        <aside class="payment-simulation" aria-labelledby="simulation-title">
+          <div class="payment-panel__header">
+            <p class="mono" id="simulation-title">Simulation controls</p>
+            <p class="mono">Dev / Test</p>
+          </div>
+
+          {% if simulation_allowed %}
+            <form class="payment-form" method="post" action="{{ url_for('payments.simulate', payment_reference=payment.payment_reference) }}">
+              {{ simulation_form.hidden_tag() }}
+
+              <fieldset class="payment-outcomes">
+                <legend class="cart-label">Choose a deterministic outcome</legend>
+                {% for option in simulation_form.outcome %}
+                  <label class="payment-outcome">
+                    {{ option() }}
+                    <span>{{ option.label.text }}</span>
+                  </label>
+                {% endfor %}
+              </fieldset>
+
+              <p class="payment-form__note">
+                The server validates ownership, amount, currency and the
+                expiration deadline before changing any status.
+              </p>
+              <button class="button button--primary" type="submit">
+                Run simulation
+                <span class="button__arrow" aria-hidden="true">→</span>
+              </button>
+            </form>
+          {% elif simulation_enabled %}
+            <p class="payment-empty">This attempt is no longer pending and cannot be simulated again.</p>
+          {% else %}
+            <p class="payment-empty">Simulated payments are disabled in this environment.</p>
+          {% endif %}
+        </aside>
+      </div>
+    </div>
+  </section>
+{% endblock %}

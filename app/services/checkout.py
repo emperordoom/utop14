@@ -24,8 +24,10 @@ from app.models import (
 from app.models.order import ORDER_STATUS_PENDING, PAYMENT_STATUS_UNPAID
 
 _CENT: Final = Decimal("0.01")
-SHIPPING_FLAT: Final = Decimal("12.00")
-FREE_SHIPPING_THRESHOLD: Final = Decimal("200.00")
+# Shipping values are stored and interpreted as IDR; M7 does not apply FX
+# conversion to existing order or catalog amounts.
+SHIPPING_FLAT_IDR: Final = Decimal("12.00")
+FREE_SHIPPING_THRESHOLD_IDR: Final = Decimal("200.00")
 
 
 class CheckoutError(Exception):
@@ -54,10 +56,10 @@ class CheckoutTotals:
 
 
 def calculate_shipping(subtotal: Decimal) -> Decimal:
-    """Return the flat shipping fee, waiving it above the free-shipping threshold."""
-    if subtotal >= FREE_SHIPPING_THRESHOLD:
+    """Return the flat IDR shipping fee, waived above the IDR threshold."""
+    if subtotal >= FREE_SHIPPING_THRESHOLD_IDR:
         return Decimal("0.00")
-    return SHIPPING_FLAT.quantize(_CENT)
+    return SHIPPING_FLAT_IDR.quantize(_CENT)
 
 
 def calculate_totals(cart: Cart) -> CheckoutTotals:
@@ -226,7 +228,10 @@ def get_order_for_user(user_id: int, order_number: str) -> Order | None:
     normalized = order_number.strip().upper()
     statement = (
         select(Order)
-        .options(selectinload(Order.items))
+        .options(
+            selectinload(Order.items),
+            selectinload(Order.payments),
+        )
         .where(Order.order_number == normalized, Order.user_id == user_id)
     )
     return db.session.scalar(statement)

@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='css/auth.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/cart.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/orders.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/payments.css') }}">
 {% endblock %}
 
 {% block body_class %}page-admin-order-detail{% endblock %}
@@ -108,6 +109,41 @@
               <dd>{{ order.total|money }}</dd>
             </div>
           </dl>
+        </div>
+
+        <div class="admin-order-card">
+          <div class="order-panel__header">
+            <p class="mono">Payment attempts</p>
+            <p class="mono">Read-only / IDR</p>
+          </div>
+
+          {% if order.payments %}
+            <ul class="payment-attempt-list" role="list">
+              {% for payment in order.payments %}
+                <li class="payment-attempt">
+                  <div>
+                    <p class="mono">{{ payment.payment_reference }}</p>
+                    <p class="payment-attempt__amount">{{ payment.amount|money }}</p>
+                    <p class="payment-attempt__meta">
+                      {{ payment.provider }} / {{ payment.payment_method }}
+                      {% if payment.status == 'pending' %}
+                        · expires {{ payment.expires_at.strftime("%d %b %Y, %H:%M UTC") }}
+                      {% elif payment.paid_at %}
+                        · paid {{ payment.paid_at.strftime("%d %b %Y, %H:%M UTC") }}
+                      {% endif %}
+                    </p>
+                  </div>
+                  <div class="payment-attempt__side">
+                    {{ payment_badge(payment.status) }}
+                  </div>
+                </li>
+              {% endfor %}
+            </ul>
+          {% else %}
+            <p class="order-summary__note">No payment attempt yet.</p>
+          {% endif %}
+
+          <p class="simulation-note">SIMULATION ONLY — NO REAL MONEY</p>
         </div>
 
         <div class="admin-order-card">

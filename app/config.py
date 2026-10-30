@@ -85,6 +85,12 @@ class BaseConfig:
     REMEMBER_COOKIE_HTTPONLY = True
     REMEMBER_COOKIE_SAMESITE = "Lax"
 
+    # Payment configuration.  The simulated provider is development/testing
+    # only; production has no real provider in M7.
+    PAYMENT_PROVIDER = ""
+    PAYMENT_SIMULATION_ENABLED = False
+    PAYMENT_ATTEMPT_TTL_MINUTES = 15
+
     @classmethod
     def load(cls) -> dict[str, Any]:
         """Return the environment-dependent settings for this configuration."""
@@ -106,6 +112,10 @@ class DevelopmentConfig(BaseConfig):
     REMEMBER_COOKIE_SECURE = False
     PREFERRED_URL_SCHEME = "http"
 
+    PAYMENT_PROVIDER = "simulated"
+    PAYMENT_SIMULATION_ENABLED = True
+    PAYMENT_ATTEMPT_TTL_MINUTES = 15
+
     @classmethod
     def load(cls) -> dict[str, Any]:
         settings = super().load()
@@ -123,6 +133,10 @@ class ProductionConfig(BaseConfig):
     SESSION_COOKIE_SECURE = True
     REMEMBER_COOKIE_SECURE = True
     PREFERRED_URL_SCHEME = "https"
+
+    PAYMENT_PROVIDER = ""
+    PAYMENT_SIMULATION_ENABLED = False
+    PAYMENT_ATTEMPT_TTL_MINUTES = 15
 
 
 class TestingConfig(BaseConfig):
@@ -142,6 +156,10 @@ class TestingConfig(BaseConfig):
     SESSION_COOKIE_SECURE = False
     REMEMBER_COOKIE_SECURE = False
     PREFERRED_URL_SCHEME = "http"
+
+    PAYMENT_PROVIDER = "simulated"
+    PAYMENT_SIMULATION_ENABLED = True
+    PAYMENT_ATTEMPT_TTL_MINUTES = 15
 
     @classmethod
     def load(cls) -> dict[str, Any]:
@@ -237,6 +255,13 @@ def validate_config(app: Flask) -> None:
             "DATABASE_URL must use the PostgreSQL Psycopg 3 driver ('postgresql+psycopg://...')."
         )
 
+    # Only an exact ``int`` is accepted.  ``bool`` is a subclass of ``int`` and
+    # floats/strings must never be silently truncated or coerced into an unsafe
+    # expiry window.
+    raw_ttl = app.config.get("PAYMENT_ATTEMPT_TTL_MINUTES", 15)
+    if type(raw_ttl) is not int or raw_ttl <= 0:
+        raise ConfigurationError("PAYMENT_ATTEMPT_TTL_MINUTES must be a positive integer.")
+
     if environment == "testing" and not _database_name(database_url).endswith("_test"):
         raise ConfigurationError("Test database names must end with '_test'.")
 
@@ -264,3 +289,7 @@ def _validate_production(secret_key: str, app: Flask) -> None:
         raise ConfigurationError("SESSION_COOKIE_HTTPONLY must be enabled in production.")
     if not app.config.get("WTF_CSRF_ENABLED"):
         raise ConfigurationError("WTF_CSRF_ENABLED must be enabled in production.")
+    if app.config.get("PAYMENT_SIMULATION_ENABLED"):
+        raise ConfigurationError("PAYMENT_SIMULATION_ENABLED must be disabled in production.")
+    if str(app.config.get("PAYMENT_PROVIDER") or "").strip().lower() == "simulated":
+        raise ConfigurationError("The simulated payment provider cannot be used in production.")

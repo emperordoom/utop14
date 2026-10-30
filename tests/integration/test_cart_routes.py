@@ -125,7 +125,7 @@ def test_add_item_and_merge_duplicate_variant_via_routes(
     html = client.get("/cart").get_data(as_text=True)
     assert "Void Tee" in html
     assert "1 item" in html
-    assert "$75" in html
+    assert "Rp 75" in html
 
     second = _add_via_route(client, csrf_token, variant_id=variant.id, quantity=2)
     assert second.status_code == 302
@@ -133,7 +133,7 @@ def test_add_item_and_merge_duplicate_variant_via_routes(
     html = client.get("/cart").get_data(as_text=True)
     assert "1 line" in html
     assert "3 items" in html
-    assert "$225" in html
+    assert "Rp 225" in html
     assert db.session.scalar(select(CartItem.id)) is not None
 
 
@@ -160,7 +160,7 @@ def test_update_cart_line_quantity_via_route(
 
     html = client.get("/cart").get_data(as_text=True)
     assert "4 items" in html
-    assert "$300" in html
+    assert "Rp 300" in html
 
 
 def test_invalid_quantity_update_is_rejected(

@@ -21,6 +21,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base, TimestampMixin
 
 if TYPE_CHECKING:
+    from app.models.payment import Payment
     from app.models.product import Product
     from app.models.product_variant import ProductVariant
     from app.models.user import User
@@ -114,6 +115,11 @@ class Order(TimestampMixin, Base):
 
     user: Mapped[User] = relationship(foreign_keys=[user_id])
     cancelled_by: Mapped[User | None] = relationship(foreign_keys=[cancelled_by_user_id])
+    payments: Mapped[list[Payment]] = relationship(
+        back_populates="order",
+        passive_deletes=True,
+        order_by="Payment.id.desc()",
+    )
     items: Mapped[list[OrderItem]] = relationship(
         back_populates="order",
         cascade="all, delete-orphan",

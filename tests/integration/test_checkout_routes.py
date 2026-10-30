@@ -84,9 +84,9 @@ def test_checkout_get_renders_form_and_server_totals(
     assert 'value="Form Customer"' in html
     assert "UT014-VT-WBK-M" not in html  # checkout summary uses names, not SKUs
     assert "Void Tee" in html
-    assert "$150" in html
-    assert "$12" in html
-    assert "$162" in html
+    assert "Rp 150" in html
+    assert "Rp 12" in html
+    assert "Rp 162" in html
     assert "/static/css/cart.css" in html
 
 
@@ -190,9 +190,9 @@ def test_checkout_success_creates_order_and_confirmation(
     assert "Signal" in html
     assert "Void Tee" in html
     assert "UT014-VT-WBK-M" in html
-    assert "$150" in html
-    assert "$12" in html
-    assert "$162" in html
+    assert "Rp 150" in html
+    assert "Rp 12" in html
+    assert "Rp 162" in html
     assert "Pending" in html
     assert "Unpaid" in html
 
@@ -383,5 +383,5 @@ def test_order_snapshot_survives_later_catalog_change(
     html = client.get(order_url).get_data(as_text=True)
     assert "Void Tee" in html
     assert "Renamed Product" not in html
-    assert "$75" in html
-    assert "$999" not in html
+    assert "Rp 75" in html
+    assert "Rp 999" not in html

@@ -46,6 +46,21 @@ def test_auth_and_admin_blueprints_are_registered(app: Flask) -> None:
     assert app.login_manager.login_view == "auth.login"
 
 
+def test_payment_blueprint_is_registered(app: Flask) -> None:
+    assert "payments" in app.blueprints
+
+    pay_endpoint, _ = app.url_map.bind("").match(
+        "/orders/UT014-TEST/pay",
+        method="GET",
+    )
+    simulate_endpoint, _ = app.url_map.bind("").match(
+        "/payments/PAY-TEST/simulate",
+        method="POST",
+    )
+    assert pay_endpoint == "payments.pay"
+    assert simulate_endpoint == "payments.simulate"
+
+
 def test_user_cli_group_is_registered(app: Flask) -> None:
     assert "users" in app.cli.commands
     assert "catalog" in app.cli.commands

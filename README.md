@@ -2,12 +2,12 @@
 
 UTOP14 is a streetwear e-commerce platform built for Well Architected SOC 14.
 
-**Current milestone:** Milestone 6 — order management and lifecycle. The
-storefront, catalog, authentication, RBAC, cart and checkout from M1–M5 remain
-in place. Customers now have order history and safe cancellation with atomic
-stock restoration; operators and admins have a filtered order queue and
-validated lifecycle transitions. Payment gateway integration remains out of
-scope.
+**Current milestone:** Milestone 7 — payment integration (simulated only). The
+storefront, catalog, authentication, RBAC, cart, checkout and order lifecycle
+from M1–M6 remain in place. Orders can now have multiple simulated payment
+attempts with server-derived IDR amounts, a 15-minute deadline and a single
+successful payment per order. Real payment gateways and refunds are not part of
+this milestone.
 
 ## Technology
 
@@ -34,9 +34,10 @@ utop14/
 │   ├── admin/               # protected admin and operator dashboards
 │   ├── cart/                # persistent cart routes and forms
 │   ├── checkout/            # checkout form and transactional placement
-│   ├── orders/              # private order confirmation
+│   ├── orders/              # private order confirmation and history
+│   ├── payments/            # payment routes, forms and simulated provider
 │   ├── catalog/             # deterministic launch catalog seed
-│   ├── services/            # catalog, cart, checkout and dashboard services
+│   ├── services/            # catalog, cart, checkout, order and payment services
 │   ├── models/              # model registry imported by Alembic
 │   ├── static/              # CSS, JavaScript, local SVG art and fonts
 │   └── templates/
@@ -46,7 +47,8 @@ utop14/
 │       ├── admin/           # staff dashboards
 │       ├── cart/            # cart page
 │       ├── checkout/        # checkout page
-│       ├── orders/          # order confirmation
+│       ├── orders/          # order confirmation and history
+│       ├── payments/        # payment initiation and attempt detail
 │       ├── errors/          # branded 403 and 404 pages
 │       └── storefront/      # home, shop and product templates
 ├── migrations/              # Flask-Migrate/Alembic scaffold and revisions
@@ -291,7 +293,7 @@ arithmetic relationships above with database CHECK constraints or triggers.
 Direct SQL writes outside the service must preserve these relationships
 themselves.
 
-Shipping is a flat `$12.00`, waived at subtotal `$200.00` or above. No payment
+Shipping is a flat `Rp 12`, waived at subtotal `Rp 200` or above. No payment
 gateway or shipping provider is integrated. Stock is deducted when the order is
 created. Cancellation and stock restoration are handled by the M6 order
 lifecycle. Order confirmation is visible only to the account that owns the order.
@@ -341,6 +343,88 @@ Cancellation runs in one transaction:
 Concurrent cancellations serialize on the order row lock, so stock is restored
 once at most. The second request observes the cancelled state and is rejected.
 
+## Payment integration
+
+M7 introduces payment attempts for orders. The initial provider is a
+development/testing-only simulation. No real money moves and no card data is
+collected.
+
+- Payment currency: **IDR** (`IDR`).
+- Payment attempt deadline: **15 minutes**.
+- Provider: **simulated**.
+- Simulation is enabled in development/testing and disabled in production.
+- The payment amount is always derived from `Order.total`; client-supplied
+  amount, currency, provider and status are ignored.
+- Monetary values use `Decimal` and PostgreSQL `NUMERIC(12,2)`.
+- Product prices, shipping, orders and payments all use **IDR**.
+- A single canonical `format_idr` formatter is used by the storefront, cart,
+  checkout, order, admin and payment views.
+- M7 does not apply an FX conversion and does not change stored prices or
+  historical order values.
+- M7 does not implement refunds or a real payment gateway.
+
+Payment attempt statuses:
+
+- `pending`
+- `paid`
+- `failed`
+- `expired`
+- `refunded` (reserved; no refund action in M7)
+
+Allowed transitions:
+
+| Current | Allowed next | Notes |
+|---|---|---|
+| `pending` | `paid` | Server-validated simulated success |
+| `pending` | `failed` | Simulated failure |
+| `pending` | `expired` | Deadline passed or order cancelled |
+| `paid` | `refunded` | Reserved for a future confirmed refund workflow |
+| `failed` | — | Terminal for that attempt |
+| `expired` | — | Terminal for that attempt |
+| `refunded` | — | Terminal |
+
+Only one payment per order may be `paid`, enforced by a PostgreSQL partial unique
+index. Multiple attempts are allowed while the order remains unpaid; a second
+attempt cannot mark an already-paid order paid.
+
+### Payment routes
+
+| Route | Method | Purpose |
+| --- | --- | --- |
+| `/orders/<order_number>/pay` | GET | Owner-only payment page |
+| `/orders/<order_number>/payments` | POST | Create a pending attempt; CSRF |
+| `/payments/<payment_reference>` | GET | Owner-only payment attempt detail |
+| `/payments/<payment_reference>/simulate` | POST | Development/testing simulation; CSRF |
+
+Payment creation locks the order, validates ownership and eligibility, checks
+idempotency, then creates a `pending` attempt with `amount = order.total`,
+`currency = IDR`, and `expires_at = now + 15 minutes`. A duplicate POST with the
+same idempotency key returns the existing attempt.
+
+Payment processing locks the order first and the payment second, validates
+ownership, provider, amount, currency, status and deadline, then updates the
+payment and order in the same transaction. Failed and expired attempts leave
+`Order.payment_status` unchanged as `unpaid`. A successful attempt sets it to
+`paid`. Pending payments are expired when the order is cancelled.
+
+### Simulation security
+
+The simulated provider is offline and deterministic:
+
+- No external payment service is contacted.
+- No real money is processed.
+- No card number, CVV or card expiry fields exist.
+- Simulated provider references begin with `SIM-`.
+- Simulation outcomes are restricted to `success` and `failure`.
+- Expiry is determined by the server-side `expires_at`, not by a client action.
+- Simulation requires login, ownership, CSRF and a pending payment attempt.
+- Simulation routes return 404 when simulation is disabled.
+- Production validation rejects `PAYMENT_SIMULATION_ENABLED=True` and the
+  `simulated` provider.
+
+In production, with no real provider configured, payment initiation returns HTTP
+503. The order remains `unpaid`; M7 does not fake a production payment.
+
 ## Tests
 
 ```bash
@@ -349,8 +433,8 @@ pytest
 
 The suite runs against PostgreSQL `utop14_test`. Fixtures apply the committed
 Alembic migrations, reject any database whose name does not end in `_test`, and
-truncate account, catalog, cart and order tables between tests. The development
-database is never modified by the test suite.
+truncate account, catalog, cart, order and payment tables between tests. The
+development database is never modified by the test suite.
 
 Coverage includes application startup, configuration and production security
 defaults, catalog models and constraints, catalog service queries, storefront
@@ -358,7 +442,10 @@ pages, seeds, registration, password hashing, login/logout, CSRF, open-redirect
 prevention, inactive accounts, role-based access control, the admin CLI, cart
 constraints and concurrency behavior, checkout totals, price snapshots, stock
 deduction, transaction rollback, order ownership, order history, cancellation,
-stock restoration, lifecycle transitions and operator/admin order management.
+stock restoration, lifecycle transitions, operator/admin order management,
+payment constraints, IDR amounts, 15-minute deadlines, idempotency, simulated
+success/failure/expiry, payment ownership, concurrent processing and production
+payment gating.
 
 ## Linting and formatting
 
@@ -394,9 +481,10 @@ Current revision chain in source:
 - `5b9c540efff4` — users and role constraint
 - `f003cabb1f4f` — carts, cart items, orders and order items
 - `b042768520c0` — order cancellation fields
+- `c0f6c626195e` — payment attempts and one-paid-payment index
 
-The M6 cancellation-fields migration is generated and reviewed; apply it through
-the normal controlled migration step after review.
+The M7 payments migration is generated and reviewed; apply it through the normal
+controlled migration step after review.
 
 ## Production notes
 
@@ -419,6 +507,25 @@ the normal controlled migration step after review.
    to Gunicorn on the loopback interface.
 6. Keep `.env`, database credentials and secret keys out of source control,
    logs and error responses.
+
+## Milestone 7 scope
+
+Implemented:
+
+- Dedicated `Payment` attempts with IDR amount snapshots
+- Multiple attempts per order with one-paid-payment partial unique index
+- Server-derived amount from `Order.total`; client price fields ignored
+- 15-minute payment deadline and server-side expiry
+- Idempotent payment initiation and repeated simulation
+- Simulated provider with success/failure outcomes only
+- Development/testing simulation gate; production returns HTTP 503
+- Customer payment page, attempt detail and simulation controls
+- Payment attempts on customer order confirmation and admin order detail
+- Pending payments expired during order cancellation
+- Payment, order status and lifecycle integration tests
+
+Not yet implemented: real payment gateway, real refunds, card data handling,
+webhook signature verification, provider reconciliation and notifications.
 
 ## Milestone 6 scope
 
@@ -447,7 +554,7 @@ Implemented:
 - Cart page, add-to-cart variant selection, quantity update and removal
 - Transactional checkout with server-calculated Decimal totals
 - Conditional atomic stock deduction and full rollback on failure
-- Flat `$12` shipping, free at `$200` subtotal
+- Flat `Rp 12` shipping, free at `Rp 200` subtotal
 - Owner-only order confirmation with status and payment state
 
 Not yet implemented: payment gateway, shipping provider, cancellation, stock
