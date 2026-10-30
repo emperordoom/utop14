@@ -2,7 +2,7 @@
 
 {% block title %}Your account — UTOP14{% endblock %}
 
-{% block meta_description %}Review your UTOP14 account details, access level and last sign-in.{% endblock %}
+{% block meta_description %}Manage your UTOP14 profile, private avatar and account access.{% endblock %}
 
 {% block styles %}
   <link rel="stylesheet" href="{{ url_for('static', filename='css/auth.css') }}">
@@ -12,26 +12,46 @@
 
 {% block content %}
   <section class="section account-page" aria-labelledby="account-title">
-    <div class="container account-layout">
+    <div class="container account-layout account-layout--profile">
       <div class="account-intro">
         <p class="section-kicker">Account / {{ current_user.role }}</p>
         <h1 class="account-title" id="account-title">
           Your <em>signal.</em>
         </h1>
         <p class="account-copy">
-          This is the account currently signed in to UTOP14. Your access level
-          is enforced on the server for every protected page.
+          This is the account currently signed in to UTOP14. Update your public
+          details or manage the private avatar shown only on this page. Access
+          level is controlled by the server and cannot be changed here.
         </p>
-        <a class="text-link" href="{{ url_for('storefront.shop') }}">
-          Continue shopping
-          <span aria-hidden="true">↗</span>
-        </a>
-      </div>
 
-      <div class="account-card">
-        <div class="account-card__header">
-          <p class="mono">Account details</p>
-          <span class="role-badge">{{ current_user.role }}</span>
+        <div class="account-avatar-panel">
+          <div class="account-avatar">
+            {% if has_avatar_file %}
+              <img
+                class="account-avatar__image"
+                src="{{ url_for('auth.avatar') }}"
+                alt="Current avatar for {{ current_user.full_name }}"
+                width="160"
+                height="160"
+              >
+            {% else %}
+              <span class="account-avatar__initials" aria-hidden="true">{{ current_user.initials }}</span>
+              <span class="visually-hidden">Default avatar for {{ current_user.full_name }}</span>
+            {% endif %}
+          </div>
+          <div class="account-avatar__meta">
+            <p class="mono">Profile image</p>
+            <p>JPEG, PNG or WebP. Maximum 2 MB.</p>
+            {% if current_user.avatar_filename and not has_avatar_file %}
+              <p class="form-error">
+                The stored avatar file is missing. Remove it to reset the default.
+              </p>
+            {% elif current_user.avatar_filename %}
+              <p class="form-hint">Private avatar active.</p>
+            {% else %}
+              <p class="form-hint">Default initials active.</p>
+            {% endif %}
+          </div>
         </div>
 
         <dl class="account-meta">
@@ -74,6 +94,114 @@
             <a class="button button--ghost" href="{{ url_for('admin.operations') }}">Operator console</a>
           {% endif %}
         </div>
+      </div>
+
+      <div class="account-card account-card--profile">
+        <div class="account-card__header">
+          <p class="mono">Account details</p>
+          <span class="role-badge">{{ current_user.role }}</span>
+        </div>
+
+        <form class="auth-form account-form" method="post" action="{{ url_for('auth.profile_update') }}" novalidate>
+          {{ profile_form.hidden_tag() }}
+
+          <div class="form-field">
+            <label class="form-label" for="profile-full-name">Full name</label>
+            <input
+              class="form-control{% if profile_form.full_name.errors %} form-control--invalid{% endif %}"
+              id="profile-full-name"
+              name="full_name"
+              type="text"
+              value="{{ profile_form.full_name.data or '' }}"
+              maxlength="120"
+              autocomplete="name"
+              required
+              {% if profile_form.full_name.errors %}aria-invalid="true" aria-describedby="profile-full-name-error"{% endif %}
+            >
+            {% if profile_form.full_name.errors %}
+              <p class="form-error" id="profile-full-name-error">{{ profile_form.full_name.errors[0] }}</p>
+            {% endif %}
+          </div>
+
+          <div class="form-field">
+            <label class="form-label" for="profile-email">Email</label>
+            <input
+              class="form-control{% if profile_form.email.errors %} form-control--invalid{% endif %}"
+              id="profile-email"
+              name="email"
+              type="email"
+              value="{{ profile_form.email.data or '' }}"
+              maxlength="255"
+              autocomplete="email"
+              required
+              {% if profile_form.email.errors %}aria-invalid="true" aria-describedby="profile-email-error"{% endif %}
+            >
+            {% if profile_form.email.errors %}
+              <p class="form-error" id="profile-email-error">{{ profile_form.email.errors[0] }}</p>
+            {% endif %}
+          </div>
+
+          <button class="button button--primary auth-submit" type="submit">
+            Save profile
+            <span class="button__arrow" aria-hidden="true">→</span>
+          </button>
+        </form>
+
+        <div class="account-divider" role="presentation"></div>
+
+        <div class="account-card__header account-card__header--section">
+          <p class="mono">Avatar</p>
+          <p class="mono">Private</p>
+        </div>
+
+        <form
+          class="auth-form account-form"
+          method="post"
+          action="{{ url_for('auth.avatar_upload') }}"
+          enctype="multipart/form-data"
+          novalidate
+        >
+          {{ avatar_form.hidden_tag() }}
+
+          <div class="form-field">
+            <label class="form-label" for="avatar">Upload avatar</label>
+            <input
+              class="form-control account-file-input{% if avatar_form.avatar.errors %} form-control--invalid{% endif %}"
+              id="avatar"
+              name="avatar"
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              required
+              {% if avatar_form.avatar.errors %}aria-invalid="true" aria-describedby="avatar-error"{% endif %}
+            >
+            <p class="form-hint" id="avatar-hint">
+              JPEG, PNG or WebP, decoded and re-encoded as WebP. Maximum 2 MB.
+              The original filename is never used for storage.
+            </p>
+            {% if avatar_form.avatar.errors %}
+              <p class="form-error" id="avatar-error">{{ avatar_form.avatar.errors[0] }}</p>
+            {% endif %}
+          </div>
+
+          <button class="button button--primary auth-submit" type="submit">
+            Upload avatar
+            <span class="button__arrow" aria-hidden="true">→</span>
+          </button>
+        </form>
+
+        {% if current_user.avatar_filename %}
+          <form
+            class="account-avatar-delete"
+            method="post"
+            action="{{ url_for('auth.avatar_delete') }}"
+            data-confirm="Remove your current avatar and return to the default initials?"
+          >
+            {{ remove_avatar_form.hidden_tag() }}
+            <button class="button button--danger" type="submit">Remove avatar</button>
+          </form>
+        {% endif %}
+
+        <div class="account-divider" role="presentation"></div>
 
         <form class="account-logout" method="post" action="{{ url_for('auth.logout') }}">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -82,4 +210,8 @@
       </div>
     </div>
   </section>
+{% endblock %}
+
+{% block scripts %}
+  <script src="{{ url_for('static', filename='js/account.js') }}" defer></script>
 {% endblock %}

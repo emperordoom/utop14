@@ -8,7 +8,12 @@ from typing import Any
 
 from flask import Flask, render_template
 
-from app.config import get_config, load_environment, validate_config
+from app.config import (
+    configure_avatar_storage,
+    get_config,
+    load_environment,
+    validate_config,
+)
 from app.extensions import csrf, db, login_manager, migrate
 
 __all__ = ["create_app"]
@@ -42,6 +47,8 @@ def create_app(
 
     if config_overrides:
         app.config.update(config_overrides)
+
+    configure_avatar_storage(app)
 
     # Validate before initializing extensions so broken deployments stop
     # immediately and no component starts with an incomplete configuration.

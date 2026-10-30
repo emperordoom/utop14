@@ -75,3 +75,10 @@ def test_repr_does_not_include_password_material() -> None:
     assert "customer" in representation
     assert "password" not in representation.lower()
     assert user.password_hash not in representation
+
+
+def test_initials_use_up_to_two_name_parts() -> None:
+    assert User(full_name="Test Person").initials == "TP"
+    assert User(full_name="Ada").initials == "A"
+    assert User(full_name="Ada Byron Lovelace").initials == "AB"
+    assert User(full_name="   ").initials == "U"

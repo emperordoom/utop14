@@ -5,16 +5,36 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from urllib.parse import urlsplit
 
-from flask import flash, g, redirect, render_template, request, session, url_for
+from flask import abort, flash, g, redirect, render_template, request, send_file, session, url_for
 from flask.typing import ResponseReturnValue
 from flask_login import current_user, login_required, login_user, logout_user
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.auth import auth_bp
-from app.auth.forms import LoginForm, RegistrationForm
+from app.auth.forms import (
+    AvatarUploadForm,
+    LoginForm,
+    ProfileForm,
+    RegistrationForm,
+    RemoveAvatarForm,
+)
 from app.extensions import db
 from app.models.user import ROLE_CUSTOMER, User
+from app.services.avatars import (
+    AvatarError,
+    AvatarValidationError,
+    avatar_file_exists,
+    avatar_file_path,
+    remove_avatar,
+    save_avatar,
+)
+from app.services.profiles import (
+    ProfileConflictError,
+    ProfileError,
+    ProfileValidationError,
+    update_profile,
+)
 
 _SAFE_NEXT_MAX_LENGTH = 2048
 
@@ -44,6 +64,21 @@ def _clear_session() -> None:
     """Clear the session and any CSRF token cached on the app context."""
     session.clear()
     g.pop("csrf_token", None)
+
+
+def _render_account(
+    *,
+    profile_form: ProfileForm | None = None,
+    avatar_form: AvatarUploadForm | None = None,
+) -> str:
+    """Render the account page with both profile and avatar forms."""
+    return render_template(
+        "auth/account.html",
+        profile_form=profile_form or ProfileForm(obj=current_user),
+        avatar_form=avatar_form or AvatarUploadForm(),
+        remove_avatar_form=RemoveAvatarForm(),
+        has_avatar_file=avatar_file_exists(current_user.avatar_filename),
+    )
 
 
 @auth_bp.route("/register", methods=["GET", "POST"])
@@ -121,5 +156,100 @@ def logout() -> ResponseReturnValue:
 @auth_bp.get("/account")
 @login_required
 def account() -> ResponseReturnValue:
-    """Show the signed-in user's own account details."""
-    return render_template("auth/account.html")
+    """Show the signed-in user's own profile and avatar controls."""
+    return _render_account()
+
+
+@auth_bp.post("/account/profile")
+@login_required
+def profile_update() -> ResponseReturnValue:
+    """Update only the signed-in user's full name and email."""
+    form = ProfileForm()
+    if form.validate_on_submit():
+        try:
+            update_profile(
+                current_user.id,
+                full_name=form.full_name.data,
+                email=form.email.data,
+            )
+        except ProfileConflictError as exc:
+            form.email.errors.append(str(exc))
+        except ProfileValidationError as exc:
+            flash(str(exc), "error")
+        except ProfileError as exc:
+            flash(str(exc), "error")
+        else:
+            flash("Profile updated.", "success")
+            return redirect(url_for("auth.account"))
+
+    return _render_account(profile_form=form)
+
+
+@auth_bp.post("/account/avatar")
+@login_required
+def avatar_upload() -> ResponseReturnValue:
+    """Validate and replace the signed-in user's private avatar."""
+    form = AvatarUploadForm()
+    if form.validate_on_submit():
+        try:
+            result = save_avatar(current_user.id, form.avatar.data)
+        except AvatarValidationError as exc:
+            form.avatar.errors.append(str(exc))
+        except AvatarError as exc:
+            flash(str(exc), "error")
+        else:
+            flash("Avatar updated.", "success")
+            if result.cleanup_failed:
+                flash("The previous avatar file could not be removed.", "info")
+            return redirect(url_for("auth.account"))
+
+    return _render_account(avatar_form=form)
+
+
+@auth_bp.post("/account/avatar/delete")
+@login_required
+def avatar_delete() -> ResponseReturnValue:
+    """Remove the signed-in user's avatar after a successful commit."""
+    form = RemoveAvatarForm()
+    if not form.validate_on_submit():
+        flash("Avatar could not be removed.", "error")
+        return redirect(url_for("auth.account"))
+
+    try:
+        result = remove_avatar(current_user.id)
+    except AvatarError as exc:
+        flash(str(exc), "error")
+    else:
+        if result.old_filename is None:
+            flash("No avatar to remove.", "info")
+        else:
+            flash("Avatar removed. The default avatar is now active.", "success")
+        if result.cleanup_failed:
+            flash("The old avatar file could not be removed.", "info")
+
+    return redirect(url_for("auth.account"))
+
+
+@auth_bp.get("/avatar")
+@login_required
+def avatar() -> ResponseReturnValue:
+    """Serve only the signed-in user's own private avatar."""
+    filename = current_user.avatar_filename
+    if not filename or not avatar_file_exists(filename):
+        abort(404)
+
+    try:
+        path = avatar_file_path(filename)
+        response = send_file(
+            path,
+            mimetype="image/webp",
+            as_attachment=False,
+            conditional=True,
+            max_age=0,
+        )
+    except (AvatarError, OSError):
+        abort(404)
+
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Cache-Control"] = "private, no-store"
+    return response

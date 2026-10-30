@@ -91,12 +91,19 @@ class BaseConfig:
     PAYMENT_SIMULATION_ENABLED = False
     PAYMENT_ATTEMPT_TTL_MINUTES = 15
 
+    # Avatar uploads are stored outside the application/static tree.  An empty
+    # path is resolved to ``<instance>/avatars`` by ``configure_avatar_storage``.
+    AVATAR_STORAGE_PATH = ""
+    AVATAR_MAX_BYTES = 2 * 1024 * 1024
+    AVATAR_MAX_DIMENSION = 2048
+
     @classmethod
     def load(cls) -> dict[str, Any]:
         """Return the environment-dependent settings for this configuration."""
         return {
             "SECRET_KEY": _env_str("SECRET_KEY"),
             "SQLALCHEMY_DATABASE_URI": _env_str("DATABASE_URL"),
+            "AVATAR_STORAGE_PATH": _env_str("AVATAR_STORAGE_PATH"),
         }
 
 
@@ -200,6 +207,28 @@ def _database_name(database_url: str) -> str:
         return ""
 
 
+def configure_avatar_storage(app: Flask) -> None:
+    """Resolve and validate the private avatar storage directory.
+
+    The default is ``<instance>/avatars``.  Configured paths must not point into
+    the application source tree or the static web root, so uploaded files can
+    never be served directly by Flask's static handler.
+    """
+    configured = str(app.config.get("AVATAR_STORAGE_PATH") or "").strip()
+    storage = (
+        Path(configured).expanduser() if configured else Path(app.instance_path) / "avatars"
+    ).resolve()
+    app_root = Path(app.root_path).resolve()
+    static_root = Path(app.static_folder).resolve() if app.static_folder else None
+
+    if storage == app_root or app_root in storage.parents:
+        raise ConfigurationError("AVATAR_STORAGE_PATH must be outside the application source tree.")
+    if static_root is not None and (storage == static_root or static_root in storage.parents):
+        raise ConfigurationError("AVATAR_STORAGE_PATH must be outside the static web root.")
+
+    app.config["AVATAR_STORAGE_PATH"] = str(storage)
+
+
 _CONFIGURATIONS: Final = {
     "development": DevelopmentConfig,
     "production": ProductionConfig,
@@ -254,6 +283,22 @@ def validate_config(app: Flask) -> None:
         raise ConfigurationError(
             "DATABASE_URL must use the PostgreSQL Psycopg 3 driver ('postgresql+psycopg://...')."
         )
+
+    max_avatar_bytes = app.config.get("AVATAR_MAX_BYTES")
+    if (
+        type(max_avatar_bytes) is not int
+        or max_avatar_bytes <= 0
+        or max_avatar_bytes > 2 * 1024 * 1024
+    ):
+        raise ConfigurationError("AVATAR_MAX_BYTES must be between 1 and 2,097,152.")
+
+    max_avatar_dimension = app.config.get("AVATAR_MAX_DIMENSION")
+    if (
+        type(max_avatar_dimension) is not int
+        or max_avatar_dimension < 64
+        or max_avatar_dimension > 4096
+    ):
+        raise ConfigurationError("AVATAR_MAX_DIMENSION must be between 64 and 4,096.")
 
     # Only an exact ``int`` is accepted.  ``bool`` is a subclass of ``int`` and
     # floats/strings must never be silently truncated or coerced into an unsafe
