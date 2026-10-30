@@ -279,6 +279,122 @@
   border-top: 1px solid var(--line);
 }
 
+/* Editable profile and private avatar */
+.account-layout--profile {
+  grid-template-columns: minmax(0, 1fr) minmax(22rem, 34rem);
+}
+
+.account-card--profile {
+  position: static;
+}
+
+.account-avatar-panel {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  margin-top: 2rem;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.account-avatar {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 7rem;
+  aspect-ratio: 1;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--ink);
+}
+
+.account-avatar__image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.account-avatar__initials {
+  color: var(--acid);
+  font-family: var(--font-editorial);
+  font-size: 2.6rem;
+  font-style: italic;
+  font-weight: 400;
+}
+
+.account-avatar__meta {
+  display: grid;
+  gap: 0.35rem;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.65;
+}
+
+.account-avatar__meta p {
+  margin: 0;
+}
+
+.account-avatar__meta .mono {
+  color: var(--paper);
+}
+
+.account-card__header--section {
+  margin-top: 0.25rem;
+}
+
+.account-divider {
+  height: 1px;
+  margin: 1.6rem 0;
+  background: var(--line);
+}
+
+.account-form {
+  margin-top: 1.2rem;
+}
+
+.account-file-input {
+  padding: 0.65rem;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.account-file-input::file-selector-button {
+  margin-right: 0.9rem;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--paper);
+  font-family: var(--font-mono);
+  font-size: 0.5625rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+
+.account-file-input::file-selector-button:hover {
+  border-color: var(--paper);
+  color: var(--acid);
+}
+
+.account-avatar-delete {
+  margin-top: 1rem;
+}
+
+.button--danger {
+  border-color: #f87171;
+  color: #fca5a5;
+}
+
+.button--danger:hover {
+  border-color: #fca5a5;
+  background: rgb(248 113 113 / 10%);
+  color: #fecaca;
+}
+
 /* Staff dashboards */
 .staff-hero {
   position: relative;
@@ -475,8 +591,18 @@
     text-align: left;
   }
 
+  .account-avatar-panel {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .account-avatar {
+    width: 6rem;
+  }
+
   .account-actions .button,
   .account-logout .button,
+  .account-avatar-delete .button,
   .staff-hero__actions .button {
     width: 100%;
   }

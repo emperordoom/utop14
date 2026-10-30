@@ -61,6 +61,7 @@ class User(UserMixin, TimestampMixin, Base):
         DateTime(timezone=True),
         nullable=True,
     )
+    avatar_filename: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     @validates("email")
     def _normalize_email(self, _key: str, value: str) -> str:
@@ -95,6 +96,14 @@ class User(UserMixin, TimestampMixin, Base):
     def is_operator(self) -> bool:
         """Whether this account can access operator-level pages."""
         return self.has_role(ROLE_OPERATOR)
+
+    @property
+    def initials(self) -> str:
+        """Return up to two initials for the default avatar."""
+        parts = [part for part in self.full_name.split() if part]
+        if not parts:
+            return "U"
+        return "".join(part[0].upper() for part in parts[:2])
 
     def __repr__(self) -> str:
         return f"<User {self.email!r} role={self.role!r}>"

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 import secrets
+import shutil
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Final
@@ -77,9 +78,13 @@ def _reset_tables() -> None:
 
 
 @pytest.fixture(scope="session")
-def _database_app() -> Flask:
+def _database_app(tmp_path_factory: pytest.TempPathFactory) -> Flask:
     """Create the shared test application and migrate the test database once."""
-    application = create_app("testing")
+    avatar_storage_path = tmp_path_factory.mktemp("avatars")
+    application = create_app(
+        "testing",
+        {"AVATAR_STORAGE_PATH": str(avatar_storage_path)},
+    )
     _assert_test_database(application)
     _run_migrations(application)
     return application
@@ -101,6 +106,21 @@ def app(_database_app: Flask) -> Iterator[Flask]:
 def client(app: Flask) -> FlaskClient:
     """Return a test client bound to the test application."""
     return app.test_client()
+
+
+@pytest.fixture()
+def avatar_storage(
+    app: Flask,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[Path]:
+    """Use an isolated avatar directory and remove it after the test."""
+    storage = tmp_path / "avatars"
+    monkeypatch.setitem(app.config, "AVATAR_STORAGE_PATH", str(storage))
+    try:
+        yield storage
+    finally:
+        shutil.rmtree(storage, ignore_errors=True)
 
 
 @pytest.fixture()

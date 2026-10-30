@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from flask_wtf import FlaskForm
+from flask_wtf.file import FileField, FileRequired
 from wtforms import BooleanField, HiddenField, PasswordField, StringField, SubmitField
 from wtforms.validators import DataRequired, Email, EqualTo, Length
 
@@ -59,3 +60,35 @@ class LoginForm(FlaskForm):
     remember = BooleanField("Keep me signed in")
     next = HiddenField()
     submit = SubmitField("Sign in")
+
+
+class ProfileForm(FlaskForm):
+    """Update the current user's own public profile fields."""
+
+    full_name = StringField(
+        "Full name",
+        filters=[_strip],
+        validators=[DataRequired(), Length(max=120)],
+    )
+    email = StringField(
+        "Email",
+        filters=[_strip, _normalize_email],
+        validators=[DataRequired(), Email(), Length(max=255)],
+    )
+    submit = SubmitField("Save profile")
+
+
+class AvatarUploadForm(FlaskForm):
+    """Upload or replace the current user's avatar."""
+
+    avatar = FileField(
+        "Avatar",
+        validators=[FileRequired()],
+    )
+    submit = SubmitField("Upload avatar")
+
+
+class RemoveAvatarForm(FlaskForm):
+    """CSRF-only form for removing the current user's avatar."""
+
+    submit = SubmitField("Remove avatar")
