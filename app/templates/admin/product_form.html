@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+
+{% from "components/admin_badges.html" import catalog_status, field_errors %}
+
+{% block title %}{{ page_title }} — Products — UTOP14{% endblock %}
+
+{% block meta_description %}Create or edit a UTOP14 catalog product.{% endblock %}
+
+{% block styles %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/auth.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css') }}">
+{% endblock %}
+
+{% block body_class %}page-admin-catalog{% endblock %}
+
+{% block content %}
+  {% include "components/admin_nav.html" %}
+
+  <section class="staff-hero" aria-labelledby="product-form-title">
+    <div class="container">
+      <nav class="admin-breadcrumb" aria-label="Breadcrumb">
+        <a href="{{ url_for('admin.product_list') }}">Products</a>
+        <span aria-hidden="true">/</span>
+        {% if product is not none %}
+          <a href="{{ url_for('admin.product_detail', product_id=product.id) }}">{{ product.name }}</a>
+          <span aria-hidden="true">/</span>
+        {% endif %}
+        <span aria-current="page">{{ "New" if product is none else "Edit" }}</span>
+      </nav>
+      <p class="section-kicker">Catalog / Products / {{ "Create" if product is none else "Edit" }}</p>
+      <h1 class="staff-hero__title" id="product-form-title">
+        {{ "New" if product is none else "Edit" }} <em>product.</em>
+      </h1>
+      <p class="staff-hero__copy">
+        Product name, slug, price and card image are required. Variants and
+        gallery images are managed from the product detail screen after the
+        product exists.
+      </p>
+    </div>
+  </section>
+
+  <section class="section staff-section" aria-labelledby="product-fields-title">
+    <div class="container admin-form-layout">
+      <div class="admin-form-card">
+        <div class="order-panel__header">
+          <p class="mono" id="product-fields-title">Product fields</p>
+          <p class="mono">{{ "Create" if product is none else "Update" }}</p>
+        </div>
+
+        <form class="admin-form admin-form--two-column" method="post" novalidate>
+          {{ form.hidden_tag() }}
+
+          <div class="admin-form__field">
+            {{ form.category_id.label(class_="form-label") }}
+            {{ form.category_id(class_="form-control") }}
+            {{ field_errors(form.category_id) }}
+          </div>
+
+          <div class="admin-form__field">
+            {{ form.name.label(class_="form-label") }}
+            {{ form.name(class_="form-control", maxlength="120", autocomplete="off") }}
+            {{ field_errors(form.name) }}
+          </div>
+
+          <div class="admin-form__field">
+            {{ form.slug.label(class_="form-label") }}
+            {{ form.slug(class_="form-control", maxlength="120", autocomplete="off") }}
+            <p class="form-hint">Lowercase letters, numbers and single hyphens. Must be unique.</p>
+            {{ field_errors(form.slug) }}
+          </div>
+
+          <div class="admin-form__field">
+            {{ form.price.label(class_="form-label") }}
+            {{ form.price(class_="form-control", maxlength="15", inputmode="decimal", placeholder="0.00", autocomplete="off") }}
+            <p class="form-hint">USD, non-negative, at most two decimal places.</p>
+            {{ field_errors(form.price) }}
+          </div>
+
+          <div class="admin-form__field">
+            {{ form.image_path.label(class_="form-label") }}
+            {{ form.image_path(class_="form-control", maxlength="255", autocomplete="off") }}
+            <p class="form-hint">Relative path beneath images/, for example images/products/tee-front.webp.</p>
+            {{ field_errors(form.image_path) }}
+          </div>
+
+          <div class="admin-form__field">
+            {{ form.image_alt.label(class_="form-label") }}
+            {{ form.image_alt(class_="form-control", maxlength="255", autocomplete="off") }}
+            <p class="form-hint">Describe the card image for screen readers.</p>
+            {{ field_errors(form.image_alt) }}
+          </div>
+
+          <div class="admin-form__field">
+            {{ form.badge.label(class_="form-label") }}
+            {{ form.badge(class_="form-control", maxlength="40", autocomplete="off") }}
+            <p class="form-hint">Optional. Short callout such as “New” or “Last units”.</p>
+            {{ field_errors(form.badge) }}
+          </div>
+
+          <div class="admin-form__field admin-form__field--wide">
+            {{ form.description.label(class_="form-label") }}
+            {{ form.description(class_="form-control", rows="6", maxlength="5000") }}
+            <p class="form-hint">Optional. Up to 5,000 characters.</p>
+            {{ field_errors(form.description) }}
+          </div>
+
+          <div class="admin-form__actions admin-form__actions--wide">
+            {{ form.submit(class_="button button--primary") }}
+            <a class="button button--ghost" href="{{ url_for('admin.product_list') }}">Cancel</a>
+          </div>
+        </form>
+      </div>
+
+      <aside class="admin-side-card" aria-labelledby="product-side-title">
+        <div class="order-panel__header">
+          <p class="mono" id="product-side-title">Context</p>
+          {% if product is not none %}{{ catalog_status(product.is_active) }}{% else %}<p class="mono">New</p>{% endif %}
+        </div>
+
+        {% if product is not none %}
+          <img
+            class="admin-preview"
+            src="{{ url_for('static', filename=product.image_path) }}"
+            alt="{{ product.image_alt or product.name }}"
+            width="320"
+            height="400"
+          >
+          <dl class="admin-meta-list">
+            <div>
+              <dt>Variants</dt>
+              <dd>{{ product.variants|length }}</dd>
+            </div>
+            <div>
+              <dt>Gallery images</dt>
+              <dd>{{ product.images|length }}</dd>
+            </div>
+            <div>
+              <dt>Total stock</dt>
+              <dd>{{ product.variants|sum(attribute="stock") }}</dd>
+            </div>
+          </dl>
+          <a class="button button--ghost admin-side-card__button" href="{{ url_for('admin.product_detail', product_id=product.id) }}">
+            Manage variants &amp; images
+          </a>
+        {% else %}
+          <p class="admin-note">
+            After saving, add at least one size/colour variant so the product can
+            be purchased. Gallery images are optional.
+          </p>
+          <p class="admin-note">
+            New products are active immediately. Deactivate the product if it
+            should stay hidden while you finish the details.
+          </p>
+        {% endif %}
+      </aside>
+    </div>
+  </section>
+{% endblock %}

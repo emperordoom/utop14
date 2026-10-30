@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+
+{% from "components/admin_badges.html" import field_errors %}
+
+{% block title %}{{ page_title }} — Categories — UTOP14{% endblock %}
+
+{% block meta_description %}Create or edit a UTOP14 catalog category.{% endblock %}
+
+{% block styles %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/auth.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css') }}">
+{% endblock %}
+
+{% block body_class %}page-admin-catalog{% endblock %}
+
+{% block content %}
+  {% include "components/admin_nav.html" %}
+
+  <section class="staff-hero" aria-labelledby="category-form-title">
+    <div class="container">
+      <nav class="admin-breadcrumb" aria-label="Breadcrumb">
+        <a href="{{ url_for('admin.category_list') }}">Categories</a>
+        <span aria-hidden="true">/</span>
+        <span aria-current="page">{{ "New" if category is none else category.name }}</span>
+      </nav>
+      <p class="section-kicker">Catalog / Categories / {{ "Create" if category is none else "Edit" }}</p>
+      <h1 class="staff-hero__title" id="category-form-title">
+        {{ "New" if category is none else "Edit" }} <em>category.</em>
+      </h1>
+      <p class="staff-hero__copy">
+        {% if category is none %}
+          Categories group products on the storefront. The position value orders
+          the category rails from lowest to highest.
+        {% else %}
+          Update the name, slug, icon or storefront position. Deactivation keeps
+          every linked product intact.
+        {% endif %}
+      </p>
+    </div>
+  </section>
+
+  <section class="section staff-section" aria-labelledby="category-fields-title">
+    <div class="container admin-form-layout">
+      <div class="admin-form-card">
+        <div class="order-panel__header">
+          <p class="mono" id="category-fields-title">Category fields</p>
+          <p class="mono">{{ "Create" if category is none else "Update" }}</p>
+        </div>
+
+        <form class="admin-form" method="post" novalidate>
+          {{ form.hidden_tag() }}
+
+          <div class="admin-form__field">
+            {{ form.name.label(class_="form-label") }}
+            {{ form.name(class_="form-control", maxlength="80", autocomplete="off") }}
+            {{ field_errors(form.name) }}
+          </div>
+
+          <div class="admin-form__field">
+            {{ form.slug.label(class_="form-label") }}
+            {{ form.slug(class_="form-control", maxlength="80", autocomplete="off") }}
+            <p class="form-hint">Lowercase letters, numbers and single hyphens. Must be unique.</p>
+            {{ field_errors(form.slug) }}
+          </div>
+
+          <div class="admin-form__field">
+            {{ form.icon.label(class_="form-label") }}
+            {{ form.icon(class_="form-control", maxlength="255", autocomplete="off") }}
+            <p class="form-hint">Relative path beneath images/, for example images/categories/tees.svg.</p>
+            {{ field_errors(form.icon) }}
+          </div>
+
+          <div class="admin-form__field">
+            {{ form.position.label(class_="form-label") }}
+            {{ form.position(class_="form-control", min="0", max="9999", inputmode="numeric") }}
+            <p class="form-hint">Lower values appear first in category navigation.</p>
+            {{ field_errors(form.position) }}
+          </div>
+
+          <div class="admin-form__field admin-form__field--wide">
+            {{ form.description.label(class_="form-label") }}
+            {{ form.description(class_="form-control", rows="5", maxlength="1000") }}
+            <p class="form-hint">Optional. Up to 1,000 characters.</p>
+            {{ field_errors(form.description) }}
+          </div>
+
+          <div class="admin-form__actions">
+            {{ form.submit(class_="button button--primary") }}
+            <a class="button button--ghost" href="{{ url_for('admin.category_list') }}">Cancel</a>
+          </div>
+        </form>
+      </div>
+
+      {% if category is not none %}
+        <aside class="admin-side-card" aria-labelledby="related-products-title">
+          <div class="order-panel__header">
+            <p class="mono" id="related-products-title">Related products</p>
+            <p class="mono">{{ category.products|length }}</p>
+          </div>
+
+          {% if category.products %}
+            <ul class="admin-related-list" role="list">
+              {% for product in category.products %}
+                <li>
+                  <a href="{{ url_for('admin.product_detail', product_id=product.id) }}">{{ product.name }}</a>
+                  <span class="mono">{{ "Active" if product.is_active else "Inactive" }}</span>
+                </li>
+              {% endfor %}
+            </ul>
+            <p class="admin-note">
+              Deactivating this category hides it from the storefront but does
+              not remove or deactivate these products.
+            </p>
+          {% else %}
+            <p class="admin-note">No products are assigned to this category yet.</p>
+          {% endif %}
+        </aside>
+      {% endif %}
+    </div>
+  </section>
+{% endblock %}

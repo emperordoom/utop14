@@ -1,0 +1,237 @@
+{% extends "base.html" %}
+
+{% from "components/admin_badges.html" import catalog_status, stock_badge %}
+
+{% block title %}{{ product.name }} — Products — UTOP14{% endblock %}
+
+{% block meta_description %}Admin detail view for a UTOP14 product, its variants and gallery images.{% endblock %}
+
+{% block styles %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/auth.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css') }}">
+{% endblock %}
+
+{% block body_class %}page-admin-catalog{% endblock %}
+
+{% block content %}
+  {% include "components/admin_nav.html" %}
+
+  <section class="staff-hero" aria-labelledby="product-detail-title">
+    <div class="container">
+      <nav class="admin-breadcrumb" aria-label="Breadcrumb">
+        <a href="{{ url_for('admin.product_list') }}">Products</a>
+        <span aria-hidden="true">/</span>
+        <span aria-current="page">{{ product.name }}</span>
+      </nav>
+      <p class="section-kicker">Catalog / Products / Detail</p>
+      <div class="admin-detail-heading">
+        <div>
+          <h1 class="staff-hero__title" id="product-detail-title">{{ product.name }}</h1>
+          <p class="admin-meta mono">/{{ product.slug }} · {{ product.category.name }}</p>
+        </div>
+        {{ catalog_status(product.is_active) }}
+      </div>
+      <div class="staff-hero__actions">
+        <a class="button button--primary" href="{{ url_for('admin.product_edit', product_id=product.id) }}">Edit product</a>
+        <a class="button button--ghost" href="{{ url_for('admin.variant_create', product_id=product.id) }}">Add variant</a>
+        <a class="button button--ghost" href="{{ url_for('admin.image_create', product_id=product.id) }}">Add image</a>
+        <form
+          class="admin-action-form"
+          method="post"
+          action="{{ url_for('admin.product_' ~ ('deactivate' if product.is_active else 'activate'), product_id=product.id) }}"
+          {% if product.is_active %}data-confirm="Deactivate {{ product.name }}? It will disappear from the storefront."{% endif %}
+        >
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button class="button button--ghost" type="submit">
+            {{ "Deactivate product" if product.is_active else "Activate product" }}
+          </button>
+        </form>
+        {% if product.is_active %}
+          <a class="button button--ghost" href="{{ url_for('storefront.product_detail', slug=product.slug) }}">
+            View storefront
+            <span aria-hidden="true">↗</span>
+          </a>
+        {% endif %}
+      </div>
+    </div>
+  </section>
+
+  <section class="section staff-section" aria-labelledby="product-summary-title">
+    <div class="container admin-detail-grid">
+      <div class="admin-detail-media">
+        <img
+          class="admin-detail-image"
+          src="{{ url_for('static', filename=product.image_path) }}"
+          alt="{{ product.image_alt or product.name }}"
+          width="560"
+          height="700"
+        >
+        <p class="admin-meta mono">{{ product.image_path }}</p>
+      </div>
+
+      <div class="admin-detail-copy">
+        <div class="section-heading">
+          <p class="section-kicker">01 / Summary</p>
+          <h2 class="section-title" id="product-summary-title">Product <em>record.</em></h2>
+        </div>
+
+        <dl class="admin-meta-list">
+          <div>
+            <dt>Price</dt>
+            <dd>{{ product.price|money }}</dd>
+          </div>
+          <div>
+            <dt>Badge</dt>
+            <dd>{{ product.badge or "None" }}</dd>
+          </div>
+          <div>
+            <dt>Variants</dt>
+            <dd>{{ product.variants|length }} ({{ product.available_variants|length }} active)</dd>
+          </div>
+          <div>
+            <dt>Total stock</dt>
+            <dd>{{ product.variants|sum(attribute="stock") }}</dd>
+          </div>
+          <div>
+            <dt>Gallery images</dt>
+            <dd>{{ product.images|length }}</dd>
+          </div>
+        </dl>
+
+        {% if product.description %}
+          <p class="admin-detail-description">{{ product.description }}</p>
+        {% else %}
+          <p class="admin-note">No description has been written for this product.</p>
+        {% endif %}
+      </div>
+    </div>
+  </section>
+
+  <section class="section staff-section" aria-labelledby="product-variants-title">
+    <div class="container">
+      <div class="section-heading admin-section-heading">
+        <div>
+          <p class="section-kicker">02 / Inventory</p>
+          <h2 class="section-title" id="product-variants-title">Size &amp; colour <em>variants.</em></h2>
+        </div>
+        <a class="text-link" href="{{ url_for('admin.variant_create', product_id=product.id) }}">Add variant <span aria-hidden="true">↗</span></a>
+      </div>
+
+      {% if product.variants %}
+        <div class="admin-table-wrap">
+          <table class="admin-table">
+            <caption class="visually-hidden">Variants for {{ product.name }}</caption>
+            <thead>
+              <tr>
+                <th scope="col">SKU</th>
+                <th scope="col">Size</th>
+                <th scope="col">Colour</th>
+                <th scope="col">Stock</th>
+                <th scope="col">Status</th>
+                <th scope="col"><span class="visually-hidden">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for variant in product.variants %}
+                <tr>
+                  <td class="mono">{{ variant.sku }}</td>
+                  <td>{{ variant.size }}</td>
+                  <td>{{ variant.color }}</td>
+                  <td>{{ stock_badge(variant.stock) }}</td>
+                  <td>{{ catalog_status(variant.is_active) }}</td>
+                  <td>
+                    <div class="admin-actions">
+                      <a class="text-link" href="{{ url_for('admin.variant_edit', product_id=product.id, variant_id=variant.id) }}">Edit</a>
+                      <form
+                        class="admin-action-form"
+                        method="post"
+                        action="{{ url_for('admin.variant_' ~ ('deactivate' if variant.is_active else 'activate'), product_id=product.id, variant_id=variant.id) }}"
+                        {% if variant.is_active %}data-confirm="Deactivate {{ variant.sku }}? It will no longer be purchasable."{% endif %}
+                      >
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button class="admin-link-button" type="submit">
+                          {{ "Deactivate" if variant.is_active else "Activate" }}
+                        </button>
+                      </form>
+                    </div>
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <p class="admin-note">
+          Inactive variants keep their stock but cannot be added to a cart.
+          Stock changes are also available from the inventory screen.
+        </p>
+      {% else %}
+        <div class="admin-empty admin-empty--inline">
+          <p class="mono">No variants</p>
+          <h2>Not purchasable <em>yet.</em></h2>
+          <p>Add at least one size/colour variant with stock before this product can be sold.</p>
+          <a class="button button--ghost" href="{{ url_for('admin.variant_create', product_id=product.id) }}">Add the first variant</a>
+        </div>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="section staff-section" aria-labelledby="product-images-title">
+    <div class="container">
+      <div class="section-heading admin-section-heading">
+        <div>
+          <p class="section-kicker">03 / Gallery</p>
+          <h2 class="section-title" id="product-images-title">Gallery <em>images.</em></h2>
+        </div>
+        <a class="text-link" href="{{ url_for('admin.image_create', product_id=product.id) }}">Add image <span aria-hidden="true">↗</span></a>
+      </div>
+
+      {% if product.images %}
+        <ul class="admin-gallery" role="list">
+          {% for image in product.images %}
+            <li class="admin-gallery__item">
+              <img
+                class="admin-gallery__image"
+                src="{{ url_for('static', filename=image.image_path) }}"
+                alt="{{ image.alt_text or product.name }}"
+                loading="lazy"
+                width="320"
+                height="400"
+              >
+              <div class="admin-gallery__body">
+                <p class="admin-meta mono">{{ image.image_path }}</p>
+                <p class="admin-note">{{ image.alt_text or "No alt text" }}</p>
+                <p class="admin-meta mono">Position {{ image.position }}</p>
+                <div class="admin-actions">
+                  <a class="text-link" href="{{ url_for('admin.image_edit', product_id=product.id, image_id=image.id) }}">Edit</a>
+                  <form
+                    class="admin-action-form"
+                    method="post"
+                    action="{{ url_for('admin.image_delete', product_id=product.id, image_id=image.id) }}"
+                    data-confirm="Delete this gallery image? The product card image is not changed."
+                  >
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button class="admin-link-button admin-link-button--danger" type="submit">Delete</button>
+                  </form>
+                </div>
+              </div>
+            </li>
+          {% endfor %}
+        </ul>
+        <p class="admin-note">
+          Deleting a gallery image never removes the product card image path.
+        </p>
+      {% else %}
+        <div class="admin-empty admin-empty--inline">
+          <p class="mono">No gallery images</p>
+          <h2>Card image <em>only.</em></h2>
+          <p>The storefront will use the product card image until gallery images are added.</p>
+          <a class="button button--ghost" href="{{ url_for('admin.image_create', product_id=product.id) }}">Add a gallery image</a>
+        </div>
+      {% endif %}
+    </div>
+  </section>
+{% endblock %}
+
+{% block scripts %}
+  <script src="{{ url_for('static', filename='js/admin.js') }}" defer></script>
+{% endblock %}

@@ -6,11 +6,14 @@
 
 {% block styles %}
   <link rel="stylesheet" href="{{ url_for('static', filename='css/auth.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css') }}">
 {% endblock %}
 
 {% block body_class %}page-admin{% endblock %}
 
 {% block content %}
+  {% include "components/admin_nav.html" %}
+
   <section class="staff-hero" aria-labelledby="admin-title">
     <div class="container">
       <p class="section-kicker">Admin / Control room</p>
@@ -18,16 +21,18 @@
         Drop 014 <em>control.</em>
       </h1>
       <p class="staff-hero__copy">
-        Catalog and account counts remain read-only. Order lifecycle management
-        is available for operators and admins through the order queue.
+        Manage categories, products, variants, gallery images and stock from
+        the catalog workspace. Order lifecycle management is available through
+        the shared staff order queue.
       </p>
       <div class="staff-hero__actions">
-        <a class="button button--primary" href="{{ url_for('admin.order_list') }}">
-          Manage orders
+        <a class="button button--primary" href="{{ url_for('admin.product_list') }}">
+          Manage catalog
           <span class="button__arrow" aria-hidden="true">→</span>
         </a>
+        <a class="button button--ghost" href="{{ url_for('admin.inventory_list') }}">Adjust stock</a>
+        <a class="button button--ghost" href="{{ url_for('admin.order_list') }}">Manage orders</a>
         <a class="button button--ghost" href="{{ url_for('storefront.shop') }}">View storefront</a>
-        <a class="button button--ghost" href="{{ url_for('admin.operations') }}">Operator console</a>
       </div>
     </div>
   </section>
@@ -84,17 +89,22 @@
 
       <div class="staff-panel">
         <div class="staff-panel__header">
-          <p class="mono">Milestone note</p>
-          <p class="mono">Read-only</p>
+          <p class="mono">Access boundary</p>
+          <p class="mono">Admin only</p>
         </div>
         <div class="staff-panel__body">
           <p>
-            This dashboard is protected by server-side role checks. It exposes
-            aggregate counts only; no customer password material or personal
-            account records are rendered here.
+            This dashboard and every catalog mutation are protected by
+            server-side admin checks. Operators retain order-management access
+            only, and no customer password material or personal account records
+            are rendered here.
           </p>
         </div>
       </div>
     </div>
   </section>
+{% endblock %}
+
+{% block scripts %}
+  <script src="{{ url_for('static', filename='js/admin.js') }}" defer></script>
 {% endblock %}

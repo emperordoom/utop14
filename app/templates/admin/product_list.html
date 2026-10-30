@@ -1,0 +1,174 @@
+{% extends "base.html" %}
+
+{% from "components/admin_badges.html" import catalog_status %}
+{% from "components/pagination.html" import render_pagination %}
+
+{% block title %}Products — Admin — UTOP14{% endblock %}
+
+{% block meta_description %}Admin product management for the UTOP14 catalog.{% endblock %}
+
+{% block styles %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/auth.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/orders.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css') }}">
+{% endblock %}
+
+{% block body_class %}page-admin-catalog{% endblock %}
+
+{% block content %}
+  {% include "components/admin_nav.html" %}
+
+  <section class="staff-hero" aria-labelledby="product-admin-title">
+    <div class="container">
+      <p class="section-kicker">Catalog / Products</p>
+      <h1 class="staff-hero__title" id="product-admin-title">
+        Build the <em>drop.</em>
+      </h1>
+      <p class="staff-hero__copy">
+        Search by product name or SKU, filter by category and lifecycle state,
+        then open a product to manage its variants, gallery and visibility.
+      </p>
+      <div class="staff-hero__actions">
+        <a class="button button--primary" href="{{ url_for('admin.product_create') }}">
+          New product
+          <span class="button__arrow" aria-hidden="true">→</span>
+        </a>
+        <a class="button button--ghost" href="{{ url_for('admin.inventory_list') }}">Manage inventory</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="section staff-section" aria-labelledby="product-list-title">
+    <div class="container">
+      <div class="section-heading">
+        <p class="section-kicker">01 / Catalog</p>
+        <h2 class="section-title" id="product-list-title">All <em>products.</em></h2>
+      </div>
+
+      <form class="admin-filters" method="get" action="{{ url_for('admin.product_list') }}">
+        <div class="admin-filters__field admin-filters__field--wide">
+          <label class="form-label" for="filter-query">Name or SKU</label>
+          <input
+            class="form-control"
+            id="filter-query"
+            name="q"
+            type="search"
+            value="{{ filters.query or '' }}"
+            maxlength="80"
+            placeholder="Heavyweight tee / U14-TEE"
+            autocomplete="off"
+          >
+        </div>
+
+        <div class="admin-filters__field">
+          <label class="form-label" for="filter-category">Category</label>
+          <select class="form-control" id="filter-category" name="category">
+            <option value="">All categories</option>
+            {% for category_id, category_name in categories %}
+              <option value="{{ category_id }}"{% if filters.category_id == category_id %} selected{% endif %}>{{ category_name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="admin-filters__field">
+          <label class="form-label" for="filter-status">Status</label>
+          <select class="form-control" id="filter-status" name="status">
+            <option value="">All statuses</option>
+            <option value="active"{% if filters.status == "active" %} selected{% endif %}>Active</option>
+            <option value="inactive"{% if filters.status == "inactive" %} selected{% endif %}>Inactive</option>
+          </select>
+        </div>
+
+        <div class="admin-filters__actions">
+          <button class="button button--primary" type="submit">Apply</button>
+          <a class="text-link" href="{{ url_for('admin.product_list') }}">Reset</a>
+        </div>
+      </form>
+
+      {% if pagination.items %}
+        <div class="admin-toolbar">
+          <p class="mono">{{ pagination.total }} product{% if pagination.total != 1 %}s{% endif %}</p>
+          <p class="mono">Page {{ pagination.page }} / {{ pagination.pages }}</p>
+        </div>
+
+        <div class="admin-table-wrap">
+          <table class="admin-table admin-table--products">
+            <caption class="visually-hidden">Filtered catalog products with status and stock summary</caption>
+            <thead>
+              <tr>
+                <th scope="col">Product</th>
+                <th scope="col">Category</th>
+                <th scope="col">Variants</th>
+                <th scope="col">Stock</th>
+                <th scope="col">Price</th>
+                <th scope="col">Status</th>
+                <th scope="col"><span class="visually-hidden">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for product in pagination.items %}
+                {% set total_stock = product.variants|sum(attribute="stock") %}
+                <tr>
+                  <td>
+                    <div class="admin-product-cell">
+                      <img
+                        class="admin-thumb"
+                        src="{{ url_for('static', filename=product.image_path) }}"
+                        alt="{{ product.image_alt or product.name }}"
+                        loading="lazy"
+                        width="56"
+                        height="70"
+                      >
+                      <div>
+                        <p class="admin-table__primary">{{ product.name }}</p>
+                        <p class="admin-meta mono">/{{ product.slug }}</p>
+                      </div>
+                    </div>
+                  </td>
+                  <td>{{ product.category.name }}</td>
+                  <td class="mono">{{ product.variants|length }}</td>
+                  <td class="mono">{{ total_stock }}</td>
+                  <td class="mono">{{ product.price|money }}</td>
+                  <td>{{ catalog_status(product.is_active) }}</td>
+                  <td>
+                    <div class="admin-actions">
+                      <a class="text-link" href="{{ url_for('admin.product_detail', product_id=product.id) }}">Open</a>
+                      <a class="text-link" href="{{ url_for('admin.product_edit', product_id=product.id) }}">Edit</a>
+                      <form
+                        class="admin-action-form"
+                        method="post"
+                        action="{{ url_for('admin.product_' ~ ('deactivate' if product.is_active else 'activate'), product_id=product.id) }}"
+                        {% if product.is_active %}data-confirm="Deactivate {{ product.name }}? It will disappear from the storefront."{% endif %}
+                      >
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <button class="admin-link-button" type="submit">
+                          {{ "Deactivate" if product.is_active else "Activate" }}
+                        </button>
+                      </form>
+                    </div>
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+
+        {{ render_pagination(pagination, 'admin.product_list', query_params) }}
+      {% else %}
+        <div class="admin-empty">
+          <p class="mono">No matching products</p>
+          <h2>Nothing in this <em>view.</em></h2>
+          <p>Adjust the category, status or search filters, or create a new product.</p>
+          <div class="admin-empty__actions">
+            <a class="button button--ghost" href="{{ url_for('admin.product_list') }}">Clear filters</a>
+            <a class="button button--primary" href="{{ url_for('admin.product_create') }}">New product</a>
+          </div>
+        </div>
+      {% endif %}
+    </div>
+  </section>
+{% endblock %}
+
+{% block scripts %}
+  <script src="{{ url_for('static', filename='js/admin.js') }}" defer></script>
+{% endblock %}

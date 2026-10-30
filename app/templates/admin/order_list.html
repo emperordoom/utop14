@@ -10,11 +10,14 @@
 {% block styles %}
   <link rel="stylesheet" href="{{ url_for('static', filename='css/auth.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/orders.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css') }}">
 {% endblock %}
 
 {% block body_class %}page-admin-orders{% endblock %}
 
 {% block content %}
+  {% include "components/admin_nav.html" %}
+
   <section class="staff-hero" aria-labelledby="orders-admin-title">
     <div class="container">
       <p class="section-kicker">Operations / Orders</p>
@@ -138,4 +141,8 @@
       {% endif %}
     </div>
   </section>
+{% endblock %}
+
+{% block scripts %}
+  <script src="{{ url_for('static', filename='js/admin.js') }}" defer></script>
 {% endblock %}
