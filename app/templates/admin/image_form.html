@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+
+{% from "components/admin_badges.html" import field_errors %}
+
+{% block title %}{{ page_title }} — Products — UTOP14{% endblock %}
+
+{% block meta_description %}Create or edit a UTOP14 product gallery image path.{% endblock %}
+
+{% block styles %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/auth.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css') }}">
+{% endblock %}
+
+{% block body_class %}page-admin-catalog{% endblock %}
+
+{% block content %}
+  {% include "components/admin_nav.html" %}
+
+  <section class="staff-hero" aria-labelledby="image-form-title">
+    <div class="container">
+      <nav class="admin-breadcrumb" aria-label="Breadcrumb">
+        <a href="{{ url_for('admin.product_list') }}">Products</a>
+        <span aria-hidden="true">/</span>
+        <a href="{{ url_for('admin.product_detail', product_id=product.id) }}">{{ product.name }}</a>
+        <span aria-hidden="true">/</span>
+        <span aria-current="page">{{ "New image" if image is none else "Edit image" }}</span>
+      </nav>
+      <p class="section-kicker">Catalog / Gallery / {{ "Create" if image is none else "Edit" }}</p>
+      <h1 class="staff-hero__title" id="image-form-title">
+        {{ "New" if image is none else "Edit" }} <em>image.</em>
+      </h1>
+      <p class="staff-hero__copy">
+        Gallery entries store a validated path beneath the static images/
+        directory. No file is uploaded from this screen and arbitrary filesystem
+        or remote URLs are rejected.
+      </p>
+    </div>
+  </section>
+
+  <section class="section staff-section" aria-labelledby="image-fields-title">
+    <div class="container admin-form-layout">
+      <div class="admin-form-card">
+        <div class="order-panel__header">
+          <p class="mono" id="image-fields-title">Image fields</p>
+          <p class="mono">Product #{{ product.id }}</p>
+        </div>
+
+        <form class="admin-form" method="post" novalidate>
+          {{ form.hidden_tag() }}
+
+          <div class="admin-form__field">
+            {{ form.image_path.label(class_="form-label") }}
+            {{ form.image_path(class_="form-control", maxlength="255", autocomplete="off", placeholder="images/products/tee-detail.webp") }}
+            <p class="form-hint">
+              Must start with images/ and end in .avif, .gif, .jpeg, .jpg, .png,
+              .svg or .webp. Parent traversal and URL schemes are rejected.
+            </p>
+            {{ field_errors(form.image_path) }}
+          </div>
+
+          <div class="admin-form__field">
+            {{ form.alt_text.label(class_="form-label") }}
+            {{ form.alt_text(class_="form-control", maxlength="255", autocomplete="off") }}
+            <p class="form-hint">Optional but recommended for accessibility.</p>
+            {{ field_errors(form.alt_text) }}
+          </div>
+
+          <div class="admin-form__field">
+            {{ form.position.label(class_="form-label") }}
+            {{ form.position(class_="form-control", min="0", max="9999", inputmode="numeric") }}
+            <p class="form-hint">Lower values appear first in the product gallery.</p>
+            {{ field_errors(form.position) }}
+          </div>
+
+          <div class="admin-form__actions">
+            {{ form.submit(class_="button button--primary") }}
+            <a class="button button--ghost" href="{{ url_for('admin.product_detail', product_id=product.id) }}">Cancel</a>
+          </div>
+        </form>
+      </div>
+
+      <aside class="admin-side-card" aria-labelledby="image-context-title">
+        <div class="order-panel__header">
+          <p class="mono" id="image-context-title">Context</p>
+          <p class="mono">{{ "New" if image is none else "Position " ~ image.position }}</p>
+        </div>
+
+        {% if image is not none %}
+          <img
+            class="admin-preview"
+            src="{{ url_for('static', filename=image.image_path) }}"
+            alt="{{ image.alt_text or product.name }}"
+            width="320"
+            height="400"
+          >
+        {% endif %}
+
+        <dl class="admin-meta-list">
+          <div>
+            <dt>Product</dt>
+            <dd>{{ product.name }}</dd>
+          </div>
+          <div>
+            <dt>Card image</dt>
+            <dd class="mono">{{ product.image_path }}</dd>
+          </div>
+        </dl>
+
+        <p class="admin-note">
+          The product card image is managed on the product form and is never
+          changed by gallery image edits or deletion.
+        </p>
+      </aside>
+    </div>
+  </section>
+{% endblock %}

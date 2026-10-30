@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+
+{% from "components/admin_badges.html" import catalog_status, field_errors, stock_badge %}
+
+{% block title %}{{ page_title }} — Products — UTOP14{% endblock %}
+
+{% block meta_description %}Create or edit a UTOP14 product variant.{% endblock %}
+
+{% block styles %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/auth.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css') }}">
+{% endblock %}
+
+{% block body_class %}page-admin-catalog{% endblock %}
+
+{% block content %}
+  {% include "components/admin_nav.html" %}
+
+  <section class="staff-hero" aria-labelledby="variant-form-title">
+    <div class="container">
+      <nav class="admin-breadcrumb" aria-label="Breadcrumb">
+        <a href="{{ url_for('admin.product_list') }}">Products</a>
+        <span aria-hidden="true">/</span>
+        <a href="{{ url_for('admin.product_detail', product_id=product.id) }}">{{ product.name }}</a>
+        <span aria-hidden="true">/</span>
+        <span aria-current="page">{{ "New variant" if variant is none else variant.sku }}</span>
+      </nav>
+      <p class="section-kicker">Catalog / Variants / {{ "Create" if variant is none else "Edit" }}</p>
+      <h1 class="staff-hero__title" id="variant-form-title">
+        {{ "New" if variant is none else "Edit" }} <em>variant.</em>
+      </h1>
+      <p class="staff-hero__copy">
+        Every size/colour combination has its own globally unique SKU and stock
+        count. The SKU is stored in uppercase.
+      </p>
+    </div>
+  </section>
+
+  <section class="section staff-section" aria-labelledby="variant-fields-title">
+    <div class="container admin-form-layout">
+      <div class="admin-form-card">
+        <div class="order-panel__header">
+          <p class="mono" id="variant-fields-title">Variant fields</p>
+          <p class="mono">Product #{{ product.id }}</p>
+        </div>
+
+        <form class="admin-form admin-form--two-column" method="post" novalidate>
+          {{ form.hidden_tag() }}
+
+          <div class="admin-form__field">
+            {{ form.size.label(class_="form-label") }}
+            {{ form.size(class_="form-control", maxlength="20", autocomplete="off", placeholder="M") }}
+            <p class="form-hint">Up to 20 characters. Stored uppercase.</p>
+            {{ field_errors(form.size) }}
+          </div>
+
+          <div class="admin-form__field">
+            {{ form.color.label(class_="form-label") }}
+            {{ form.color(class_="form-control", maxlength="40", autocomplete="off", placeholder="Washed black") }}
+            <p class="form-hint">Size and colour must be unique for this product.</p>
+            {{ field_errors(form.color) }}
+          </div>
+
+          <div class="admin-form__field">
+            {{ form.sku.label(class_="form-label") }}
+            {{ form.sku(class_="form-control", maxlength="64", autocomplete="off", placeholder="U14-TEE-BLK-M") }}
+            <p class="form-hint">Letters, numbers and single hyphens. Unique across the catalog.</p>
+            {{ field_errors(form.sku) }}
+          </div>
+
+          <div class="admin-form__field">
+            {{ form.stock.label(class_="form-label") }}
+            {{ form.stock(class_="form-control", min="0", max="1000000", inputmode="numeric") }}
+            <p class="form-hint">Whole units, 0 to 1,000,000.</p>
+            {{ field_errors(form.stock) }}
+          </div>
+
+          <div class="admin-form__actions admin-form__actions--wide">
+            {{ form.submit(class_="button button--primary") }}
+            <a class="button button--ghost" href="{{ url_for('admin.product_detail', product_id=product.id) }}">Cancel</a>
+          </div>
+        </form>
+      </div>
+
+      <aside class="admin-side-card" aria-labelledby="variant-context-title">
+        <div class="order-panel__header">
+          <p class="mono" id="variant-context-title">Product context</p>
+          {{ catalog_status(product.is_active) }}
+        </div>
+
+        <dl class="admin-meta-list">
+          <div>
+            <dt>Product</dt>
+            <dd>{{ product.name }}</dd>
+          </div>
+          <div>
+            <dt>Category</dt>
+            <dd>{{ product.category.name }}</dd>
+          </div>
+          <div>
+            <dt>Price</dt>
+            <dd>{{ product.price|money }}</dd>
+          </div>
+          {% if variant is not none %}
+            <div>
+              <dt>Current stock</dt>
+              <dd>{{ stock_badge(variant.stock) }}</dd>
+            </div>
+            <div>
+              <dt>Variant status</dt>
+              <dd>{{ catalog_status(variant.is_active) }}</dd>
+            </div>
+          {% endif %}
+        </dl>
+
+        <p class="admin-note">
+          Stock edits here and on the inventory screen are committed in a single
+          database transaction. Order item snapshots are never rewritten.
+        </p>
+      </aside>
+    </div>
+  </section>
+{% endblock %}

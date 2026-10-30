@@ -6,11 +6,14 @@
 
 {% block styles %}
   <link rel="stylesheet" href="{{ url_for('static', filename='css/auth.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css') }}">
 {% endblock %}
 
 {% block body_class %}page-ops{% endblock %}
 
 {% block content %}
+  {% include "components/admin_nav.html" %}
+
   <section class="staff-hero" aria-labelledby="ops-title">
     <div class="container">
       <p class="section-kicker">Operator / Floor view</p>
@@ -18,8 +21,9 @@
         Keep the <em>signal</em> moving.
       </h1>
       <p class="staff-hero__copy">
-        Operator access covers day-to-day catalog visibility and order
-        lifecycle management. Catalog write tools remain read-only.
+        Operator access covers day-to-day order lifecycle management and catalog
+        visibility. Category, product, variant and stock administration remain
+        restricted to admin accounts.
       </p>
       <div class="staff-hero__actions">
         <a class="button button--primary" href="{{ url_for('admin.order_list') }}">
@@ -61,17 +65,21 @@
       <div class="staff-panel">
         <div class="staff-panel__header">
           <p class="mono">Operator scope</p>
-          <p class="mono">Read-only</p>
+          <p class="mono">Orders only</p>
         </div>
         <div class="staff-panel__body">
           <p>
             Order queue access is available for operators and admins. Catalog
-            write operations, stock adjustments, refunds and payment capture
-            remain outside this milestone. Admin-only pages remain inaccessible
-            from an operator account.
+            administration, stock adjustments, refunds and payment capture stay
+            outside the operator role. Admin-only catalog pages return HTTP 403
+            for operator and customer accounts.
           </p>
         </div>
       </div>
     </div>
   </section>
+{% endblock %}
+
+{% block scripts %}
+  <script src="{{ url_for('static', filename='js/admin.js') }}" defer></script>
 {% endblock %}

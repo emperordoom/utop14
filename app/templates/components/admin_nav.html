@@ -1,0 +1,54 @@
+{% set endpoint = request.endpoint or "" %}
+<nav class="admin-nav" aria-label="Staff sections">
+  <div class="container admin-nav__inner">
+    <p class="admin-nav__label mono">Staff</p>
+    <ul class="admin-nav__list" role="list">
+      {% if current_user.is_admin %}
+        <li>
+          <a
+            class="admin-nav__link{% if endpoint == 'admin.dashboard' %} admin-nav__link--active{% endif %}"
+            href="{{ url_for('admin.dashboard') }}"
+            {% if endpoint == 'admin.dashboard' %}aria-current="page"{% endif %}
+          >Dashboard</a>
+        </li>
+        <li>
+          <a
+            class="admin-nav__link{% if endpoint.startswith('admin.category') %} admin-nav__link--active{% endif %}"
+            href="{{ url_for('admin.category_list') }}"
+            {% if endpoint.startswith('admin.category') %}aria-current="page"{% endif %}
+          >Categories</a>
+        </li>
+        <li>
+          <a
+            class="admin-nav__link{% if endpoint.startswith('admin.product') or endpoint.startswith('admin.variant') or endpoint.startswith('admin.image') %} admin-nav__link--active{% endif %}"
+            href="{{ url_for('admin.product_list') }}"
+            {% if endpoint.startswith('admin.product') or endpoint.startswith('admin.variant') or endpoint.startswith('admin.image') %}aria-current="page"{% endif %}
+          >Products</a>
+        </li>
+        <li>
+          <a
+            class="admin-nav__link{% if endpoint.startswith('admin.inventory') %} admin-nav__link--active{% endif %}"
+            href="{{ url_for('admin.inventory_list') }}"
+            {% if endpoint.startswith('admin.inventory') %}aria-current="page"{% endif %}
+          >Inventory</a>
+        </li>
+      {% endif %}
+      <li>
+        <a
+          class="admin-nav__link{% if endpoint.startswith('admin.order') %} admin-nav__link--active{% endif %}"
+          href="{{ url_for('admin.order_list') }}"
+          {% if endpoint.startswith('admin.order') %}aria-current="page"{% endif %}
+        >Orders</a>
+      </li>
+      {% if current_user.is_operator %}
+        <li>
+          <a
+            class="admin-nav__link{% if endpoint == 'admin.operations' %} admin-nav__link--active{% endif %}"
+            href="{{ url_for('admin.operations') }}"
+            {% if endpoint == 'admin.operations' %}aria-current="page"{% endif %}
+          >Operator console</a>
+        </li>
+      {% endif %}
+    </ul>
+  </div>
+</nav>

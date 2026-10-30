@@ -1,0 +1,159 @@
+{% extends "base.html" %}
+
+{% from "components/admin_badges.html" import catalog_status, stock_badge %}
+{% from "components/pagination.html" import render_pagination %}
+
+{% block title %}Inventory — Admin — UTOP14{% endblock %}
+
+{% block meta_description %}Admin stock management for UTOP14 product variants.{% endblock %}
+
+{% block styles %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/auth.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/orders.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css') }}">
+{% endblock %}
+
+{% block body_class %}page-admin-catalog{% endblock %}
+
+{% block content %}
+  {% include "components/admin_nav.html" %}
+
+  <section class="staff-hero" aria-labelledby="inventory-admin-title">
+    <div class="container">
+      <p class="section-kicker">Catalog / Inventory</p>
+      <h1 class="staff-hero__title" id="inventory-admin-title">
+        Count every <em>unit.</em>
+      </h1>
+      <p class="staff-hero__copy">
+        Every row sets an absolute stock value for one variant. Updates run
+        inside a database transaction with the variant row locked, so two
+        concurrent saves cannot silently overwrite each other.
+      </p>
+      <div class="staff-hero__actions">
+        <a class="button button--primary" href="{{ url_for('admin.product_list') }}">Manage products</a>
+        <a class="button button--ghost" href="{{ url_for('admin.category_list') }}">Manage categories</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="section staff-section" aria-labelledby="inventory-list-title">
+    <div class="container">
+      <div class="section-heading">
+        <p class="section-kicker">01 / Stock</p>
+        <h2 class="section-title" id="inventory-list-title">Variant <em>ledger.</em></h2>
+      </div>
+
+      <form class="admin-filters admin-filters--inventory" method="get" action="{{ url_for('admin.inventory_list') }}">
+        <div class="admin-filters__field admin-filters__field--wide">
+          <label class="form-label" for="inventory-query">Product, SKU or colour</label>
+          <input
+            class="form-control"
+            id="inventory-query"
+            name="q"
+            type="search"
+            value="{{ filters.query or '' }}"
+            maxlength="80"
+            placeholder="Heavyweight tee / U14-TEE / black"
+            autocomplete="off"
+          >
+        </div>
+
+        <div class="admin-filters__field">
+          <label class="form-label" for="inventory-stock">Stock status</label>
+          <select class="form-control" id="inventory-stock" name="stock">
+            <option value="">All stock levels</option>
+            <option value="out"{% if filters.stock_status == "out" %} selected{% endif %}>Out of stock</option>
+            <option value="low"{% if filters.stock_status == "low" %} selected{% endif %}>Low (1–5)</option>
+            <option value="healthy"{% if filters.stock_status == "healthy" %} selected{% endif %}>Healthy (6+)</option>
+          </select>
+        </div>
+
+        <div class="admin-filters__actions">
+          <button class="button button--primary" type="submit">Apply</button>
+          <a class="text-link" href="{{ url_for('admin.inventory_list') }}">Reset</a>
+        </div>
+      </form>
+
+      {% if pagination.items %}
+        <div class="admin-toolbar">
+          <p class="mono">{{ pagination.total }} variant{% if pagination.total != 1 %}s{% endif %}</p>
+          <p class="mono">Page {{ pagination.page }} / {{ pagination.pages }}</p>
+        </div>
+
+        <div class="admin-table-wrap">
+          <table class="admin-table admin-table--inventory">
+            <caption class="visually-hidden">Variant stock levels with absolute adjustment controls</caption>
+            <thead>
+              <tr>
+                <th scope="col">Product</th>
+                <th scope="col">Variant</th>
+                <th scope="col">Status</th>
+                <th scope="col">Current stock</th>
+                <th scope="col">Set stock</th>
+                <th scope="col"><span class="visually-hidden">Edit</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for variant in pagination.items %}
+                <tr>
+                  <td>
+                    <p class="admin-table__primary">{{ variant.product.name }}</p>
+                    <p class="admin-meta mono">{{ variant.product.category.name }}</p>
+                  </td>
+                  <td>
+                    <p>{{ variant.size }} / {{ variant.color }}</p>
+                    <p class="admin-meta mono">{{ variant.sku }}</p>
+                  </td>
+                  <td>{{ catalog_status(variant.is_active) }}</td>
+                  <td>{{ stock_badge(variant.stock) }}</td>
+                  <td>
+                    <form
+                      class="admin-stock-form"
+                      method="post"
+                      action="{{ url_for('admin.inventory_adjust', variant_id=variant.id) }}"
+                      data-confirm="Set stock for {{ variant.sku }} to the entered value?"
+                    >
+                      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                      <label class="visually-hidden" for="stock-{{ variant.id }}">New stock for {{ variant.sku }}</label>
+                      <input
+                        class="form-control admin-stock-form__input"
+                        id="stock-{{ variant.id }}"
+                        name="stock"
+                        type="number"
+                        min="0"
+                        max="1000000"
+                        step="1"
+                        value="{{ variant.stock }}"
+                        required
+                      >
+                      <button class="button button--ghost button--compact" type="submit">Save</button>
+                    </form>
+                  </td>
+                  <td>
+                    <a class="text-link" href="{{ url_for('admin.variant_edit', product_id=variant.product_id, variant_id=variant.id) }}">Edit</a>
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+
+        {{ render_pagination(pagination, 'admin.inventory_list', query_params) }}
+      {% else %}
+        <div class="admin-empty">
+          <p class="mono">No matching variants</p>
+          <h2>No stock in this <em>view.</em></h2>
+          <p>Adjust the search or stock filter, or add variants from a product detail page.</p>
+          <div class="admin-empty__actions">
+            <a class="button button--ghost" href="{{ url_for('admin.inventory_list') }}">Clear filters</a>
+            <a class="button button--primary" href="{{ url_for('admin.product_list') }}">Open products</a>
+          </div>
+        </div>
+      {% endif %}
+    </div>
+  </section>
+{% endblock %}
+
+{% block scripts %}
+  <script src="{{ url_for('static', filename='js/admin.js') }}" defer></script>
+{% endblock %}

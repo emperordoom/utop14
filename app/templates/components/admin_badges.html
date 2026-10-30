@@ -1,0 +1,21 @@
+{% macro catalog_status(is_active) -%}
+  <span class="admin-chip admin-chip--{{ 'active' if is_active else 'inactive' }}">
+    {{ "Active" if is_active else "Inactive" }}
+  </span>
+{%- endmacro %}
+
+{% macro stock_badge(stock) -%}
+  {% if stock == 0 %}
+    <span class="admin-chip admin-chip--out">Out of stock</span>
+  {% elif stock <= 5 %}
+    <span class="admin-chip admin-chip--low">{{ stock }} low</span>
+  {% else %}
+    <span class="admin-chip admin-chip--healthy">{{ stock }} in stock</span>
+  {% endif %}
+{%- endmacro %}
+
+{% macro field_errors(field) -%}
+  {% if field.errors %}
+    <p class="form-error">{{ field.errors[0] }}</p>
+  {% endif %}
+{%- endmacro %}

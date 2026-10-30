@@ -6,4 +6,4 @@ from flask import Blueprint
 
 admin_bp = Blueprint("admin", __name__)
 
-from app.admin import routes  # noqa: E402, F401
+from app.admin import catalog_routes, routes  # noqa: E402, F401
