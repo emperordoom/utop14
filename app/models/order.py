@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Final
 
 from sqlalchemy import (
     CheckConstraint,
+    DateTime,
     ForeignKey,
     Index,
     Integer,
@@ -24,6 +26,7 @@ if TYPE_CHECKING:
     from app.models.user import User
 
 ORDER_STATUS_PENDING: Final = "pending"
+ORDER_STATUS_CANCELLED: Final = "cancelled"
 ORDER_STATUSES: Final[tuple[str, ...]] = (
     "pending",
     "processing",
@@ -58,6 +61,7 @@ class Order(TimestampMixin, Base):
         CheckConstraint("shipping_cost >= 0", name="order_shipping_non_negative"),
         CheckConstraint("total >= 0", name="order_total_non_negative"),
         Index("ix_orders_user_id_created_at", "user_id", "created_at"),
+        Index("ix_orders_cancelled_by_user_id", "cancelled_by_user_id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -91,8 +95,25 @@ class Order(TimestampMixin, Base):
         server_default=text("0"),
     )
     total: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    cancelled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    cancelled_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey(
+            "users.id",
+            ondelete="SET NULL",
+            name="fk_orders_cancelled_by_user_id",
+        ),
+        nullable=True,
+    )
+    cancellation_reason: Mapped[str | None] = mapped_column(
+        String(500),
+        nullable=True,
+    )
 
-    user: Mapped[User] = relationship()
+    user: Mapped[User] = relationship(foreign_keys=[user_id])
+    cancelled_by: Mapped[User | None] = relationship(foreign_keys=[cancelled_by_user_id])
     items: Mapped[list[OrderItem]] = relationship(
         back_populates="order",
         cascade="all, delete-orphan",

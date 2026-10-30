@@ -18,14 +18,15 @@
         Keep the <em>signal</em> moving.
       </h1>
       <p class="staff-hero__copy">
-        Operator access covers day-to-day catalog visibility. This console is
-        read-only until inventory management is introduced in a later milestone.
+        Operator access covers day-to-day catalog visibility and order
+        lifecycle management. Catalog write tools remain read-only.
       </p>
       <div class="staff-hero__actions">
-        <a class="button button--primary" href="{{ url_for('storefront.shop') }}">
-          View storefront
+        <a class="button button--primary" href="{{ url_for('admin.order_list') }}">
+          Manage orders
           <span class="button__arrow" aria-hidden="true">→</span>
         </a>
+        <a class="button button--ghost" href="{{ url_for('storefront.shop') }}">View storefront</a>
         <a class="button button--ghost" href="{{ url_for('auth.account') }}">Your account</a>
       </div>
     </div>
@@ -64,9 +65,10 @@
         </div>
         <div class="staff-panel__body">
           <p>
-            Catalog write operations, stock adjustments and order handling are
-            intentionally not available in this milestone. Admin-only pages
-            remain inaccessible from an operator account.
+            Order queue access is available for operators and admins. Catalog
+            write operations, stock adjustments, refunds and payment capture
+            remain outside this milestone. Admin-only pages remain inaccessible
+            from an operator account.
           </p>
         </div>
       </div>

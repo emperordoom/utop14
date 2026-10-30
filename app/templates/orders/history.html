@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+
+{% from "components/badges.html" import status_badge, payment_badge %}
+{% from "components/pagination.html" import render_pagination %}
+
+{% block title %}Your orders — UTOP14{% endblock %}
+
+{% block meta_description %}Review your UTOP14 order history, totals and current order status.{% endblock %}
+
+{% block styles %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/cart.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/orders.css') }}">
+{% endblock %}
+
+{% block body_class %}page-orders{% endblock %}
+
+{% block content %}
+  <section class="section orders-page" aria-labelledby="orders-title">
+    <div class="container">
+      <header class="orders-header">
+        <div>
+          <p class="section-kicker">Orders / Archive</p>
+          <h1 class="orders-title" id="orders-title">
+            Your <em>orders.</em>
+          </h1>
+          <p class="orders-copy">
+            Every order you have placed with UTOP14, newest first. Open an order
+            to review its snapshots, delivery details and cancellation state.
+          </p>
+        </div>
+        <a class="text-link" href="{{ url_for('auth.account') }}">
+          Back to account
+          <span aria-hidden="true">↗</span>
+        </a>
+      </header>
+
+      {% if pagination.items %}
+        <div class="orders-toolbar">
+          <p class="mono">{{ pagination.total }} order{% if pagination.total != 1 %}s{% endif %}</p>
+          <p class="mono">Page {{ pagination.page }} / {{ pagination.pages }}</p>
+        </div>
+
+        <div class="orders-list">
+          {% for order in pagination.items %}
+            <article class="order-card">
+              <div class="order-card__top">
+                <div>
+                  <p class="mono">Order</p>
+                  <h2 class="order-card__number">
+                    <a href="{{ url_for('orders.confirmation', order_number=order.order_number) }}">{{ order.order_number }}</a>
+                  </h2>
+                </div>
+                <div class="order-card__badges">
+                  {{ status_badge(order.status) }}
+                  {{ payment_badge(order.payment_status) }}
+                </div>
+              </div>
+
+              <dl class="order-card__meta">
+                <div>
+                  <dt>Placed</dt>
+                  <dd>{{ order.created_at.strftime("%d %b %Y, %H:%M UTC") }}</dd>
+                </div>
+                <div>
+                  <dt>Subtotal</dt>
+                  <dd>{{ order.subtotal|money }}</dd>
+                </div>
+                <div>
+                  <dt>Shipping</dt>
+                  <dd>{% if order.shipping_cost == 0 %}Free{% else %}{{ order.shipping_cost|money }}{% endif %}</dd>
+                </div>
+                <div>
+                  <dt>Total</dt>
+                  <dd class="order-card__total">{{ order.total|money }}</dd>
+                </div>
+              </dl>
+
+              <a class="text-link order-card__link" href="{{ url_for('orders.confirmation', order_number=order.order_number) }}">
+                View order
+                <span aria-hidden="true">↗</span>
+              </a>
+            </article>
+          {% endfor %}
+        </div>
+
+        {{ render_pagination(pagination, 'orders.history') }}
+      {% else %}
+        <div class="orders-empty">
+          <p class="mono">No orders yet</p>
+          <h2>Your first signal is <em>waiting.</em></h2>
+          <p>Once you place an order, its confirmation, totals and status will appear here.</p>
+          <a class="button button--primary" href="{{ url_for('storefront.shop') }}">
+            Shop the drop
+            <span class="button__arrow" aria-hidden="true">→</span>
+          </a>
+        </div>
+      {% endif %}
+    </div>
+  </section>
+{% endblock %}

@@ -1,0 +1,7 @@
+{% macro status_badge(status) -%}
+  <span class="status-badge status-badge--{{ status }}">{{ status|replace('_', ' ')|title }}</span>
+{%- endmacro %}
+
+{% macro payment_badge(status) -%}
+  <span class="payment-badge payment-badge--{{ status }}">{{ status|replace('_', ' ')|title }}</span>
+{%- endmacro %}

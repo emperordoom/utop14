@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+
+{% from "components/badges.html" import status_badge, payment_badge %}
+{% from "components/pagination.html" import render_pagination %}
+
+{% block title %}Order management — UTOP14{% endblock %}
+
+{% block meta_description %}Operator and admin order management for UTOP14 orders.{% endblock %}
+
+{% block styles %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/auth.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/orders.css') }}">
+{% endblock %}
+
+{% block body_class %}page-admin-orders{% endblock %}
+
+{% block content %}
+  <section class="staff-hero" aria-labelledby="orders-admin-title">
+    <div class="container">
+      <p class="section-kicker">Operations / Orders</p>
+      <h1 class="staff-hero__title" id="orders-admin-title">
+        Order <em>management.</em>
+      </h1>
+      <p class="staff-hero__copy">
+        Review every customer order, filter by lifecycle state and move orders
+        through the permitted transitions. Payment status is never changed by a
+        status update.
+      </p>
+      <div class="staff-hero__actions">
+        <a class="button button--ghost" href="{{ url_for('admin.operations') }}">Operator console</a>
+        {% if current_user.is_admin %}
+          <a class="button button--ghost" href="{{ url_for('admin.dashboard') }}">Admin dashboard</a>
+        {% endif %}
+      </div>
+    </div>
+  </section>
+
+  <section class="section order-admin-section" aria-labelledby="order-list-title">
+    <div class="container">
+      <div class="section-heading">
+        <p class="section-kicker">01 / Queue</p>
+        <h2 class="section-title" id="order-list-title">All <em>orders.</em></h2>
+      </div>
+
+      <form class="order-filters" method="get" action="{{ url_for('admin.order_list') }}">
+        <div class="order-filters__field">
+          <label class="cart-label" for="filter-status">Order status</label>
+          <select class="cart-control" id="filter-status" name="status">
+            <option value="">All statuses</option>
+            {% for status in statuses %}
+              <option value="{{ status }}"{% if filters.status == status %} selected{% endif %}>{{ status|replace('_', ' ')|title }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="order-filters__field">
+          <label class="cart-label" for="filter-payment">Payment status</label>
+          <select class="cart-control" id="filter-payment" name="payment_status">
+            <option value="">All payments</option>
+            {% for status in payment_statuses %}
+              <option value="{{ status }}"{% if filters.payment_status == status %} selected{% endif %}>{{ status|replace('_', ' ')|title }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="order-filters__field order-filters__field--wide">
+          <label class="cart-label" for="filter-query">Order number</label>
+          <input
+            class="cart-control"
+            id="filter-query"
+            name="q"
+            type="search"
+            value="{{ filters.query or '' }}"
+            maxlength="80"
+            placeholder="UT014-…"
+            autocomplete="off"
+          >
+        </div>
+
+        <div class="order-filters__actions">
+          <button class="button button--primary" type="submit">Apply filters</button>
+          <a class="text-link" href="{{ url_for('admin.order_list') }}">Reset</a>
+        </div>
+      </form>
+
+      {% if pagination.items %}
+        <div class="orders-toolbar">
+          <p class="mono">{{ pagination.total }} order{% if pagination.total != 1 %}s{% endif %}</p>
+          <p class="mono">Page {{ pagination.page }} / {{ pagination.pages }}</p>
+        </div>
+
+        <div class="staff-order-list">
+          <div class="staff-order-list__head" aria-hidden="true">
+            <span>Order</span>
+            <span>Customer</span>
+            <span>Placed</span>
+            <span>State</span>
+            <span>Total</span>
+            <span></span>
+          </div>
+
+          {% for order in pagination.items %}
+            <article class="staff-order-row">
+              <div class="staff-order-row__number">
+                <a href="{{ url_for('admin.order_detail', order_number=order.order_number) }}">{{ order.order_number }}</a>
+              </div>
+              <div class="staff-order-row__customer">
+                <p>{{ order.user.full_name }}</p>
+                <p class="mono">{{ order.user.email }}</p>
+              </div>
+              <div class="staff-order-row__date">
+                <p>{{ order.created_at.strftime("%d %b %Y") }}</p>
+                <p class="mono">{{ order.created_at.strftime("%H:%M UTC") }}</p>
+              </div>
+              <div class="staff-order-row__state">
+                {{ status_badge(order.status) }}
+                {{ payment_badge(order.payment_status) }}
+              </div>
+              <div class="staff-order-row__total">{{ order.total|money }}</div>
+              <div class="staff-order-row__action">
+                <a class="text-link" href="{{ url_for('admin.order_detail', order_number=order.order_number) }}">
+                  Open
+                  <span aria-hidden="true">↗</span>
+                </a>
+              </div>
+            </article>
+          {% endfor %}
+        </div>
+
+        {{ render_pagination(pagination, 'admin.order_list', query_params) }}
+      {% else %}
+        <div class="orders-empty">
+          <p class="mono">No matching orders</p>
+          <h2>No orders in this <em>view.</em></h2>
+          <p>Adjust the status, payment or search filters to widen the queue.</p>
+          <a class="button button--ghost" href="{{ url_for('admin.order_list') }}">Clear filters</a>
+        </div>
+      {% endif %}
+    </div>
+  </section>
+{% endblock %}
