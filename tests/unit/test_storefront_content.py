@@ -4,10 +4,8 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-import pytest
-
 from app.catalog.seed import CATEGORY_SEEDS, PRODUCT_SEEDS
-from app.storefront.content import FEATURED_COLLECTION, format_money
+from app.storefront.content import FEATURED_COLLECTION
 
 
 def test_seed_products_have_decimal_prices_and_local_images() -> None:
@@ -55,21 +53,3 @@ def test_featured_collection_describes_drop_014() -> None:
     assert FEATURED_COLLECTION.image == "images/collection-after-hours.svg"
     assert FEATURED_COLLECTION.image_alt
     assert len(FEATURED_COLLECTION.details) == 3
-
-
-@pytest.mark.parametrize(
-    ("amount", "expected"),
-    [
-        (Decimal("75.00"), "$75"),
-        (Decimal("180.50"), "$180.50"),
-        (Decimal("1234.00"), "$1,234"),
-        (Decimal("0.00"), "$0"),
-    ],
-)
-def test_format_money_uses_editorial_price_style(amount: Decimal, expected: str) -> None:
-    assert format_money(amount) == expected
-
-
-def test_format_money_rejects_floating_point_values() -> None:
-    with pytest.raises(TypeError, match="Decimal"):
-        format_money(75.0)  # type: ignore[arg-type]

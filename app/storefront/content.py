@@ -1,14 +1,8 @@
-"""Editorial storefront content and shared display helpers.
-
-Catalog records live in PostgreSQL and are read through ``app.services.catalog``.
-Only campaign copy and formatting rules belong here so templates stay free of
-database queries and presentation constants stay easy to update.
-"""
+"""Editorial storefront content."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal
 from typing import Final
 
 
@@ -36,19 +30,3 @@ FEATURED_COLLECTION: Final[Collection] = Collection(
     image_alt="Two figures in charcoal streetwear standing beneath a lime light in a dark studio.",
     details=("12 pieces", "Heavyweight cotton", "Limited run"),
 )
-
-
-def format_money(value: Decimal) -> str:
-    """Format a decimal amount using the storefront's editorial price style.
-
-    Whole amounts are rendered without trailing zeroes (``$75``); fractional
-    amounts keep two decimal places. Values must already be ``Decimal`` so
-    callers cannot accidentally introduce binary floating-point rounding.
-    """
-
-    if not isinstance(value, Decimal):
-        raise TypeError("format_money expects a Decimal value")
-
-    if value == value.to_integral_value():
-        return f"${value:,.0f}"
-    return f"${value:,.2f}"

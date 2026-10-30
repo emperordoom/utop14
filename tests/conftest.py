@@ -9,6 +9,7 @@ development database is never touched.
 from __future__ import annotations
 
 import re
+import secrets
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Final
@@ -24,14 +25,16 @@ from sqlalchemy.engine import make_url
 from app import create_app
 from app.catalog.seed import SeedSummary, seed_catalog
 from app.extensions import db
-from app.models import Order, ProductVariant, User
+from app.models import Order, Payment, ProductVariant, User
 from app.models.user import ROLE_CUSTOMER
 from app.services.cart import add_to_cart
 from app.services.checkout import checkout
+from app.services.payments import create_payment_attempt
 
 PROJECT_ROOT: Final = Path(__file__).resolve().parents[1]
 MIGRATIONS_DIR: Final = PROJECT_ROOT / "migrations"
 RESET_TABLES: Final = (
+    "payments",
     "order_items",
     "orders",
     "cart_items",
@@ -218,3 +221,26 @@ def make_order(
         return order
 
     return _make_order
+
+
+@pytest.fixture()
+def make_payment(
+    app: Flask,
+    make_order: Callable[..., Order],
+) -> Callable[..., Payment]:
+    """Create a committed pending simulated payment for a test order."""
+
+    def _make_payment(
+        user: User,
+        *,
+        order: Order | None = None,
+        idempotency_key: str | None = None,
+    ) -> Payment:
+        target_order = order or make_order(user)
+        return create_payment_attempt(
+            user.id,
+            target_order.order_number,
+            idempotency_key or secrets.token_urlsafe(24),
+        )
+
+    return _make_payment

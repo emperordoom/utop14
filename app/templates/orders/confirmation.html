@@ -9,6 +9,7 @@
 {% block styles %}
   <link rel="stylesheet" href="{{ url_for('static', filename='css/cart.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/orders.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/payments.css') }}">
 {% endblock %}
 
 {% block body_class %}page-order{% endblock %}
@@ -92,6 +93,48 @@
             <p>{{ order.shipping_address }}</p>
             <p>{{ order.shipping_city }} {{ order.shipping_postal_code }}</p>
             <p>{{ order.recipient_phone }}</p>
+          </div>
+
+          <div class="order-payments">
+            <div class="order-payments__header">
+              <p class="mono">Payments</p>
+              <p class="mono">IDR</p>
+            </div>
+
+            {% if can_pay and payments_available %}
+              <a class="button button--primary order-payments__action" href="{{ url_for('payments.pay', order_number=order.order_number) }}">
+                Pay now
+                <span class="button__arrow" aria-hidden="true">→</span>
+              </a>
+            {% elif can_pay %}
+              <p class="order-summary__note">Payments are unavailable in this environment.</p>
+            {% endif %}
+
+            {% if order.payments %}
+              <ul class="payment-attempt-list" role="list">
+                {% for payment in order.payments %}
+                  <li class="payment-attempt">
+                    <div>
+                      <p class="mono">{{ payment.payment_reference }}</p>
+                      <p class="payment-attempt__amount">{{ payment.amount|money }}</p>
+                      {% if payment.status == 'pending' %}
+                        <p class="payment-attempt__meta">Expires {{ payment.expires_at.strftime("%d %b %Y, %H:%M UTC") }}</p>
+                      {% elif payment.paid_at %}
+                        <p class="payment-attempt__meta">Paid {{ payment.paid_at.strftime("%d %b %Y, %H:%M UTC") }}</p>
+                      {% endif %}
+                    </div>
+                    <div class="payment-attempt__side">
+                      {{ payment_badge(payment.status) }}
+                      <a class="text-link" href="{{ url_for('payments.detail', payment_reference=payment.payment_reference) }}">View</a>
+                    </div>
+                  </li>
+                {% endfor %}
+              </ul>
+            {% else %}
+              <p class="order-summary__note">No payment attempt yet.</p>
+            {% endif %}
+
+            <p class="simulation-note">SIMULATION ONLY — NO REAL MONEY</p>
           </div>
 
           {% if order.status == 'cancelled' %}

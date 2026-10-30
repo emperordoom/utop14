@@ -8,15 +8,15 @@ from typing import Any
 
 from flask import Blueprint
 
-from app.storefront.content import format_money
+from app.formatting import format_idr
 
 storefront_bp = Blueprint("storefront", __name__)
 
 
 @storefront_bp.app_template_filter("money")
 def money(value: Decimal) -> str:
-    """Render a price using the UTOP14 storefront format."""
-    return format_money(value)
+    """Render a price in the canonical Indonesian Rupiah format."""
+    return format_idr(value)
 
 
 @storefront_bp.app_context_processor

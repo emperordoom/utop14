@@ -113,3 +113,74 @@ def test_production_rejects_short_secret_key() -> None:
                 "SQLALCHEMY_DATABASE_URI": VALID_TEST_DATABASE_URL,
             },
         )
+
+
+def test_testing_configuration_enables_simulated_payments() -> None:
+    config = get_config("testing")
+
+    assert config.PAYMENT_PROVIDER == "simulated"
+    assert config.PAYMENT_SIMULATION_ENABLED is True
+    assert config.PAYMENT_ATTEMPT_TTL_MINUTES == 15
+
+
+def test_production_rejects_enabled_payment_simulation() -> None:
+    with pytest.raises(ConfigurationError, match="PAYMENT_SIMULATION_ENABLED"):
+        create_app(
+            "production",
+            {
+                "SECRET_KEY": VALID_PRODUCTION_SECRET,
+                "SQLALCHEMY_DATABASE_URI": VALID_TEST_DATABASE_URL,
+                "PAYMENT_SIMULATION_ENABLED": True,
+            },
+        )
+
+
+def test_production_rejects_simulated_provider() -> None:
+    with pytest.raises(ConfigurationError, match="simulated payment provider"):
+        create_app(
+            "production",
+            {
+                "SECRET_KEY": VALID_PRODUCTION_SECRET,
+                "SQLALCHEMY_DATABASE_URI": VALID_TEST_DATABASE_URL,
+                "PAYMENT_PROVIDER": "simulated",
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        0,
+        -1,
+        -15,
+        True,
+        False,
+        15.0,
+        15.9,
+        "15",
+        "15.0",
+        "15.9",
+        "",
+        "not-a-number",
+        None,
+    ],
+)
+def test_invalid_payment_ttl_is_rejected(value: object) -> None:
+    with pytest.raises(ConfigurationError, match="PAYMENT_ATTEMPT_TTL_MINUTES"):
+        create_app(
+            "testing",
+            {
+                "PAYMENT_ATTEMPT_TTL_MINUTES": value,
+            },
+        )
+
+
+def test_valid_payment_ttl_integer_is_accepted() -> None:
+    app = create_app(
+        "testing",
+        {
+            "PAYMENT_ATTEMPT_TTL_MINUTES": 30,
+        },
+    )
+
+    assert app.config["PAYMENT_ATTEMPT_TTL_MINUTES"] == 30

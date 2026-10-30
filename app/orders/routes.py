@@ -16,6 +16,7 @@ from app.services.orders import (
     customer_can_cancel,
     list_customer_orders,
 )
+from app.services.payments import can_pay_order, payment_provider_available
 
 
 @orders_bp.get("/orders")
@@ -40,6 +41,8 @@ def confirmation(order_number: str) -> ResponseReturnValue:
         order=order,
         cancel_form=CancelOrderForm(),
         can_cancel=customer_can_cancel(order),
+        can_pay=can_pay_order(order),
+        payments_available=payment_provider_available(),
     )
 
 
