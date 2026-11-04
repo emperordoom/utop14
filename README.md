@@ -2,12 +2,14 @@
 
 UTOP14 is a streetwear e-commerce platform built for Well Architected SOC 14.
 
-**Current milestone:** Milestone 7 — payment integration (simulated only). The
-storefront, catalog, authentication, RBAC, cart, checkout and order lifecycle
-from M1–M6 remain in place. Orders can now have multiple simulated payment
-attempts with server-derived IDR amounts, a 15-minute deadline and a single
-successful payment per order. Real payment gateways and refunds are not part of
-this milestone.
+**Project status:**
+
+- Integrated into `main`: M1–M11.
+- Implemented and verified on `feature/admin-audit-log`, pending integration:
+  M12 Admin User Management, M13 Admin Audit Log, and M13.2 Audit Log
+  Hardening.
+- Current: M13.5 CI validation and final integration readiness review.
+- Pending and not started: M14 and later milestones.
 
 ## Technology
 
@@ -136,6 +138,7 @@ environment take precedence. `.env` is ignored by Git.
 | `FLASK_RUN_PORT` | No | `run.py` port; defaults to `5000` |
 | `TEST_DATABASE_URL` | No | Optional isolated PostgreSQL database for tests; must end in `_test` |
 | `TEST_SECRET_KEY` | No | Optional test-only secret override |
+| `TRUSTED_PROXY_HOPS` | No | Number of trusted reverse-proxy hops for `X-Forwarded-For`; default `0` |
 
 Startup validation fails with a clear `ConfigurationError` when `SECRET_KEY`
 or `DATABASE_URL` is missing or when a non-Psycopg database URL is supplied.
@@ -482,9 +485,112 @@ Current revision chain in source:
 - `f003cabb1f4f` — carts, cart items, orders and order items
 - `b042768520c0` — order cancellation fields
 - `c0f6c626195e` — payment attempts and one-paid-payment index
+- `1b0a971b10c6` — private user avatar filename
+- `2f863a992991` — manual-transfer payment proofs
+- `7c1e4b9a2d30` — product reviews and ratings
+- `3f7a2c9d1b64` — administrative audit log
 
-The M7 payments migration is generated and reviewed; apply it through the normal
-controlled migration step after review.
+## Admin audit logging and trusted proxy
+
+M13 records four permanent administrative user-management events:
+
+- `user.profile_updated`
+- `user.role_changed`
+- `user.activated`
+- `user.deactivated`
+
+Each record stores the actor and target identity snapshots, allowlisted
+before/after JSONB snapshots, client IP, user agent, request ID and UTC
+timestamp. User changes and their audit row are committed in one transaction;
+an audit failure rolls the User mutation back. Audit records are append-only at
+the application layer and protected against row-level UPDATE/DELETE by a
+PostgreSQL trigger. The trigger permits only foreign-key `SET NULL` clearing of
+the nullable actor/target identity links. Database owners, superusers,
+`TRUNCATE` and a compromised privileged database account remain outside that
+protection boundary.
+
+Only admins can read `/admin/audit-logs`. There are no edit, delete, purge or
+export routes. Retention is permanent until a separately approved archival
+policy exists.
+
+### Trusted proxy configuration
+
+`TRUSTED_PROXY_HOPS` defaults to `0`. With the default, `ProxyFix` is not
+enabled, `X-Forwarded-For` is ignored, and the application records the direct
+peer address. Enable forwarded headers only when the application is actually
+behind the stated number of trusted proxies.
+
+`ProxyFix(x_for=N)` trusts the rightmost `N` forwarded addresses. The configured
+hop count must match the real trusted proxy chain; an incorrect count can record
+the proxy address or an attacker-controlled address as the client IP. No proxy
+configuration should ever let untrusted clients control values the application
+treats as trusted.
+
+#### Single trusted Nginx proxy
+
+For exactly one trusted Nginx proxy in front of Gunicorn, overwrite the forwarded
+header with the immediate client address:
+
+```bash
+TRUSTED_PROXY_HOPS=1
+```
+
+```nginx
+proxy_set_header X-Forwarded-For $remote_addr;
+proxy_set_header X-Request-ID $request_id;
+```
+
+`$remote_addr` is the address of the client connecting directly to Nginx and
+overwrites any inbound `X-Forwarded-For` value. This is the least ambiguous
+single-proxy configuration.
+
+`$proxy_add_x_forwarded_for` is a different behavior: it appends the connecting
+address to an existing forwarded chain. With one proxy and
+`TRUSTED_PROXY_HOPS=1`, `ProxyFix` still uses only the rightmost address, so
+client-supplied entries to the left are ignored; however, the request header
+retains the untrusted chain. Do not treat the whole chain as trusted unless the
+deployment has actually validated it.
+
+#### Multiple trusted proxies
+
+A multi-proxy deployment normally uses `$proxy_add_x_forwarded_for` at each
+trusted proxy so each hop appends its immediate peer. Set
+`TRUSTED_PROXY_HOPS` to the exact number of trusted proxies; for example, two
+trusted proxies use `TRUSTED_PROXY_HOPS=2`. `ProxyFix` then selects the address
+`N` positions from the right and ignores values further left. Every trusted hop
+must append consistently, and the edge proxy must prevent untrusted clients from
+injecting values into the portion of the chain the application trusts.
+
+The same trust rules apply to inbound `X-Request-ID`: the application reuses a
+valid inbound UUID only when trusted proxy hops are configured. A proxy should
+overwrite it with a server-generated value (`$request_id`) rather than passing
+an arbitrary client-supplied identifier.
+
+### Audit technical debt
+
+- **F-01 — actor/target filter performance:** current filters use partial
+  `ILIKE '%term%'` on snapshot emails and joined current full names. The
+  existing `(actor_id, created_at)` and `(target_user_id, created_at)` indexes do
+  not accelerate those predicates. No `pg_trgm` extension or GIN migration is
+  added without realistic volume/query-plan evidence; benchmark before changing
+  the schema.
+- **F-04 — unknown IP sentinel:** an unavailable or malformed remote address is
+  stored as `0.0.0.0`; this is a sentinel, not a guaranteed real client address.
+- **F-06 — database privilege boundary:** the trigger blocks ordinary row-level
+  UPDATE/DELETE, but table owners, superusers, `TRUNCATE`, and a compromised
+  privileged account remain outside its protection. Runtime DB roles are not
+  separated by this application.
+- **F-08 — JSONB validation:** PostgreSQL enforces JSON object type; flatness and
+  sensitive-key exclusion are application-level controls. Direct privileged DB
+  inserts are outside that allowlist.
+- **F-09 — historical name search:** deleted users retain email snapshots, but
+  current-name search no longer has a User row to join. Email search remains.
+- **F-10 — no-op transaction contract:** no-op service paths roll back to release
+  row locks; this assumes the service owns the top-level transaction.
+- **F-11 — request ID trust:** inbound request IDs depend on correct proxy
+  overwrite behavior and are not an authorization control.
+- **F-12 — audit scope:** login, logout, password reset, order, payment, and
+  failed-action auditing are outside M13 scope.
 
 ## Production notes
 

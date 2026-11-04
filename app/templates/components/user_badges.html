@@ -1,0 +1,9 @@
+{% macro user_role_badge(role) -%}
+  <span class="role-badge role-badge--{{ role }}">{{ role|title }}</span>
+{%- endmacro %}
+
+{% macro user_status_badge(is_active) -%}
+  <span class="admin-chip admin-chip--{{ 'active' if is_active else 'inactive' }}">
+    {%- if is_active -%}Active{%- else -%}Inactive{%- endif -%}
+  </span>
+{%- endmacro %}

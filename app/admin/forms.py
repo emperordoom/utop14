@@ -10,11 +10,18 @@ from wtforms import (
     SubmitField,
     TextAreaField,
 )
-from wtforms.validators import DataRequired, InputRequired, Length, NumberRange, Optional
+from wtforms.fields.choices import SelectChoice
+from wtforms.validators import DataRequired, Email, InputRequired, Length, NumberRange, Optional
+
+from app.models.user import ROLES, normalize_email
 
 
 def _strip(value: str | None) -> str | None:
     return value.strip() if isinstance(value, str) else value
+
+
+def _normalize_email(value: str | None) -> str | None:
+    return normalize_email(value) if isinstance(value, str) else value
 
 
 class OrderStatusForm(FlaskForm):
@@ -189,3 +196,30 @@ class ReviewModerationForm(FlaskForm):
         validators=[Optional(), Length(max=500)],
     )
     submit = SubmitField("Hide review")
+
+
+class AdminUserProfileForm(FlaskForm):
+    """Update an account's allowed profile fields as an admin."""
+
+    full_name = StringField(
+        "Full name",
+        filters=[_strip],
+        validators=[DataRequired(), Length(max=120)],
+    )
+    email = StringField(
+        "Email",
+        filters=[_strip, _normalize_email],
+        validators=[DataRequired(), Email(), Length(max=255)],
+    )
+    submit = SubmitField("Save account")
+
+
+class AdminUserRoleForm(FlaskForm):
+    """Change one account's role within the existing hierarchy."""
+
+    role = SelectField(
+        "Role",
+        choices=[SelectChoice(role, role.replace("_", " ").title()) for role in ROLES],
+        validators=[DataRequired()],
+    )
+    submit = SubmitField("Update role")

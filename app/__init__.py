@@ -16,6 +16,7 @@ from app.config import (
     validate_config,
 )
 from app.extensions import csrf, db, login_manager, migrate
+from app.request_context import init_request_context
 
 __all__ = ["create_app"]
 
@@ -60,6 +61,7 @@ def create_app(
     migrate.init_app(app, db)
     login_manager.init_app(app)
     csrf.init_app(app)
+    init_request_context(app)
 
     _register_blueprints(app)
     _register_models()

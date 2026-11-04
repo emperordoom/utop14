@@ -1,0 +1,19 @@
+{% macro audit_action_badge(action) -%}
+  {%- if action == "user.profile_updated" -%}
+    {% set label = "Profile updated" %}
+    {% set modifier = "profile" %}
+  {%- elif action == "user.role_changed" -%}
+    {% set label = "Role changed" %}
+    {% set modifier = "role" %}
+  {%- elif action == "user.activated" -%}
+    {% set label = "Activated" %}
+    {% set modifier = "activated" %}
+  {%- elif action == "user.deactivated" -%}
+    {% set label = "Deactivated" %}
+    {% set modifier = "deactivated" %}
+  {%- else -%}
+    {% set label = action %}
+    {% set modifier = "unknown" %}
+  {%- endif -%}
+  <span class="audit-action audit-action--{{ modifier }}">{{ label }}</span>
+{%- endmacro %}
