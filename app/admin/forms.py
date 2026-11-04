@@ -167,3 +167,14 @@ class ActionForm(FlaskForm):
     """CSRF-only form for activation, deactivation and delete actions."""
 
     submit = SubmitField("Confirm")
+
+
+class PaymentProofRejectForm(FlaskForm):
+    """Reject one payment proof with a mandatory reason."""
+
+    reason = TextAreaField(
+        "Rejection reason",
+        filters=[_strip],
+        validators=[DataRequired(), Length(max=500)],
+    )
+    submit = SubmitField("Reject proof")

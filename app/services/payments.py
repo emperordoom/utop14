@@ -14,16 +14,22 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import joinedload
 
 from app.extensions import db
-from app.models import Order, Payment, User
+from app.models import Order, Payment, PaymentProof, User
 from app.models.order import ORDER_STATUS_CANCELLED, PAYMENT_STATUS_UNPAID
 from app.models.payment import (
     PAYMENT_CURRENCY_IDR,
+    PAYMENT_METHOD_BANK_TRANSFER,
     PAYMENT_METHOD_SIMULATED,
+    PAYMENT_PROVIDER_MANUAL_TRANSFER,
     PAYMENT_PROVIDER_SIMULATED,
     PAYMENT_STATUS_EXPIRED,
     PAYMENT_STATUS_FAILED,
     PAYMENT_STATUS_PAID,
     PAYMENT_STATUS_PENDING,
+)
+from app.models.payment_proof import (
+    PAYMENT_PROOF_STATUS_CANCELLED,
+    PAYMENT_PROOF_STATUS_PENDING_REVIEW,
 )
 from app.payments.providers.simulated import (
     SIMULATED_OUTCOME_FAILURE,
@@ -35,6 +41,10 @@ from app.payments.providers.simulated import (
 PAYMENT_ELIGIBLE_ORDER_STATUSES: Final = frozenset({"pending", "processing"})
 _CENT: Final = Decimal("0.01")
 _DEFAULT_TTL_MINUTES: Final = 15
+_DEFAULT_MANUAL_TTL_HOURS: Final = 24
+_MAX_BANK_NAME_LENGTH: Final = 120
+_MAX_ACCOUNT_NAME_LENGTH: Final = 120
+_MAX_ACCOUNT_NUMBER_LENGTH: Final = 64
 
 
 class PaymentError(Exception):
@@ -62,6 +72,15 @@ class PaymentProcessResult:
     category: str = "info"
 
 
+@dataclass(frozen=True, slots=True)
+class BankTransferDetails:
+    """Configured bank details shown only to the order owner."""
+
+    bank_name: str
+    account_name: str
+    account_number: str
+
+
 def payment_provider_available() -> bool:
     """Whether the configured provider is available in this environment."""
     provider = str(current_app.config.get("PAYMENT_PROVIDER") or "").strip().lower()
@@ -85,6 +104,44 @@ def payment_attempt_ttl_minutes() -> int:
     if type(raw_value) is not int or raw_value <= 0:
         return _DEFAULT_TTL_MINUTES
     return raw_value
+
+
+def manual_transfer_ttl_hours() -> int:
+    """Return the strictly configured manual-transfer deadline in hours."""
+    raw_value = current_app.config.get("MANUAL_TRANSFER_TTL_HOURS", _DEFAULT_MANUAL_TTL_HOURS)
+    if type(raw_value) is not int or raw_value <= 0:
+        return _DEFAULT_MANUAL_TTL_HOURS
+    return raw_value
+
+
+def manual_transfer_details() -> BankTransferDetails | None:
+    """Return complete bank details, or ``None`` when configuration is incomplete."""
+    raw_values = (
+        current_app.config.get("BANK_TRANSFER_BANK_NAME"),
+        current_app.config.get("BANK_TRANSFER_ACCOUNT_NAME"),
+        current_app.config.get("BANK_TRANSFER_ACCOUNT_NUMBER"),
+    )
+    if not all(isinstance(value, str) and value.strip() for value in raw_values):
+        return None
+
+    bank_name, account_name, account_number = (value.strip() for value in raw_values)
+    if (
+        len(bank_name) > _MAX_BANK_NAME_LENGTH
+        or len(account_name) > _MAX_ACCOUNT_NAME_LENGTH
+        or len(account_number) > _MAX_ACCOUNT_NUMBER_LENGTH
+    ):
+        return None
+
+    return BankTransferDetails(
+        bank_name=bank_name,
+        account_name=account_name,
+        account_number=account_number,
+    )
+
+
+def manual_transfer_available() -> bool:
+    """Whether complete manual bank-transfer details are configured."""
+    return manual_transfer_details() is not None
 
 
 def can_pay_order(order: Order) -> bool:
@@ -159,6 +216,16 @@ def _generate_payment_reference() -> str:
 def _expire_locked_payment(payment: Payment, now: datetime) -> None:
     payment.status = PAYMENT_STATUS_EXPIRED
     payment.expired_at = now
+    pending_proofs = db.session.scalars(
+        select(PaymentProof)
+        .where(
+            PaymentProof.payment_id == payment.id,
+            PaymentProof.status == PAYMENT_PROOF_STATUS_PENDING_REVIEW,
+        )
+        .with_for_update()
+    ).all()
+    for proof in pending_proofs:
+        proof.status = PAYMENT_PROOF_STATUS_CANCELLED
 
 
 def _fail_locked_payment(payment: Payment, now: datetime) -> None:
@@ -171,10 +238,49 @@ def create_payment_attempt(
     order_number: str,
     idempotency_key: str | None,
 ) -> Payment:
-    """Create one pending payment attempt using the order's server-side total."""
+    """Create one pending simulated attempt using the order's server-side total."""
     if not payment_provider_available():
         raise PaymentUnavailable("Payments are unavailable in this environment.")
 
+    return _create_payment_attempt(
+        user_id,
+        order_number,
+        idempotency_key,
+        provider=PAYMENT_PROVIDER_SIMULATED,
+        payment_method=PAYMENT_METHOD_SIMULATED,
+        expires_in=timedelta(minutes=payment_attempt_ttl_minutes()),
+    )
+
+
+def create_manual_payment_attempt(
+    user_id: int,
+    order_number: str,
+    idempotency_key: str | None,
+) -> Payment:
+    """Create one pending manual bank-transfer attempt for an eligible order."""
+    if not manual_transfer_available():
+        raise PaymentUnavailable("Manual bank transfer is not configured.")
+
+    return _create_payment_attempt(
+        user_id,
+        order_number,
+        idempotency_key,
+        provider=PAYMENT_PROVIDER_MANUAL_TRANSFER,
+        payment_method=PAYMENT_METHOD_BANK_TRANSFER,
+        expires_in=timedelta(hours=manual_transfer_ttl_hours()),
+    )
+
+
+def _create_payment_attempt(
+    user_id: int,
+    order_number: str,
+    idempotency_key: str | None,
+    *,
+    provider: str,
+    payment_method: str,
+    expires_in: timedelta,
+) -> Payment:
+    """Shared idempotent attempt creation for every provider."""
     key = _validate_idempotency_key(idempotency_key)
 
     try:
@@ -222,18 +328,17 @@ def create_payment_attempt(
 
         amount = order.total.quantize(_CENT)
         now = datetime.now(UTC)
-        provider = SimulatedPaymentProvider()
 
         payment = Payment(
             payment_reference=_generate_payment_reference(),
             order=order,
-            provider=provider.name,
-            payment_method=PAYMENT_METHOD_SIMULATED,
+            provider=provider,
+            payment_method=payment_method,
             amount=amount,
             currency=PAYMENT_CURRENCY_IDR,
             status=PAYMENT_STATUS_PENDING,
             idempotency_key=key,
-            expires_at=now + timedelta(minutes=payment_attempt_ttl_minutes()),
+            expires_at=now + expires_in,
         )
         db.session.add(payment)
         db.session.commit()

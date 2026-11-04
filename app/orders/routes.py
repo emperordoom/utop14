@@ -16,7 +16,11 @@ from app.services.orders import (
     customer_can_cancel,
     list_customer_orders,
 )
-from app.services.payments import can_pay_order, payment_provider_available
+from app.services.payments import (
+    can_pay_order,
+    manual_transfer_available,
+    payment_provider_available,
+)
 
 
 @orders_bp.get("/orders")
@@ -36,13 +40,17 @@ def confirmation(order_number: str) -> ResponseReturnValue:
     if order is None:
         abort(404)
 
+    simulated_available = payment_provider_available()
+    manual_available = manual_transfer_available()
     return render_template(
         "orders/confirmation.html",
         order=order,
         cancel_form=CancelOrderForm(),
         can_cancel=customer_can_cancel(order),
         can_pay=can_pay_order(order),
-        payments_available=payment_provider_available(),
+        simulated_available=simulated_available,
+        manual_available=manual_available,
+        payments_available=simulated_available or manual_available,
     )
 
 

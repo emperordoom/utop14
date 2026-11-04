@@ -10,6 +10,7 @@ from flask import Flask, render_template
 
 from app.config import (
     configure_avatar_storage,
+    configure_payment_proof_storage,
     get_config,
     load_environment,
     validate_config,
@@ -49,6 +50,7 @@ def create_app(
         app.config.update(config_overrides)
 
     configure_avatar_storage(app)
+    configure_payment_proof_storage(app)
 
     # Validate before initializing extensions so broken deployments stop
     # immediately and no component starts with an incomplete configuration.

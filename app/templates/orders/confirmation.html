@@ -134,7 +134,11 @@
               <p class="order-summary__note">No payment attempt yet.</p>
             {% endif %}
 
-            <p class="simulation-note">SIMULATION ONLY — NO REAL MONEY</p>
+            {% if simulated_available %}
+              <p class="simulation-note">SIMULATION ONLY — NO REAL MONEY</p>
+            {% elif manual_available %}
+              <p class="simulation-note">Manual bank transfer is reviewed by an admin.</p>
+            {% endif %}
           </div>
 
           {% if order.status == 'cancelled' %}
@@ -157,8 +161,9 @@
               This order was cancelled and its stock was restored where the
               original variant still existed.
             {% else %}
-              Stock has been deducted for this order. Payment collection and
-              shipping integrations are not part of this milestone.
+              Stock has been deducted for this order. Payment collection follows
+              the available method; shipping integration is not part of this
+              milestone.
             {% endif %}
           </p>
 

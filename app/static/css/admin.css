@@ -165,6 +165,103 @@
   color: #86efac;
 }
 
+.admin-chip--pending-review {
+  border-color: #a16207;
+  color: #facc15;
+}
+
+.admin-chip--approved {
+  border-color: var(--acid);
+  color: var(--acid);
+}
+
+.admin-chip--rejected {
+  border-color: #7f1d1d;
+  color: #fca5a5;
+}
+
+.admin-chip--cancelled {
+  border-color: var(--line);
+  color: var(--muted);
+}
+
+/* Payment proof review */
+.proof-preview {
+  display: grid;
+  align-content: start;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.proof-preview__image {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 44rem;
+  border: 1px solid var(--line);
+  background: var(--ink);
+  object-fit: contain;
+}
+
+.proof-preview__pdf {
+  display: grid;
+  gap: 1rem;
+  place-items: start;
+  padding: clamp(1.5rem, 4vw, 3rem);
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.proof-preview__pdf .mono {
+  color: var(--acid);
+}
+
+.proof-preview__pdf p:not(.mono) {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.7;
+}
+
+.proof-review-actions {
+  display: grid;
+  gap: 1.25rem;
+  margin-top: 1.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--line);
+}
+
+.proof-review-form {
+  display: grid;
+  gap: 0.75rem;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  background: var(--ink);
+}
+
+.proof-review-form .admin-note {
+  margin: 0;
+}
+
+.proof-reject-button {
+  justify-self: start;
+  border-color: #7f1d1d;
+  color: #fca5a5;
+}
+
+.proof-reject-button:hover {
+  border-color: #fca5a5;
+}
+
+.proof-rejection-reason {
+  max-width: 40rem;
+  color: #fca5a5;
+  overflow-wrap: anywhere;
+}
+
+.admin-table--proofs td {
+  vertical-align: top;
+}
+
 /* Toolbars, filters and empty states */
 .admin-toolbar {
   display: flex;

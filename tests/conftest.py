@@ -35,6 +35,7 @@ from app.services.payments import create_payment_attempt
 PROJECT_ROOT: Final = Path(__file__).resolve().parents[1]
 MIGRATIONS_DIR: Final = PROJECT_ROOT / "migrations"
 RESET_TABLES: Final = (
+    "payment_proofs",
     "payments",
     "order_items",
     "orders",
@@ -121,6 +122,37 @@ def avatar_storage(
         yield storage
     finally:
         shutil.rmtree(storage, ignore_errors=True)
+
+
+@pytest.fixture()
+def payment_proof_storage(
+    app: Flask,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[Path]:
+    """Use an isolated payment-proof directory and remove it after the test."""
+    storage = tmp_path / "payment-proofs"
+    monkeypatch.setitem(app.config, "PAYMENT_PROOF_STORAGE_PATH", str(storage))
+    try:
+        yield storage
+    finally:
+        shutil.rmtree(storage, ignore_errors=True)
+
+
+@pytest.fixture()
+def bank_transfer_config(
+    app: Flask,
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, str]:
+    """Configure dummy bank details for manual-transfer tests."""
+    values = {
+        "BANK_TRANSFER_BANK_NAME": "Test Bank",
+        "BANK_TRANSFER_ACCOUNT_NAME": "UTOP14 Test Account",
+        "BANK_TRANSFER_ACCOUNT_NUMBER": "0000000000",
+    }
+    for key, value in values.items():
+        monkeypatch.setitem(app.config, key, value)
+    return values
 
 
 @pytest.fixture()

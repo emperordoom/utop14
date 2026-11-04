@@ -1,0 +1,5 @@
+{% macro proof_status_badge(status) -%}
+  <span class="admin-chip admin-chip--{{ status|replace('_', '-') }}">
+    {{ status|replace('_', ' ')|title }}
+  </span>
+{%- endmacro %}

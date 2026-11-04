@@ -12,6 +12,7 @@ from app.models.cart import Cart, CartItem
 from app.models.category import Category
 from app.models.order import Order, OrderItem
 from app.models.payment import Payment
+from app.models.payment_proof import PaymentProof
 from app.models.product import Product
 from app.models.product_image import ProductImage
 from app.models.product_variant import ProductVariant
@@ -25,6 +26,7 @@ __all__ = [
     "Order",
     "OrderItem",
     "Payment",
+    "PaymentProof",
     "Product",
     "ProductImage",
     "ProductVariant",

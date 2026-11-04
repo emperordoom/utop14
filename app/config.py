@@ -63,6 +63,16 @@ def _env_bool(name: str, *, default: bool) -> bool:
     raise ConfigurationError(f"{name} must be a boolean value (true/false).")
 
 
+def _env_int(name: str, *, default: int) -> int:
+    raw_value = os.getenv(name)
+    if raw_value is None or not raw_value.strip():
+        return default
+    try:
+        return int(raw_value.strip())
+    except ValueError as exc:
+        raise ConfigurationError(f"{name} must be a positive integer.") from exc
+
+
 class BaseConfig:
     """Settings shared by every environment."""
 
@@ -97,6 +107,15 @@ class BaseConfig:
     AVATAR_MAX_BYTES = 2 * 1024 * 1024
     AVATAR_MAX_DIMENSION = 2048
 
+    # Manual bank-transfer policy and private evidence storage.
+    MANUAL_TRANSFER_TTL_HOURS = 24
+    BANK_TRANSFER_BANK_NAME = ""
+    BANK_TRANSFER_ACCOUNT_NAME = ""
+    BANK_TRANSFER_ACCOUNT_NUMBER = ""
+    PAYMENT_PROOF_STORAGE_PATH = ""
+    PAYMENT_PROOF_MAX_BYTES = 5 * 1024 * 1024
+    PAYMENT_PROOF_MAX_DIMENSION = 4096
+
     @classmethod
     def load(cls) -> dict[str, Any]:
         """Return the environment-dependent settings for this configuration."""
@@ -104,6 +123,11 @@ class BaseConfig:
             "SECRET_KEY": _env_str("SECRET_KEY"),
             "SQLALCHEMY_DATABASE_URI": _env_str("DATABASE_URL"),
             "AVATAR_STORAGE_PATH": _env_str("AVATAR_STORAGE_PATH"),
+            "BANK_TRANSFER_BANK_NAME": _env_str("BANK_TRANSFER_BANK_NAME"),
+            "BANK_TRANSFER_ACCOUNT_NAME": _env_str("BANK_TRANSFER_ACCOUNT_NAME"),
+            "BANK_TRANSFER_ACCOUNT_NUMBER": _env_str("BANK_TRANSFER_ACCOUNT_NUMBER"),
+            "PAYMENT_PROOF_STORAGE_PATH": _env_str("PAYMENT_PROOF_STORAGE_PATH"),
+            "MANUAL_TRANSFER_TTL_HOURS": _env_int("MANUAL_TRANSFER_TTL_HOURS", default=24),
         }
 
 
@@ -174,6 +198,11 @@ class TestingConfig(BaseConfig):
             "SECRET_KEY": _env_str("TEST_SECRET_KEY")
             or "utop14-testing-only-secret-not-for-production",
             "SQLALCHEMY_DATABASE_URI": _test_database_url(),
+            "BANK_TRANSFER_BANK_NAME": _env_str("BANK_TRANSFER_BANK_NAME"),
+            "BANK_TRANSFER_ACCOUNT_NAME": _env_str("BANK_TRANSFER_ACCOUNT_NAME"),
+            "BANK_TRANSFER_ACCOUNT_NUMBER": _env_str("BANK_TRANSFER_ACCOUNT_NUMBER"),
+            "PAYMENT_PROOF_STORAGE_PATH": _env_str("PAYMENT_PROOF_STORAGE_PATH"),
+            "MANUAL_TRANSFER_TTL_HOURS": _env_int("MANUAL_TRANSFER_TTL_HOURS", default=24),
         }
 
 
@@ -207,26 +236,49 @@ def _database_name(database_url: str) -> str:
         return ""
 
 
-def configure_avatar_storage(app: Flask) -> None:
-    """Resolve and validate the private avatar storage directory.
+def _configure_private_storage(
+    app: Flask,
+    *,
+    config_key: str,
+    default_dirname: str,
+) -> None:
+    """Resolve and validate a private storage directory.
 
-    The default is ``<instance>/avatars``.  Configured paths must not point into
-    the application source tree or the static web root, so uploaded files can
-    never be served directly by Flask's static handler.
+    The default is ``<instance>/<default_dirname>``.  Configured paths must not
+    point into the application source tree or the static web root, so uploaded
+    files can never be served directly by Flask's static handler.
     """
-    configured = str(app.config.get("AVATAR_STORAGE_PATH") or "").strip()
+    configured = str(app.config.get(config_key) or "").strip()
     storage = (
-        Path(configured).expanduser() if configured else Path(app.instance_path) / "avatars"
+        Path(configured).expanduser() if configured else Path(app.instance_path) / default_dirname
     ).resolve()
     app_root = Path(app.root_path).resolve()
     static_root = Path(app.static_folder).resolve() if app.static_folder else None
 
     if storage == app_root or app_root in storage.parents:
-        raise ConfigurationError("AVATAR_STORAGE_PATH must be outside the application source tree.")
+        raise ConfigurationError(f"{config_key} must be outside the application source tree.")
     if static_root is not None and (storage == static_root or static_root in storage.parents):
-        raise ConfigurationError("AVATAR_STORAGE_PATH must be outside the static web root.")
+        raise ConfigurationError(f"{config_key} must be outside the static web root.")
 
-    app.config["AVATAR_STORAGE_PATH"] = str(storage)
+    app.config[config_key] = str(storage)
+
+
+def configure_avatar_storage(app: Flask) -> None:
+    """Resolve and validate the private avatar storage directory."""
+    _configure_private_storage(
+        app,
+        config_key="AVATAR_STORAGE_PATH",
+        default_dirname="avatars",
+    )
+
+
+def configure_payment_proof_storage(app: Flask) -> None:
+    """Resolve and validate the private payment-proof storage directory."""
+    _configure_private_storage(
+        app,
+        config_key="PAYMENT_PROOF_STORAGE_PATH",
+        default_dirname="payment-proofs",
+    )
 
 
 _CONFIGURATIONS: Final = {
@@ -299,6 +351,26 @@ def validate_config(app: Flask) -> None:
         or max_avatar_dimension > 4096
     ):
         raise ConfigurationError("AVATAR_MAX_DIMENSION must be between 64 and 4,096.")
+
+    manual_ttl = app.config.get("MANUAL_TRANSFER_TTL_HOURS")
+    if type(manual_ttl) is not int or manual_ttl <= 0:
+        raise ConfigurationError("MANUAL_TRANSFER_TTL_HOURS must be a positive integer.")
+
+    proof_max_bytes = app.config.get("PAYMENT_PROOF_MAX_BYTES")
+    if (
+        type(proof_max_bytes) is not int
+        or proof_max_bytes <= 0
+        or proof_max_bytes > 5 * 1024 * 1024
+    ):
+        raise ConfigurationError("PAYMENT_PROOF_MAX_BYTES must be between 1 and 5,242,880.")
+
+    proof_max_dimension = app.config.get("PAYMENT_PROOF_MAX_DIMENSION")
+    if (
+        type(proof_max_dimension) is not int
+        or proof_max_dimension < 64
+        or proof_max_dimension > 4096
+    ):
+        raise ConfigurationError("PAYMENT_PROOF_MAX_DIMENSION must be between 64 and 4,096.")
 
     # Only an exact ``int`` is accepted.  ``bool`` is a subclass of ``int`` and
     # floats/strings must never be silently truncated or coerced into an unsafe
