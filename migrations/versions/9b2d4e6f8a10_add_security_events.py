@@ -8,6 +8,12 @@ Creates the append-only ``security_events`` table used for authentication
 auditing.  This migration is additive and leaves the M13 ``audit_logs`` table,
 its trigger and its data untouched.
 
+The trigger rejects ordinary row-level UPDATE/DELETE.  It permits FK
+``ON DELETE SET NULL`` and a direct privileged UPDATE that clears the nullable
+actor/subject identity links; all other fields remain immutable under those
+row-level rules.  It is not absolute immutability against table owners,
+superusers, ``TRUNCATE``, or a compromised privileged account.
+
 Downgrade warning: ``downgrade()`` drops the ``security_events`` table and all
 security-event audit history it contains.  This is destructive and must never
 be executed against production without an explicit, separately approved data
@@ -159,9 +165,11 @@ def upgrade():
                 RAISE EXCEPTION 'security_events is append-only';
             END IF;
 
-            -- Foreign-key ON DELETE SET NULL issues an UPDATE.  Permit only
-            -- clearing actor_user_id/subject_user_id; every historical field
-            -- stays immutable, including email snapshots and timestamps.
+            -- Foreign-key ON DELETE SET NULL issues an UPDATE.  This block
+            -- permits clearing either nullable actor/subject FK to NULL,
+            -- whether from a FK action or a direct privileged UPDATE; every
+            -- other field stays immutable, including email snapshots and
+            -- timestamps.
             IF NEW.id IS DISTINCT FROM OLD.id
                OR NEW.event_type IS DISTINCT FROM OLD.event_type
                OR NEW.outcome IS DISTINCT FROM OLD.outcome

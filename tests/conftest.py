@@ -4,6 +4,10 @@ Database tests run only against the isolated PostgreSQL test database.  The
 fixtures apply the real Alembic migrations, refuse databases whose name does not
 end in ``_test``, and truncate account and catalog tables between tests so the
 development database is never touched.
+
+The suite uses one shared test database.  Do not run concurrent pytest processes
+(including pytest-xdist) against the same database: fixtures truncate shared
+tables and the migration-cycle test mutates the schema for one test.
 """
 
 from __future__ import annotations
@@ -119,6 +123,12 @@ def app(_database_app: Flask) -> Iterator[Flask]:
 def client(app: Flask) -> FlaskClient:
     """Return a test client bound to the test application."""
     return app.test_client()
+
+
+@pytest.fixture()
+def no_ambient_security_event_hash_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Remove an ambient HMAC key so app-creation tests stay deterministic."""
+    monkeypatch.delenv("SECURITY_EVENT_HASH_KEY", raising=False)
 
 
 @pytest.fixture()

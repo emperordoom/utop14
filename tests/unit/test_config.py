@@ -11,6 +11,9 @@ VALID_TEST_DATABASE_URL = "postgresql+psycopg://localhost:5432/utop14_test"
 VALID_PRODUCTION_SECRET = "unit-test-production-secret-key-0123456789"
 VALID_SECURITY_EVENT_HASH_KEY = "unit-test-production-security-event-key-0123456789"
 
+# Keep app-creation tests independent of a developer's ambient HMAC key.
+pytestmark = pytest.mark.usefixtures("no_ambient_security_event_hash_key")
+
 
 def test_supported_configuration_names_are_resolved() -> None:
     assert get_config("development").ENVIRONMENT == "development"

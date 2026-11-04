@@ -59,12 +59,16 @@ SECURITY_MAX_EMAIL_LENGTH: Final = 255
 
 
 class SecurityEvent(Base):
-    """One immutable authentication or security event.
+    """One authentication or security event.
 
     This table is separate from the M13 administrative ``audit_logs`` table so
     unauthenticated and high-volume authentication events do not change the
-    existing audit schema or semantics.  The append-only trigger permits only
-    FK ``ON DELETE SET NULL`` clearing of actor/subject identity links.
+    existing audit schema or semantics.  A PostgreSQL trigger rejects ordinary
+    UPDATE and DELETE operations.  It permits FK ``ON DELETE SET NULL`` and a
+    direct privileged UPDATE to clear the nullable actor/subject identity links;
+    email snapshots and every other field remain immutable under those row-level
+    rules.  This is not absolute immutability against table owners, superusers,
+    ``TRUNCATE``, or a compromised privileged account.
     """
 
     __tablename__ = "security_events"

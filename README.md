@@ -440,6 +440,10 @@ Alembic migrations, reject any database whose name does not end in `_test`, and
 truncate account, catalog, cart, order and payment tables between tests. The
 development database is never modified by the test suite.
 
+The suite is designed for a single pytest process. Do not run concurrent pytest
+processes (including pytest-xdist) against the same `utop14_test` database:
+fixtures truncate shared tables and the migration-cycle test mutates the schema.
+
 Coverage includes application startup, configuration and production security
 defaults, catalog models and constraints, catalog service queries, storefront
 pages, seeds, registration, password hashing, login/logout, CSRF, open-redirect
@@ -609,9 +613,12 @@ M14.1 records exactly three authentication events in a dedicated append-only
 Each record stores event type, outcome, reason code, nullable actor and subject
 identity, an optional HMAC-SHA256 identifier hash, client IP, sanitized user
 agent, request ID, allowlisted JSONB metadata and a UTC timestamp. The table is
-append-only at the application layer and protected against row-level
-UPDATE/DELETE by its own PostgreSQL trigger; only foreign-key `SET NULL`
-clearing of actor/subject identity links is permitted.
+append-only for ordinary application operations and protected against row-level
+UPDATE/DELETE by its own PostgreSQL trigger. The trigger permits foreign-key
+`SET NULL` and a direct privileged UPDATE that clears the nullable actor/subject
+identity links; email snapshots and every other field remain immutable under
+those row-level rules. It is not absolute immutability against table owners,
+superusers, `TRUNCATE`, or a compromised privileged account.
 
 Event persistence is best-effort and uses a separate short-lived transaction.
 An audit failure never changes whether login, registration or logout succeeds,
@@ -649,11 +656,28 @@ simultaneous database connections merely to write an event.
 
 The `security_events` table is indexed by request ID for incident correlation.
 A reason-code index is deferred until the M14.2 viewer defines its filters and
-the query pattern is measured. The append-only trigger permits FK `SET NULL`
-clearing of actor/subject links; it also permits a direct privileged UPDATE that
-clears those two nullable FK values while leaving the email snapshots and every
-other field unchanged. It is not absolute immutability against table owners,
-superusers, `TRUNCATE`, or a compromised privileged account.
+the query pattern is measured.
+
+### M14.1 deployment checklist
+
+1. Set `APP_ENV=production`.
+2. Configure a dedicated, randomly generated `SECURITY_EVENT_HASH_KEY` with at
+   least 32 bytes of UTF-8 key material.
+3. Ensure the key differs from `SECRET_KEY`.
+4. Never reuse the repository test key or any placeholder value.
+5. Apply both migrations from a controlled release job:
+   `9b2d4e6f8a10` and `c4e7a1b9d2f6`.
+6. The request-ID index migration is non-concurrent. If `security_events`
+   already contains production traffic, schedule index creation in a maintenance
+   window or use a separately reviewed concurrent-index procedure.
+7. Never downgrade `9b2d4e6f8a10` in production. Its downgrade drops the
+   `security_events` table and destroys its history; do not run it without an
+   approved backup and explicit authorization.
+8. M14.1 does not complete production security hardening. The following remain
+   deferred: rate limiting and lockout; retention and purge; an admin
+   security-event viewer; remember-cookie restoration and forced
+   session-invalidation events; password reset/recovery event integration; and
+   session anomaly detection.
 
 Password reset, account recovery, rate limiting, session-anomaly detection,
 remember-cookie restoration events, an admin security-event viewer and automatic

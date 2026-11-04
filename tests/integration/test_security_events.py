@@ -968,7 +968,9 @@ def test_append_only_trigger_permits_direct_identity_clearing(
     app: Flask,
     make_user: Callable[..., User],
 ) -> None:
-    """Document the narrow trigger boundary: FK links may be cleared directly."""
+    """Ordinary UPDATE/DELETE is rejected, but clearing either nullable FK to
+    NULL is permitted (FK SET NULL or direct privileged UPDATE); other fields
+    remain immutable."""
     user = make_user(email="direct-clear@example.com")
     event = _add_event(user)
     event_id = event.id

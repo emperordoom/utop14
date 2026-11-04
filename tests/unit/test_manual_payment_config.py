@@ -12,6 +12,9 @@ from app.config import PROJECT_ROOT, ConfigurationError
 from app.services.payments import manual_transfer_details
 from app.services.proof_storage import ProofValidationError, validate_proof_filename
 
+# Keep app-creation tests independent of a developer's ambient HMAC key.
+pytestmark = pytest.mark.usefixtures("no_ambient_security_event_hash_key")
+
 
 def test_manual_transfer_details_require_all_fields(
     app: Flask,
