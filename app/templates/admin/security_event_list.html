@@ -46,6 +46,147 @@
         <h2 class="section-title" id="security-event-directory-title">Recent <em>events.</em></h2>
       </div>
 
+      <form
+        class="admin-filters admin-filters--security-events"
+        method="get"
+        action="{{ url_for('admin.security_event_list') }}"
+      >
+        {% if filters.errors %}
+          <div class="admin-filters__errors" role="alert">
+            <p class="mono">Filters could not be applied</p>
+            <ul>
+              {% for error in filters.errors %}
+                <li>{{ error }}</li>
+              {% endfor %}
+            </ul>
+          </div>
+        {% endif %}
+
+        <div class="admin-filters__field">
+          <label class="form-label" for="security-event-type">Event type</label>
+          <select class="form-control" id="security-event-type" name="event_type">
+            <option value=""{% if filters.event_type is none %} selected{% endif %}>All types</option>
+            {% for value, label in event_types %}
+              <option value="{{ value }}"{% if filters.event_type == value %} selected{% endif %}>
+                {{ label }}
+              </option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="admin-filters__field">
+          <label class="form-label" for="security-event-outcome">Outcome</label>
+          <select class="form-control" id="security-event-outcome" name="outcome">
+            <option value=""{% if filters.outcome is none %} selected{% endif %}>All outcomes</option>
+            {% for value, label in outcomes %}
+              <option value="{{ value }}"{% if filters.outcome == value %} selected{% endif %}>
+                {{ label }}
+              </option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="admin-filters__field">
+          <label class="form-label" for="security-event-reason">Reason</label>
+          <select class="form-control" id="security-event-reason" name="reason">
+            <option value=""{% if filters.reason_code is none %} selected{% endif %}>All reasons</option>
+            {% for group_label, choices in reason_groups %}
+              <optgroup label="{{ group_label }}">
+                {% for value, label in choices %}
+                  <option value="{{ value }}"{% if filters.reason_code == value %} selected{% endif %}>
+                    {{ label }}
+                  </option>
+                {% endfor %}
+              </optgroup>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="admin-filters__field">
+          <label class="form-label" for="security-event-from">From (UTC)</label>
+          <input
+            class="form-control"
+            id="security-event-from"
+            name="date_from"
+            type="date"
+            value="{{ filters.date_from.isoformat() if filters.date_from else '' }}"
+          >
+        </div>
+
+        <div class="admin-filters__field">
+          <label class="form-label" for="security-event-to">To (UTC)</label>
+          <input
+            class="form-control"
+            id="security-event-to"
+            name="date_to"
+            type="date"
+            value="{{ filters.date_to.isoformat() if filters.date_to else '' }}"
+          >
+        </div>
+
+        <div class="admin-filters__field admin-filters__field--wide">
+          <label class="form-label" for="security-event-request-id">Request ID</label>
+          <input
+            class="form-control"
+            id="security-event-request-id"
+            name="request_id"
+            type="search"
+            value="{{ filters.request_id or '' }}"
+            maxlength="64"
+            placeholder="UUID or 32-character hex"
+            autocomplete="off"
+          >
+        </div>
+
+        <div class="admin-filters__field admin-filters__field--wide">
+          <label class="form-label" for="security-event-identifier-hash">Identifier hash</label>
+          <input
+            class="form-control"
+            id="security-event-identifier-hash"
+            name="identifier_hash"
+            type="search"
+            value="{{ filters.identifier_hash or '' }}"
+            maxlength="64"
+            pattern="[0-9a-f]{64}"
+            placeholder="Exactly 64 lowercase hexadecimal characters"
+            autocomplete="off"
+          >
+        </div>
+
+        <div class="admin-filters__field">
+          <label class="form-label" for="security-event-actor-id">Actor user ID</label>
+          <input
+            class="form-control"
+            id="security-event-actor-id"
+            name="actor_user_id"
+            type="number"
+            min="1"
+            max="2147483647"
+            value="{{ filters.actor_user_id if filters.actor_user_id is not none else '' }}"
+            inputmode="numeric"
+          >
+        </div>
+
+        <div class="admin-filters__field">
+          <label class="form-label" for="security-event-subject-id">Subject user ID</label>
+          <input
+            class="form-control"
+            id="security-event-subject-id"
+            name="subject_user_id"
+            type="number"
+            min="1"
+            max="2147483647"
+            value="{{ filters.subject_user_id if filters.subject_user_id is not none else '' }}"
+            inputmode="numeric"
+          >
+        </div>
+
+        <div class="admin-filters__actions">
+          <button class="button button--primary" type="submit">Apply filters</button>
+          <a class="text-link" href="{{ url_for('admin.security_event_list') }}">Reset</a>
+        </div>
+      </form>
+
       {% if pagination.items %}
         <div class="admin-toolbar">
           <p class="mono">{{ pagination.total }} event{% if pagination.total != 1 %}s{% endif %}</p>
@@ -118,7 +259,16 @@
           </table>
         </div>
 
-        {{ render_pagination(pagination, 'admin.security_event_list') }}
+        {% if filters.is_valid %}
+          {{ render_pagination(pagination, 'admin.security_event_list', filters.as_query_params()) }}
+        {% endif %}
+      {% elif filters.errors %}
+        <div class="admin-empty">
+          <p class="mono">Filters not applied</p>
+          <h2>No results <em>returned.</em></h2>
+          <p>Fix the filter errors above and apply the filters again.</p>
+          <a class="button button--ghost" href="{{ url_for('admin.security_event_list') }}">Reset filters</a>
+        </div>
       {% else %}
         <div class="admin-empty">
           <p class="mono">No authentication events</p>

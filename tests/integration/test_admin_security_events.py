@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -25,7 +26,10 @@ from app.models.security_event import (
     SECURITY_REASON_USER_REQUESTED,
 )
 from app.models.user import ROLE_ADMIN, ROLE_CUSTOMER, ROLE_OPERATOR
-from app.services.security_event_admin import list_security_events
+from app.services.security_event_admin import (
+    AdminSecurityEventFilters,
+    list_security_events,
+)
 
 PASSWORD = "ValidPass123"
 
@@ -130,6 +134,24 @@ def _count_events() -> int:
 def _html(response) -> str:
     assert response.status_code == 200
     return response.get_data(as_text=True)
+
+
+@contextmanager
+def _captured_sql():
+    statements: list[str] = []
+
+    def _capture(_conn, _cursor, statement, _parameters, _context, _executemany):
+        statements.append(statement.lower())
+
+    sqlalchemy_event.listen(db.engine, "before_cursor_execute", _capture)
+    try:
+        yield statements
+    finally:
+        sqlalchemy_event.remove(db.engine, "before_cursor_execute", _capture)
+
+
+def _table_body(html: str) -> str:
+    return html.split("<tbody>", 1)[1].split("</tbody>", 1)[0]
 
 
 def test_admin_can_view_security_event_list(
@@ -570,3 +592,500 @@ def test_list_query_uses_only_security_events(
     assert all("security_events" in statement for statement in statements)
     assert not any("audit_logs" in statement for statement in statements)
     assert not any("from users" in statement for statement in statements)
+
+
+def test_filter_by_event_type(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = _admin(make_user)
+    _add_event(
+        event_type=SECURITY_EVENT_LOGIN_SUCCEEDED,
+        reason_code=SECURITY_REASON_AUTHENTICATED,
+        actor_email="type-success@example.com",
+    )
+    _add_event(
+        event_type=SECURITY_EVENT_LOGIN_FAILED,
+        outcome=SECURITY_OUTCOME_FAILURE,
+        reason_code=SECURITY_REASON_UNKNOWN_ACCOUNT,
+        actor_email="type-failure@example.com",
+    )
+    _add_event(event_type=SECURITY_EVENT_LOGOUT, actor_email="type-logout@example.com")
+    _silent_login(client, csrf_token, monkeypatch, email=admin.email)
+
+    html = _html(client.get("/admin/security-events?event_type=auth.login_failed"))
+
+    assert "type-failure@example.com" in html
+    assert "type-success@example.com" not in html
+    assert "type-logout@example.com" not in html
+
+
+def test_filter_by_outcome(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = _admin(make_user)
+    _add_event(actor_email="outcome-success@example.com")
+    _add_event(
+        event_type=SECURITY_EVENT_LOGIN_FAILED,
+        outcome=SECURITY_OUTCOME_FAILURE,
+        reason_code=SECURITY_REASON_UNKNOWN_ACCOUNT,
+        actor_email="outcome-failure@example.com",
+    )
+    _silent_login(client, csrf_token, monkeypatch, email=admin.email)
+
+    html = _html(client.get("/admin/security-events?outcome=failure"))
+
+    assert "outcome-failure@example.com" in html
+    assert "outcome-success@example.com" not in html
+
+
+def test_reason_filter_derives_event_type(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = _admin(make_user)
+    _add_event(
+        event_type=SECURITY_EVENT_LOGIN_FAILED,
+        outcome=SECURITY_OUTCOME_FAILURE,
+        reason_code=SECURITY_REASON_UNKNOWN_ACCOUNT,
+        actor_email="reason-unknown@example.com",
+    )
+    _add_event(actor_email="reason-success@example.com")
+    _silent_login(client, csrf_token, monkeypatch, email=admin.email)
+
+    html = _html(client.get("/admin/security-events?reason=unknown_account"))
+
+    assert "reason-unknown@example.com" in html
+    assert "reason-success@example.com" not in html
+
+
+def test_filter_by_inclusive_utc_date_range(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = _admin(make_user)
+    _add_event(
+        actor_email="date-before@example.com",
+        created_at=datetime(2026, 11, 1, 23, 59, 59, tzinfo=UTC),
+    )
+    _add_event(
+        actor_email="date-start@example.com",
+        created_at=datetime(2026, 11, 2, 0, 0, 0, tzinfo=UTC),
+    )
+    _add_event(
+        actor_email="date-end@example.com",
+        created_at=datetime(2026, 11, 2, 23, 59, 59, 999999, tzinfo=UTC),
+    )
+    _add_event(
+        actor_email="date-after@example.com",
+        created_at=datetime(2026, 11, 3, 0, 0, 0, tzinfo=UTC),
+    )
+    _silent_login(client, csrf_token, monkeypatch, email=admin.email)
+
+    html = _html(client.get("/admin/security-events?date_from=2026-11-02&date_to=2026-11-02"))
+
+    assert "date-start@example.com" in html
+    assert "date-end@example.com" in html
+    assert "date-before@example.com" not in html
+    assert "date-after@example.com" not in html
+
+
+def test_filter_by_maximum_date(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = _admin(make_user)
+    _add_event(
+        actor_email="max-date@example.com",
+        created_at=datetime(9999, 12, 31, 12, 0, tzinfo=UTC),
+    )
+    _silent_login(client, csrf_token, monkeypatch, email=admin.email)
+
+    html = _html(client.get("/admin/security-events?date_from=9999-12-31&date_to=9999-12-31"))
+
+    assert "max-date@example.com" in html
+
+
+def test_filter_by_request_id_exact(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = _admin(make_user)
+    request_id = "c" * 32
+    _add_event(actor_email="request-match@example.com", request_id=request_id)
+    _add_event(actor_email="request-other@example.com", request_id="d" * 32)
+    _silent_login(client, csrf_token, monkeypatch, email=admin.email)
+
+    html = _html(client.get(f"/admin/security-events?request_id={request_id}"))
+
+    assert "request-match@example.com" in html
+    assert "request-other@example.com" not in html
+
+    invalid = _html(client.get("/admin/security-events?request_id=not-a-request"))
+    assert "Request ID" in invalid
+    assert "No results" in invalid
+
+
+def test_filter_by_identifier_hash_hides_hash_from_rows(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = _admin(make_user)
+    identifier_hash = "e" * 64
+    _add_event(actor_email="hash-match@example.com", identifier_hash=identifier_hash)
+    _add_event(actor_email="hash-other@example.com", identifier_hash="f" * 64)
+    _silent_login(client, csrf_token, monkeypatch, email=admin.email)
+
+    html = _html(client.get(f"/admin/security-events?identifier_hash={identifier_hash}"))
+
+    assert "hash-match@example.com" in html
+    assert "hash-other@example.com" not in html
+    assert identifier_hash not in _table_body(html)
+
+    invalid = _html(client.get("/admin/security-events?identifier_hash=" + "E" * 64))
+    assert "Identifier hash" in invalid
+    assert "hash-match@example.com" not in invalid
+
+
+def test_filter_by_actor_and_subject_user_ids(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = _admin(make_user)
+    other = make_user(email="filter-other-user@example.com")
+    _add_event(
+        actor_user_id=admin.id,
+        actor_email="actor-match@example.com",
+        subject_user_id=other.id,
+        subject_email="subject-match@example.com",
+    )
+    _add_event(
+        actor_user_id=other.id,
+        actor_email="actor-other@example.com",
+        subject_user_id=admin.id,
+        subject_email="subject-other@example.com",
+    )
+    _silent_login(client, csrf_token, monkeypatch, email=admin.email)
+
+    actor_html = _html(client.get(f"/admin/security-events?actor_user_id={admin.id}"))
+    assert "actor-match@example.com" in actor_html
+    assert "actor-other@example.com" not in actor_html
+
+    subject_html = _html(client.get(f"/admin/security-events?subject_user_id={other.id}"))
+    assert "subject-match@example.com" in subject_html
+    assert "subject-other@example.com" not in subject_html
+
+    invalid = _html(client.get("/admin/security-events?actor_user_id=0"))
+    assert "Actor user ID" in invalid
+    assert "actor-match@example.com" not in invalid
+
+
+def test_invalid_filter_does_not_drop_valid_filter_or_show_results(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = _admin(make_user)
+    _add_event(actor_email="invalid-filter-marker@example.com")
+    _silent_login(client, csrf_token, monkeypatch, email=admin.email)
+
+    html = _html(client.get("/admin/security-events?event_type=auth.logout&actor_user_id=0"))
+
+    assert "Actor user ID" in html
+    assert 'value="auth.logout" selected' in html
+    assert "invalid-filter-marker@example.com" not in html
+    assert "Filters not applied" in html
+    assert 'aria-label="Pagination"' not in html
+
+
+def test_incompatible_reason_and_event_type_fails_closed(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = _admin(make_user)
+    _add_event(actor_email="conflict-marker@example.com")
+    _silent_login(client, csrf_token, monkeypatch, email=admin.email)
+
+    html = _html(
+        client.get("/admin/security-events?event_type=auth.login_succeeded&reason=user_requested")
+    )
+
+    assert "not compatible" in html
+    assert "conflict-marker@example.com" not in html
+    assert "No results" in html
+
+
+def test_invalid_dates_fail_closed(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = _admin(make_user)
+    _add_event(actor_email="invalid-date-marker@example.com")
+    _silent_login(client, csrf_token, monkeypatch, email=admin.email)
+
+    invalid_date = _html(client.get("/admin/security-events?date_from=not-a-date"))
+    assert "From date" in invalid_date
+    assert "invalid-date-marker@example.com" not in invalid_date
+
+    reversed_range = _html(
+        client.get("/admin/security-events?date_from=2026-11-03&date_to=2026-11-01")
+    )
+    assert "on or before" in reversed_range
+    assert "invalid-date-marker@example.com" not in reversed_range
+
+
+def test_filter_preservation_across_pages(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = _admin(make_user)
+    now = datetime.now(UTC)
+    for index in range(21):
+        _add_event(
+            actor_email=f"filter-page-{index}@example.com",
+            created_at=now - timedelta(minutes=index),
+        )
+    _silent_login(client, csrf_token, monkeypatch, email=admin.email)
+
+    first = _html(client.get("/admin/security-events?event_type=auth.logout&outcome=success"))
+    assert "page=2" in first
+    assert "event_type=auth.logout" in first
+    assert "outcome=success" in first
+
+    second = _html(
+        client.get("/admin/security-events?event_type=auth.logout&outcome=success&page=2")
+    )
+    assert "filter-page-20@example.com" in second
+    assert "filter-page-0@example.com" not in second
+
+
+def test_invalid_filter_does_not_render_pagination(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = _admin(make_user)
+    now = datetime.now(UTC)
+    for index in range(21):
+        _add_event(
+            actor_email=f"invalid-page-{index}@example.com",
+            created_at=now - timedelta(minutes=index),
+        )
+    _silent_login(client, csrf_token, monkeypatch, email=admin.email)
+
+    html = _html(client.get("/admin/security-events?event_type=invalid"))
+
+    assert "Select a valid event type." in html
+    assert "invalid-page-0@example.com" not in html
+    assert 'aria-label="Pagination"' not in html
+    assert "page=2" not in html
+
+
+def test_cache_control_is_private_no_store(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = _admin(make_user)
+    _add_event(actor_email="cache-marker@example.com")
+    _silent_login(client, csrf_token, monkeypatch, email=admin.email)
+
+    for path in (
+        "/admin/security-events",
+        "/admin/security-events?event_type=invalid",
+        "/admin/security-events?page=999",
+    ):
+        response = client.get(path)
+        assert response.status_code == 200
+        assert response.headers["Cache-Control"] == "private, no-store"
+
+
+def test_admin_route_sql_shape_and_authorization_order(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = _admin(make_user)
+    _add_event(actor_email="sql-shape@example.com")
+    _silent_login(client, csrf_token, monkeypatch, email=admin.email)
+
+    with _captured_sql() as statements:
+        response = client.get("/admin/security-events")
+
+    assert response.status_code == 200
+    security_selects = [
+        statement
+        for statement in statements
+        if statement.lstrip().startswith("select") and "security_events" in statement
+    ]
+    user_selects = [statement for statement in statements if "from users" in statement]
+    writes = [
+        statement
+        for statement in statements
+        if statement.lstrip().startswith(("insert", "update", "delete"))
+    ]
+
+    assert len(security_selects) == 2  # count + page select
+    assert len(user_selects) == 1  # Flask-Login authentication lookup
+    assert not any("audit_logs" in statement for statement in statements)
+    assert writes == []
+
+    operator = make_user(email="sql-shape-operator@example.com", role=ROLE_OPERATOR)
+    _logout(client, csrf_token)
+    _login(client, csrf_token, email=operator.email)
+    with _captured_sql() as statements:
+        response = client.get("/admin/security-events")
+    assert response.status_code == 403
+    assert not any("security_events" in statement for statement in statements)
+    assert not any("audit_logs" in statement for statement in statements)
+    assert not any(
+        statement.lstrip().startswith(("insert", "update", "delete")) for statement in statements
+    )
+
+    customer = make_user(email="sql-shape-customer@example.com", role=ROLE_CUSTOMER)
+    _logout(client, csrf_token)
+    _login(client, csrf_token, email=customer.email)
+    with _captured_sql() as statements:
+        response = client.get("/admin/security-events")
+    assert response.status_code == 403
+    assert not any("security_events" in statement for statement in statements)
+
+    _logout(client, csrf_token)
+    with _captured_sql() as statements:
+        response = client.get("/admin/security-events")
+    assert response.status_code == 302
+    assert not any("security_events" in statement for statement in statements)
+
+
+def test_service_invalid_filter_object_fails_closed(
+    app: Flask,
+    make_user: Callable[..., User],
+) -> None:
+    _add_event(actor_email="service-invalid-marker@example.com")
+    filters = AdminSecurityEventFilters(event_type="auth.not_real")
+
+    pagination = list_security_events(filters)
+
+    assert not filters.is_valid
+    assert pagination.items == []
+
+
+@pytest.mark.parametrize(
+    ("query", "visible"),
+    [
+        ("?page=", True),
+        ("?page=abc", True),
+        ("?page=0", True),
+        ("?page=-5", True),
+        ("?page=+2", False),
+        ("?page=002", False),
+        ("?page=%202%20", False),
+        ("?page=1&page=2", True),
+        ("?page=9", False),
+        ("?page=" + "9" * 5000, True),
+        ("?page=%D9%A1%D9%A2", False),
+        ("?page=1000", False),
+        ("?page=1001", False),
+        ("?per_page=1", True),
+        ("?per_page=1000000", True),
+    ],
+)
+def test_pagination_input_edge_cases(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+    query: str,
+    visible: bool,
+) -> None:
+    admin = _admin(make_user)
+    event = _add_event(actor_email="page-edge-marker@example.com")
+    _silent_login(client, csrf_token, monkeypatch, email=admin.email)
+
+    response = client.get(f"/admin/security-events{query}")
+    html = _html(response)
+
+    assert response.status_code == 200
+    if visible:
+        assert f"#{event.id}" in html
+    else:
+        assert f"#{event.id}" not in html
+
+
+def test_request_id_attribute_context_is_escaped(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = _admin(make_user)
+    payload = '"><script>alert(1)</script>'
+    _add_event(actor_email="request-xss@example.com", request_id=payload)
+    _silent_login(client, csrf_token, monkeypatch, email=admin.email)
+
+    html = _html(client.get("/admin/security-events"))
+
+    assert payload not in html
+    assert "&lt;script&gt;" in html
+
+
+def test_very_long_email_snapshot_is_safe(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = _admin(make_user)
+    long_email = "a" * 240 + "@example.com"
+    _add_event(actor_email=long_email)
+    _silent_login(client, csrf_token, monkeypatch, email=admin.email)
+
+    response = client.get("/admin/security-events")
+
+    assert response.status_code == 200
+    assert long_email in response.get_data(as_text=True)

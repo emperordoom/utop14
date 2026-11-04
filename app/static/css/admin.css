@@ -874,6 +874,38 @@
 }
 
 /* Security event viewer */
+.admin-filters--security-events {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.admin-filters--security-events .admin-filters__field--wide {
+  grid-column: span 2;
+}
+
+.admin-filters__errors {
+  grid-column: 1 / -1;
+  padding: 0.85rem 1rem;
+  border: 1px solid rgb(252 165 165 / 45%);
+  background: rgb(248 113 113 / 8%);
+  color: #fecaca;
+}
+
+.admin-filters__errors p {
+  font-size: 0.625rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.admin-filters__errors ul {
+  margin: 0.45rem 0 0;
+  padding-left: 1.1rem;
+}
+
+.admin-filters__errors li {
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
 .admin-table--security-events {
   min-width: 78rem;
 }
@@ -925,5 +957,22 @@
 @media (max-width: 760px) {
   .security-event-badge {
     white-space: normal;
+  }
+}
+
+@media (max-width: 1024px) {
+  .admin-filters--security-events {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .admin-filters--security-events {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .admin-filters--security-events .admin-filters__field--wide,
+  .admin-filters__errors {
+    grid-column: auto;
   }
 }
