@@ -12,5 +12,6 @@ from app.admin import (  # noqa: E402, F401
     payment_proof_routes,
     review_routes,
     routes,
+    security_event_routes,
     user_routes,
 )

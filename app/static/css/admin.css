@@ -872,3 +872,58 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* Security event viewer */
+.admin-table--security-events {
+  min-width: 78rem;
+}
+
+.security-event-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.55rem;
+  border: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 0.5625rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.security-event-badge--success {
+  border-color: rgb(163 230 53 / 45%);
+  color: var(--acid);
+}
+
+.security-event-badge--failure {
+  border-color: rgb(252 165 165 / 45%);
+  color: #fca5a5;
+}
+
+.security-event-badge--neutral {
+  border-color: rgb(147 197 253 / 45%);
+  color: #93c5fd;
+}
+
+.security-event-badge--warning {
+  border-color: rgb(253 224 71 / 45%);
+  color: #fde047;
+}
+
+.security-event-badge--unknown {
+  color: var(--muted);
+}
+
+.security-event-timestamp {
+  white-space: nowrap;
+}
+
+.security-event-request-id {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 760px) {
+  .security-event-badge {
+    white-space: normal;
+  }
+}

@@ -60,6 +60,13 @@
             {% if endpoint.startswith('admin.audit_log') %}aria-current="page"{% endif %}
           >Audit log</a>
         </li>
+        <li>
+          <a
+            class="admin-nav__link{% if endpoint.startswith('admin.security_event') %} admin-nav__link--active{% endif %}"
+            href="{{ url_for('admin.security_event_list') }}"
+            {% if endpoint.startswith('admin.security_event') %}aria-current="page"{% endif %}
+          >Security events</a>
+        </li>
       {% endif %}
       <li>
         <a
