@@ -11,7 +11,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import joinedload, selectinload
 
 from app.extensions import db
-from app.models import Order, OrderItem, Payment, ProductVariant
+from app.models import Order, OrderItem, Payment, PaymentProof, ProductVariant
 from app.models.order import (
     ORDER_STATUS_CANCELLED,
     ORDER_STATUS_PENDING,
@@ -20,6 +20,10 @@ from app.models.order import (
     PAYMENT_STATUSES,
 )
 from app.models.payment import PAYMENT_STATUS_EXPIRED, PAYMENT_STATUS_PENDING
+from app.models.payment_proof import (
+    PAYMENT_PROOF_STATUS_CANCELLED,
+    PAYMENT_PROOF_STATUS_PENDING_REVIEW,
+)
 
 STAFF_TRANSITIONS: Final[dict[str, frozenset[str]]] = {
     "pending": frozenset({"processing", "cancelled"}),
@@ -98,6 +102,19 @@ def _cancel_locked_order(order: Order, *, actor_user_id: int, reason: str | None
     for payment in pending_payments:
         payment.status = PAYMENT_STATUS_EXPIRED
         payment.expired_at = now
+
+    pending_payment_ids = [payment.id for payment in pending_payments]
+    if pending_payment_ids:
+        pending_proofs = db.session.scalars(
+            select(PaymentProof)
+            .where(
+                PaymentProof.payment_id.in_(pending_payment_ids),
+                PaymentProof.status == PAYMENT_PROOF_STATUS_PENDING_REVIEW,
+            )
+            .with_for_update()
+        ).all()
+        for proof in pending_proofs:
+            proof.status = PAYMENT_PROOF_STATUS_CANCELLED
 
     cleaned_reason = (reason or "").strip()
     order.status = ORDER_STATUS_CANCELLED

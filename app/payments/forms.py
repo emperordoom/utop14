@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from flask_wtf import FlaskForm
+from flask_wtf.file import FileField, FileRequired
 from wtforms import HiddenField, RadioField, SubmitField
 from wtforms.fields.choices import SelectChoice
 from wtforms.validators import DataRequired, Length
@@ -34,3 +35,13 @@ class SimulationForm(FlaskForm):
         validators=[DataRequired()],
     )
     submit = SubmitField("Run simulation")
+
+
+class PaymentProofForm(FlaskForm):
+    """Upload one manual bank-transfer proof for review."""
+
+    proof = FileField(
+        "Payment proof",
+        validators=[FileRequired()],
+    )
+    submit = SubmitField("Submit proof for review")

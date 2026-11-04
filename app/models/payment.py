@@ -22,6 +22,7 @@ from app.models.base import Base, TimestampMixin
 
 if TYPE_CHECKING:
     from app.models.order import Order
+    from app.models.payment_proof import PaymentProof
 
 PAYMENT_STATUS_PENDING: Final = "pending"
 PAYMENT_STATUS_PAID: Final = "paid"
@@ -40,6 +41,8 @@ PAYMENT_STATUSES: Final[tuple[str, ...]] = (
 PAYMENT_CURRENCY_IDR: Final = "IDR"
 PAYMENT_PROVIDER_SIMULATED: Final = "simulated"
 PAYMENT_METHOD_SIMULATED: Final = "simulated"
+PAYMENT_PROVIDER_MANUAL_TRANSFER: Final = "manual_transfer"
+PAYMENT_METHOD_BANK_TRANSFER: Final = "bank_transfer"
 
 
 class Payment(TimestampMixin, Base):
@@ -117,6 +120,11 @@ class Payment(TimestampMixin, Base):
     refunded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     order: Mapped[Order] = relationship(back_populates="payments")
+    proofs: Mapped[list[PaymentProof]] = relationship(
+        back_populates="payment",
+        passive_deletes=True,
+        order_by="PaymentProof.id.desc()",
+    )
 
     def __repr__(self) -> str:
         return f"<Payment {self.payment_reference!r} status={self.status!r}>"

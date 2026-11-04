@@ -32,6 +32,13 @@
             {% if endpoint.startswith('admin.inventory') %}aria-current="page"{% endif %}
           >Inventory</a>
         </li>
+        <li>
+          <a
+            class="admin-nav__link{% if endpoint.startswith('admin.payment_proof') %} admin-nav__link--active{% endif %}"
+            href="{{ url_for('admin.payment_proof_list') }}"
+            {% if endpoint.startswith('admin.payment_proof') %}aria-current="page"{% endif %}
+          >Payment proofs</a>
+        </li>
       {% endif %}
       <li>
         <a

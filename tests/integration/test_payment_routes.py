@@ -457,6 +457,11 @@ def test_production_payment_initiation_is_unavailable(
 
     monkeypatch.setitem(app.config, "PAYMENT_PROVIDER", "")
     monkeypatch.setitem(app.config, "PAYMENT_SIMULATION_ENABLED", False)
+    # Manual bank transfer must also be unavailable: otherwise the pay page is
+    # legitimately served (200) with only the manual option offered.
+    monkeypatch.setitem(app.config, "BANK_TRANSFER_BANK_NAME", "")
+    monkeypatch.setitem(app.config, "BANK_TRANSFER_ACCOUNT_NAME", "")
+    monkeypatch.setitem(app.config, "BANK_TRANSFER_ACCOUNT_NUMBER", "")
 
     pay_page = client.get(f"/orders/{order.order_number}/pay")
     create_response = client.post(
