@@ -23,6 +23,7 @@ ENV_FILE: Final = PROJECT_ROOT / ".env"
 _ALLOWED_ENVIRONMENTS: Final = ("development", "production", "testing")
 _POSTGRES_PSYCOPG_SCHEME: Final = "postgresql+psycopg://"
 _MIN_PRODUCTION_SECRET_LENGTH: Final = 32
+_MIN_SECURITY_EVENT_HASH_KEY_BYTES: Final = 32
 _PLACEHOLDER_SECRET_VALUES: Final = frozenset(
     {
         "change-me",
@@ -32,6 +33,24 @@ _PLACEHOLDER_SECRET_VALUES: Final = frozenset(
         "replace_me",
         "secret",
         "your-secret-key",
+    }
+)
+_PLACEHOLDER_SECURITY_EVENT_HASH_KEYS: Final = frozenset(
+    {
+        "change-me",
+        "change_me",
+        "change_me_security_event_hash_key",
+        "changeme",
+        "development",
+        "password",
+        "production",
+        "replace-me",
+        "replace_me",
+        "secret",
+        "test",
+        "unit-test-security-event-hash-key",
+        "utop14",
+        "your-security-event-hash-key",
     }
 )
 
@@ -121,6 +140,10 @@ class BaseConfig:
     # for local development and direct exposure is zero.
     TRUSTED_PROXY_HOPS = 0
 
+    # Dedicated HMAC key for non-reversible authentication identifier hashes.
+    # No raw unknown identifiers are stored when this is unset.
+    SECURITY_EVENT_HASH_KEY = ""
+
     @classmethod
     def load(cls) -> dict[str, Any]:
         """Return the environment-dependent settings for this configuration."""
@@ -134,6 +157,7 @@ class BaseConfig:
             "PAYMENT_PROOF_STORAGE_PATH": _env_str("PAYMENT_PROOF_STORAGE_PATH"),
             "MANUAL_TRANSFER_TTL_HOURS": _env_int("MANUAL_TRANSFER_TTL_HOURS", default=24),
             "TRUSTED_PROXY_HOPS": _env_int("TRUSTED_PROXY_HOPS", default=0),
+            "SECURITY_EVENT_HASH_KEY": _env_str("SECURITY_EVENT_HASH_KEY"),
         }
 
 
@@ -210,6 +234,7 @@ class TestingConfig(BaseConfig):
             "PAYMENT_PROOF_STORAGE_PATH": _env_str("PAYMENT_PROOF_STORAGE_PATH"),
             "MANUAL_TRANSFER_TTL_HOURS": _env_int("MANUAL_TRANSFER_TTL_HOURS", default=24),
             "TRUSTED_PROXY_HOPS": _env_int("TRUSTED_PROXY_HOPS", default=0),
+            "SECURITY_EVENT_HASH_KEY": _env_str("SECURITY_EVENT_HASH_KEY"),
         }
 
 
@@ -393,8 +418,36 @@ def validate_config(app: Flask) -> None:
     if environment == "testing" and not _database_name(database_url).endswith("_test"):
         raise ConfigurationError("Test database names must end with '_test'.")
 
+    _validate_security_event_hash_key(
+        secret_key,
+        app,
+        required=environment == "production",
+    )
+
     if environment == "production":
         _validate_production(secret_key, app)
+
+
+def _validate_security_event_hash_key(
+    secret_key: str,
+    app: Flask,
+    *,
+    required: bool,
+) -> None:
+    """Validate the dedicated identifier-hash key without leaking it."""
+    security_event_hash_key = str(app.config.get("SECURITY_EVENT_HASH_KEY") or "").strip()
+    if not security_event_hash_key:
+        if required:
+            raise ConfigurationError("SECURITY_EVENT_HASH_KEY is required in production.")
+        return
+    if len(security_event_hash_key.encode("utf-8")) < _MIN_SECURITY_EVENT_HASH_KEY_BYTES:
+        raise ConfigurationError(
+            f"SECURITY_EVENT_HASH_KEY must be at least {_MIN_SECURITY_EVENT_HASH_KEY_BYTES} bytes."
+        )
+    if security_event_hash_key.lower() in _PLACEHOLDER_SECURITY_EVENT_HASH_KEYS:
+        raise ConfigurationError("SECURITY_EVENT_HASH_KEY must not use a placeholder value.")
+    if security_event_hash_key == secret_key:
+        raise ConfigurationError("SECURITY_EVENT_HASH_KEY must be distinct from SECRET_KEY.")
 
 
 def _validate_production(secret_key: str, app: Flask) -> None:

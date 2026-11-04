@@ -9,6 +9,9 @@ import pytest
 from app import create_app
 from app.config import PROJECT_ROOT, ConfigurationError
 
+# Keep app-creation tests independent of a developer's ambient HMAC key.
+pytestmark = pytest.mark.usefixtures("no_ambient_security_event_hash_key")
+
 
 def test_avatar_defaults_are_private_and_bounded() -> None:
     app = create_app("testing")

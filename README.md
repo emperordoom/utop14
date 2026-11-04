@@ -139,6 +139,7 @@ environment take precedence. `.env` is ignored by Git.
 | `TEST_DATABASE_URL` | No | Optional isolated PostgreSQL database for tests; must end in `_test` |
 | `TEST_SECRET_KEY` | No | Optional test-only secret override |
 | `TRUSTED_PROXY_HOPS` | No | Number of trusted reverse-proxy hops for `X-Forwarded-For`; default `0` |
+| `SECURITY_EVENT_HASH_KEY` | Production | Dedicated HMAC-SHA256 key for authentication identifier hashes; at least 32 bytes, distinct from `SECRET_KEY`; optional in development/testing |
 
 Startup validation fails with a clear `ConfigurationError` when `SECRET_KEY`
 or `DATABASE_URL` is missing or when a non-Psycopg database URL is supplied.
@@ -439,6 +440,10 @@ Alembic migrations, reject any database whose name does not end in `_test`, and
 truncate account, catalog, cart, order and payment tables between tests. The
 development database is never modified by the test suite.
 
+The suite is designed for a single pytest process. Do not run concurrent pytest
+processes (including pytest-xdist) against the same `utop14_test` database:
+fixtures truncate shared tables and the migration-cycle test mutates the schema.
+
 Coverage includes application startup, configuration and production security
 defaults, catalog models and constraints, catalog service queries, storefront
 pages, seeds, registration, password hashing, login/logout, CSRF, open-redirect
@@ -489,6 +494,8 @@ Current revision chain in source:
 - `2f863a992991` — manual-transfer payment proofs
 - `7c1e4b9a2d30` — product reviews and ratings
 - `3f7a2c9d1b64` — administrative audit log
+- `9b2d4e6f8a10` — authentication security events
+- `c4e7a1b9d2f6` — security event request ID index
 
 ## Admin audit logging and trusted proxy
 
@@ -590,7 +597,92 @@ an arbitrary client-supplied identifier.
 - **F-11 — request ID trust:** inbound request IDs depend on correct proxy
   overwrite behavior and are not an authorization control.
 - **F-12 — audit scope:** login, logout, password reset, order, payment, and
-  failed-action auditing are outside M13 scope.
+  failed-action auditing are outside M13 scope. M14.1 covers authentication
+  events in the separate `security_events` table.
+
+## Authentication security events
+
+M14.1 records exactly three authentication events in a dedicated append-only
+`security_events` table, separate from the M13 administrative `audit_logs`:
+
+- `auth.login_succeeded` — form login or registration auto-login
+- `auth.login_failed` — valid credential attempt with reason
+  `unknown_account`, `inactive_account` or `invalid_password`
+- `auth.logout` — user-requested logout
+
+Each record stores event type, outcome, reason code, nullable actor and subject
+identity, an optional HMAC-SHA256 identifier hash, client IP, sanitized user
+agent, request ID, allowlisted JSONB metadata and a UTC timestamp. The table is
+append-only for ordinary application operations and protected against row-level
+UPDATE/DELETE by its own PostgreSQL trigger. The trigger permits foreign-key
+`SET NULL` and a direct privileged UPDATE that clears the nullable actor/subject
+identity links; email snapshots and every other field remain immutable under
+those row-level rules. It is not absolute immutability against table owners,
+superusers, `TRUNCATE`, or a compromised privileged account.
+
+Event persistence is best-effort and uses a separate short-lived transaction.
+An audit failure never changes whether login, registration or logout succeeds,
+and it cannot poison the authentication transaction. The failure is logged
+without credentials or raw identifiers.
+
+`SECURITY_EVENT_HASH_KEY` is the dedicated HMAC-SHA256 key for unknown login
+identifiers. `SECRET_KEY` is never used as a fallback. When configured, the key
+must contain at least 32 bytes of UTF-8 key material, must not be a known
+placeholder value, and must differ from `SECRET_KEY`. Production additionally
+requires the key to be present. The key is never included in configuration error
+messages or application logs. Generate it with:
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+In development and testing the key may be empty. In that case the event is still
+recorded but the identifier hash is omitted and a once-per-process configuration
+warning is logged; raw unknown identifiers are never stored. Authentication
+continues normally. Changing the key makes older identifier hashes
+non-comparable.
+
+Unknown and inactive account paths perform a password verification against a
+single precomputed dummy hash so they are not obviously cheaper than a real
+password check. This narrows a timing difference; it is not a claim of perfectly
+constant execution time. External login responses stay generic.
+
+Event metadata uses an explicit per-event allowlist and never includes
+passwords, password hashes, reset tokens, session cookies or IDs, CSRF tokens,
+access tokens or raw request bodies. Authentication callers capture primitive
+event fields and release the request session's checked-out connection before
+best-effort event persistence, so a single auth request does not need two
+simultaneous database connections merely to write an event.
+
+The `security_events` table is indexed by request ID for incident correlation.
+A reason-code index is deferred until the M14.2 viewer defines its filters and
+the query pattern is measured.
+
+### M14.1 deployment checklist
+
+1. Set `APP_ENV=production`.
+2. Configure a dedicated, randomly generated `SECURITY_EVENT_HASH_KEY` with at
+   least 32 bytes of UTF-8 key material.
+3. Ensure the key differs from `SECRET_KEY`.
+4. Never reuse the repository test key or any placeholder value.
+5. Apply both migrations from a controlled release job:
+   `9b2d4e6f8a10` and `c4e7a1b9d2f6`.
+6. The request-ID index migration is non-concurrent. If `security_events`
+   already contains production traffic, schedule index creation in a maintenance
+   window or use a separately reviewed concurrent-index procedure.
+7. Never downgrade `9b2d4e6f8a10` in production. Its downgrade drops the
+   `security_events` table and destroys its history; do not run it without an
+   approved backup and explicit authorization.
+8. M14.1 does not complete production security hardening. The following remain
+   deferred: rate limiting and lockout; retention and purge; an admin
+   security-event viewer; remember-cookie restoration and forced
+   session-invalidation events; password reset/recovery event integration; and
+   session anomaly detection.
+
+Password reset, account recovery, rate limiting, session-anomaly detection,
+remember-cookie restoration events, an admin security-event viewer and automatic
+retention purges are not part of M14.1. Retention is permanent until a separately
+approved archival policy exists.
 
 ## Production notes
 

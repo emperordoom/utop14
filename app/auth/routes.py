@@ -19,7 +19,13 @@ from app.auth.forms import (
     RegistrationForm,
     RemoveAvatarForm,
 )
+from app.auth.passwords import verify_dummy_password
 from app.extensions import db
+from app.models.security_event import (
+    SECURITY_REASON_INACTIVE_ACCOUNT,
+    SECURITY_REASON_INVALID_PASSWORD,
+    SECURITY_REASON_UNKNOWN_ACCOUNT,
+)
 from app.models.user import ROLE_CUSTOMER, User
 from app.services.avatars import (
     AvatarError,
@@ -34,6 +40,13 @@ from app.services.profiles import (
     ProfileError,
     ProfileValidationError,
     update_profile,
+)
+from app.services.security_events import (
+    AUTH_METHOD_PASSWORD,
+    AUTH_METHOD_REGISTRATION,
+    record_login_failed,
+    record_login_succeeded,
+    record_logout,
 )
 
 _SAFE_NEXT_MAX_LENGTH = 2048
@@ -103,13 +116,30 @@ def register() -> ResponseReturnValue:
             db.session.add(user)
 
             try:
+                # Flush so the generated ID is available before commit; every
+                # field needed by the security event is captured while loaded.
+                db.session.flush()
+                user_id = user.id
+                user_email = user.email
                 db.session.commit()
             except IntegrityError:
                 db.session.rollback()
                 form.email.errors.append("An account with that email already exists.")
             else:
+                # Reload the committed user, then release the request session's
+                # connection before independent event storage.  No business
+                # changes are pending after the commit.
+                db.session.refresh(user)
                 _clear_session()
                 login_user(user)
+                # Rollback releases the read connection without detaching ORM
+                # objects, so request context and tests remain consistent.
+                db.session.rollback()
+                record_login_succeeded(
+                    user_id=user_id,
+                    email=user_email,
+                    auth_method=AUTH_METHOD_REGISTRATION,
+                )
                 flash("Account created. Welcome to UTOP14.", "success")
                 return redirect(url_for("auth.account"))
 
@@ -128,14 +158,61 @@ def login() -> ResponseReturnValue:
 
     if form.validate_on_submit():
         user = db.session.scalar(select(User).where(User.email == form.email.data))
-        if user is None or not user.is_active or not user.verify_password(form.password.data):
+        if user is None:
+            # Verify against a precomputed dummy hash so an unknown account is
+            # not obviously cheaper than a known account.
+            verify_dummy_password(form.password.data)
+            # Release the read transaction before independent event storage.
+            db.session.rollback()
+            record_login_failed(
+                identifier=form.email.data,
+                reason=SECURITY_REASON_UNKNOWN_ACCOUNT,
+            )
+            flash("Invalid email or password.", "error")
+        elif not user.is_active:
+            verify_dummy_password(form.password.data)
+            subject_user_id = user.id
+            subject_email = user.email
+            db.session.rollback()
+            record_login_failed(
+                identifier=form.email.data,
+                reason=SECURITY_REASON_INACTIVE_ACCOUNT,
+                subject_user_id=subject_user_id,
+                subject_email=subject_email,
+            )
+            flash("Invalid email or password.", "error")
+        elif not user.verify_password(form.password.data):
+            subject_user_id = user.id
+            subject_email = user.email
+            db.session.rollback()
+            record_login_failed(
+                identifier=form.email.data,
+                reason=SECURITY_REASON_INVALID_PASSWORD,
+                subject_user_id=subject_user_id,
+                subject_email=subject_email,
+            )
             flash("Invalid email or password.", "error")
         else:
             user.last_login_at = datetime.now(UTC)
+            user_id = user.id
+            user_email = user.email
             db.session.commit()
 
+            # Reload before releasing the read connection; login_user uses the
+            # loaded object, and the event insert then runs with no other
+            # request connection checked out.
+            db.session.refresh(user)
             _clear_session()
             login_user(user, remember=form.remember.data)
+            # The last-login commit is complete; rollback releases the read
+            # connection without detaching ORM objects.
+            db.session.rollback()
+            record_login_succeeded(
+                user_id=user_id,
+                email=user_email,
+                auth_method=AUTH_METHOD_PASSWORD,
+                remember_requested=bool(form.remember.data),
+            )
             flash("Signed in. Welcome back.", "success")
             destination = _safe_next_url(form.next.data) or url_for("storefront.home")
             return redirect(destination)
@@ -147,8 +224,14 @@ def login() -> ResponseReturnValue:
 @login_required
 def logout() -> ResponseReturnValue:
     """End the current session.  Logout is POST-only and CSRF protected."""
+    # Capture identity before logout_user() turns current_user anonymous.
+    user_id = current_user.id
+    user_email = current_user.email
     logout_user()
     _clear_session()
+    # Release the user_loader read transaction before event persistence.
+    db.session.rollback()
+    record_logout(user_id=user_id, email=user_email)
     flash("Signed out.", "info")
     return redirect(url_for("storefront.home"))
 

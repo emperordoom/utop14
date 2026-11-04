@@ -28,6 +28,9 @@ from app.services.audit import (
     snapshot_role,
 )
 
+# Keep app-creation tests independent of a developer's ambient HMAC key.
+pytestmark = pytest.mark.usefixtures("no_ambient_security_event_hash_key")
+
 
 def _metadata_app(hops: int) -> Flask:
     app = Flask(__name__)
