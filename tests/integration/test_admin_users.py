@@ -12,6 +12,7 @@ from app.auth import load_user
 from app.extensions import db
 from app.models import User
 from app.models.user import ROLE_ADMIN, ROLE_CUSTOMER, ROLE_OPERATOR
+from app.services.audit import AuditContext
 from app.services.user_admin import set_user_active
 
 PASSWORD = "ValidPass123"
@@ -427,7 +428,18 @@ def test_deactivation_invalidates_existing_session(
     _login_client(customer_client, customer.email)
     assert customer_client.get("/auth/account").status_code == 200
 
-    set_user_active(admin.id, customer.id, is_active=False)
+    set_user_active(
+        admin.id,
+        customer.id,
+        is_active=False,
+        audit_context=AuditContext(
+            actor_id=admin.id,
+            actor_email=admin.email,
+            ip_address="127.0.0.1",
+            user_agent="pytest",
+            request_id="a" * 32,
+        ),
+    )
 
     response = customer_client.get("/auth/account")
     assert response.status_code == 302

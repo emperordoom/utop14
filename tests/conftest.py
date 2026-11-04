@@ -35,6 +35,7 @@ from app.services.payments import create_payment_attempt
 PROJECT_ROOT: Final = Path(__file__).resolve().parents[1]
 MIGRATIONS_DIR: Final = PROJECT_ROOT / "migrations"
 RESET_TABLES: Final = (
+    "audit_logs",
     "product_reviews",
     "payment_proofs",
     "payments",

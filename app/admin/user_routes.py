@@ -10,6 +10,7 @@ from app.admin import admin_bp
 from app.admin.forms import ActionForm, AdminUserProfileForm, AdminUserRoleForm
 from app.auth.permissions import role_required
 from app.models.user import ROLE_ADMIN, ROLES
+from app.services.audit import build_audit_context
 from app.services.user_admin import (
     AdminUserFilters,
     UserAdminConflictError,
@@ -91,10 +92,14 @@ def user_profile_update(user_id: int) -> ResponseReturnValue:
         return redirect(url_for("admin.user_detail", user_id=user_id))
 
     try:
-        update_user_by_admin(
+        result = update_user_by_admin(
             user_id,
             full_name=form.full_name.data,
             email=form.email.data,
+            audit_context=build_audit_context(
+                actor_id=current_user.id,
+                actor_email=current_user.email,
+            ),
         )
     except UserAdminNotFound:
         abort(404)
@@ -105,7 +110,7 @@ def user_profile_update(user_id: int) -> ResponseReturnValue:
     except UserAdminError:
         flash("Account details could not be saved. Please try again.", "error")
     else:
-        flash("Account details updated.", "success")
+        flash(result.message, result.category)
 
     return redirect(url_for("admin.user_detail", user_id=user_id))
 
@@ -124,6 +129,10 @@ def user_role_update(user_id: int) -> ResponseReturnValue:
             current_user.id,
             user_id,
             role=form.role.data,
+            audit_context=build_audit_context(
+                actor_id=current_user.id,
+                actor_email=current_user.email,
+            ),
         )
     except UserAdminNotFound:
         abort(404)
@@ -148,6 +157,10 @@ def _change_status(user_id: int, *, is_active: bool) -> ResponseReturnValue:
             current_user.id,
             user_id,
             is_active=is_active,
+            audit_context=build_audit_context(
+                actor_id=current_user.id,
+                actor_email=current_user.email,
+            ),
         )
     except UserAdminNotFound:
         abort(404)

@@ -11,7 +11,21 @@ from sqlalchemy.orm import load_only
 
 from app.extensions import db
 from app.models import User
+from app.models.audit_log import (
+    AUDIT_ACTION_ACTIVATED,
+    AUDIT_ACTION_DEACTIVATED,
+    AUDIT_ACTION_PROFILE_UPDATED,
+    AUDIT_ACTION_ROLE_CHANGED,
+)
 from app.models.user import ROLE_ADMIN, ROLES
+from app.services.audit import (
+    AuditContext,
+    AuditError,
+    record_audit_event,
+    snapshot_active,
+    snapshot_profile,
+    snapshot_role,
+)
 from app.services.profiles import (
     CONFLICT_MESSAGE,
     ProfileValidationError,
@@ -169,11 +183,13 @@ def update_user_by_admin(
     *,
     full_name: object,
     email: object,
-) -> User:
+    audit_context: AuditContext,
+) -> AdminUserChangeResult:
     """Update only the account's full name and email.
 
     Role, active status, password material and avatar fields are never accepted
-    as inputs to this operation.
+    as inputs to this operation.  The User mutation and audit row are committed
+    together; either both survive or neither does.
     """
     try:
         cleaned_name = normalize_full_name(full_name)
@@ -185,6 +201,18 @@ def update_user_by_admin(
         user = db.session.scalar(select(User).where(User.id == user_id).with_for_update())
         if user is None:
             raise UserAdminNotFound("Account not found.")
+
+        before = snapshot_profile(user)
+        after = {"full_name": cleaned_name, "email": cleaned_email}
+        if before == after:
+            # Release the row lock without committing an empty transaction and
+            # without creating a misleading audit event.
+            db.session.rollback()
+            return AdminUserChangeResult(
+                user,
+                "No account changes to save.",
+                "info",
+            )
 
         duplicate = db.session.scalar(
             select(User.id)
@@ -199,11 +227,27 @@ def update_user_by_admin(
 
         user.full_name = cleaned_name
         user.email = cleaned_email
+        db.session.flush()
+        record_audit_event(
+            db.session,
+            context=audit_context,
+            target=user,
+            action=AUDIT_ACTION_PROFILE_UPDATED,
+            before_data=before,
+            after_data=snapshot_profile(user),
+        )
         db.session.commit()
-        return user
+        return AdminUserChangeResult(
+            user,
+            "Account details updated.",
+            "success",
+        )
     except UserAdminError:
         db.session.rollback()
         raise
+    except AuditError as exc:
+        db.session.rollback()
+        raise UserAdminError("Account details could not be saved. Please try again.") from exc
     except IntegrityError as exc:
         db.session.rollback()
         raise UserAdminConflictError(CONFLICT_MESSAGE) from exc
@@ -246,6 +290,7 @@ def set_user_active(
     user_id: int,
     *,
     is_active: bool,
+    audit_context: AuditContext,
 ) -> AdminUserChangeResult:
     """Activate or deactivate one account without deleting any history."""
     try:
@@ -255,7 +300,7 @@ def set_user_active(
             raise UserAdminNotFound("Account not found.")
 
         if user.is_active is is_active:
-            db.session.commit()
+            db.session.rollback()
             state = "active" if is_active else "inactive"
             return AdminUserChangeResult(
                 user,
@@ -270,7 +315,17 @@ def set_user_active(
                 active_admins=active_admins,
             )
 
+        before = snapshot_active(user)
         user.is_active = is_active
+        db.session.flush()
+        record_audit_event(
+            db.session,
+            context=audit_context,
+            target=user,
+            action=(AUDIT_ACTION_ACTIVATED if is_active else AUDIT_ACTION_DEACTIVATED),
+            before_data=before,
+            after_data=snapshot_active(user),
+        )
         db.session.commit()
         return AdminUserChangeResult(
             user,
@@ -280,6 +335,9 @@ def set_user_active(
     except UserAdminError:
         db.session.rollback()
         raise
+    except AuditError as exc:
+        db.session.rollback()
+        raise UserAdminError("Account status could not be updated. Please try again.") from exc
     except SQLAlchemyError as exc:
         db.session.rollback()
         raise UserAdminError("Account status could not be updated. Please try again.") from exc
@@ -290,6 +348,7 @@ def set_user_role(
     user_id: int,
     *,
     role: object,
+    audit_context: AuditContext,
 ) -> AdminUserChangeResult:
     """Change one account's role within the existing role hierarchy."""
     if not isinstance(role, str) or role not in ROLES:
@@ -302,7 +361,7 @@ def set_user_role(
             raise UserAdminNotFound("Account not found.")
 
         if user.role == role:
-            db.session.commit()
+            db.session.rollback()
             return AdminUserChangeResult(
                 user,
                 f"Account already has the {role} role.",
@@ -316,7 +375,17 @@ def set_user_role(
                 active_admins=active_admins,
             )
 
+        before = snapshot_role(user)
         user.role = role
+        db.session.flush()
+        record_audit_event(
+            db.session,
+            context=audit_context,
+            target=user,
+            action=AUDIT_ACTION_ROLE_CHANGED,
+            before_data=before,
+            after_data=snapshot_role(user),
+        )
         db.session.commit()
         return AdminUserChangeResult(
             user,
@@ -326,6 +395,9 @@ def set_user_role(
     except UserAdminError:
         db.session.rollback()
         raise
+    except AuditError as exc:
+        db.session.rollback()
+        raise UserAdminError("Account role could not be updated. Please try again.") from exc
     except SQLAlchemyError as exc:
         db.session.rollback()
         raise UserAdminError("Account role could not be updated. Please try again.") from exc

@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+
+{% from "components/audit_badges.html" import audit_action_badge %}
+
+{% block title %}Audit event #{{ log.id }} — Admin — UTOP14{% endblock %}
+
+{% block meta_description %}Read-only detail for one UTOP14 administrative audit event.{% endblock %}
+
+{% block styles %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/auth.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css') }}">
+{% endblock %}
+
+{% block body_class %}page-admin-audit{% endblock %}
+
+{% block content %}
+  {% include "components/admin_nav.html" %}
+
+  <section class="staff-hero" aria-labelledby="audit-detail-title">
+    <div class="container">
+      <nav class="admin-breadcrumb" aria-label="Breadcrumb">
+        <a href="{{ url_for('admin.audit_log_list') }}">Audit log</a>
+        <span aria-hidden="true">/</span>
+        <span aria-current="page">Event #{{ log.id }}</span>
+      </nav>
+      <p class="section-kicker">Accounts / Audit trail / Detail</p>
+      <div class="admin-detail-heading">
+        <div>
+          <h1 class="staff-hero__title" id="audit-detail-title">Event <em>#{{ log.id }}.</em></h1>
+          <p class="admin-meta mono">{{ log.action }}</p>
+        </div>
+        {{ audit_action_badge(log.action) }}
+      </div>
+      <div class="staff-hero__actions">
+        <a class="button button--ghost" href="{{ url_for('admin.audit_log_list') }}">Back to trail</a>
+        <a class="button button--ghost" href="{{ url_for('admin.user_list') }}">User directory</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="section staff-section" aria-labelledby="audit-metadata-title">
+    <div class="container admin-detail-grid">
+      <div class="admin-form-card">
+        <div class="order-panel__header">
+          <p class="mono" id="audit-metadata-title">Event metadata</p>
+          <p class="mono">Read only</p>
+        </div>
+
+        <dl class="admin-meta-list">
+          <div>
+            <dt>Event</dt>
+            <dd>{{ audit_action_badge(log.action) }} <span class="mono">{{ log.action }}</span></dd>
+          </div>
+          <div>
+            <dt>Actor</dt>
+            <dd>
+              {{ log.actor_email }}
+              <span class="admin-meta mono">#{{ log.actor_id if log.actor_id is not none else "deleted" }}</span>
+            </dd>
+          </div>
+          <div>
+            <dt>Target</dt>
+            <dd>
+              {{ log.target_email }}
+              <span class="admin-meta mono">#{{ log.target_user_id if log.target_user_id is not none else "deleted" }}</span>
+            </dd>
+          </div>
+          <div>
+            <dt>Timestamp (UTC)</dt>
+            <dd>{{ log.created_at.strftime("%d %b %Y, %H:%M:%S UTC") }}</dd>
+          </div>
+          <div>
+            <dt>IP address</dt>
+            <dd class="mono">{{ log.ip_address }}</dd>
+          </div>
+          <div>
+            <dt>Request ID</dt>
+            <dd class="mono audit-request-id">{{ log.request_id or "—" }}</dd>
+          </div>
+          <div>
+            <dt>User agent</dt>
+            <dd class="audit-user-agent">{{ log.user_agent or "Not provided" }}</dd>
+          </div>
+        </dl>
+
+        <p class="admin-note">
+          This record is append-only at the application layer and protected by a
+          PostgreSQL trigger against row-level UPDATE and DELETE; only nullable
+          actor/target identity links may be cleared by foreign-key deletion.
+          Database owners/superusers, TRUNCATE and a compromised privileged
+          account remain outside that boundary.
+        </p>
+      </div>
+
+      <aside class="admin-side-card">
+        <div class="order-panel__header">
+          <p class="mono">Snapshots</p>
+          <p class="mono">Allowlisted</p>
+        </div>
+        <p class="admin-note">
+          Only fields relevant to this event are stored. Credentials, hashes,
+          tokens, sessions and CSRF values are never captured.
+        </p>
+      </aside>
+    </div>
+  </section>
+
+  <section class="section staff-section" aria-labelledby="audit-snapshots-title">
+    <div class="container">
+      <div class="section-heading">
+        <p class="section-kicker">02 / Change set</p>
+        <h2 class="section-title" id="audit-snapshots-title">Before and <em>after.</em></h2>
+      </div>
+
+      <div class="audit-snapshots">
+        <article class="audit-snapshot">
+          <div class="audit-snapshot__header">
+            <p class="mono">Before</p>
+          </div>
+          <pre class="audit-json">{{ log.before_data|tojson(indent=2) }}</pre>
+        </article>
+        <article class="audit-snapshot">
+          <div class="audit-snapshot__header">
+            <p class="mono">After</p>
+          </div>
+          <pre class="audit-json">{{ log.after_data|tojson(indent=2) }}</pre>
+        </article>
+      </div>
+    </div>
+  </section>
+{% endblock %}
+
+{% block scripts %}
+  <script src="{{ url_for('static', filename='js/admin.js') }}" defer></script>
+{% endblock %}

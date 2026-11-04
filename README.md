@@ -136,6 +136,7 @@ environment take precedence. `.env` is ignored by Git.
 | `FLASK_RUN_PORT` | No | `run.py` port; defaults to `5000` |
 | `TEST_DATABASE_URL` | No | Optional isolated PostgreSQL database for tests; must end in `_test` |
 | `TEST_SECRET_KEY` | No | Optional test-only secret override |
+| `TRUSTED_PROXY_HOPS` | No | Number of trusted reverse-proxy hops for `X-Forwarded-For`; default `0` |
 
 Startup validation fails with a clear `ConfigurationError` when `SECRET_KEY`
 or `DATABASE_URL` is missing or when a non-Psycopg database URL is supplied.
@@ -482,9 +483,57 @@ Current revision chain in source:
 - `f003cabb1f4f` — carts, cart items, orders and order items
 - `b042768520c0` — order cancellation fields
 - `c0f6c626195e` — payment attempts and one-paid-payment index
+- `1b0a971b10c6` — private user avatar filename
+- `2f863a992991` — manual-transfer payment proofs
+- `7c1e4b9a2d30` — product reviews and ratings
+- `3f7a2c9d1b64` — administrative audit log
 
-The M7 payments migration is generated and reviewed; apply it through the normal
-controlled migration step after review.
+## Admin audit logging and trusted proxy
+
+M13 records four permanent administrative user-management events:
+
+- `user.profile_updated`
+- `user.role_changed`
+- `user.activated`
+- `user.deactivated`
+
+Each record stores the actor and target identity snapshots, allowlisted
+before/after JSONB snapshots, client IP, user agent, request ID and UTC
+timestamp. User changes and their audit row are committed in one transaction;
+an audit failure rolls the User mutation back. Audit records are append-only at
+the application layer and protected against row-level UPDATE/DELETE by a
+PostgreSQL trigger. The trigger permits only foreign-key `SET NULL` clearing of
+the nullable actor/target identity links. Database owners, superusers,
+`TRUNCATE` and a compromised privileged database account remain outside that
+protection boundary.
+
+Only admins can read `/admin/audit-logs`. There are no edit, delete, purge or
+export routes. Retention is permanent until a separately approved archival
+policy exists.
+
+### Trusted proxy configuration
+
+`TRUSTED_PROXY_HOPS` defaults to `0`, so `X-Forwarded-For` is ignored and the
+application records the direct peer address. Behind Nginx, enable exactly the
+number of proxy hops in front of Gunicorn. A simple single-Nginx topology uses:
+
+```bash
+TRUSTED_PROXY_HOPS=1
+```
+
+Nginx must overwrite the forwarded header rather than append client-supplied
+values:
+
+```nginx
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+proxy_set_header X-Request-ID $request_id;
+```
+
+Do not set `TRUSTED_PROXY_HOPS` greater than the real number of trusted proxies.
+With the default `0`, a spoofed `X-Forwarded-For` header has no effect. The
+application generates a server-side request ID for every request and returns it
+in the `X-Request-ID` response header; a valid inbound request ID is reused only
+when trusted proxy hops are configured.
 
 ## Production notes
 

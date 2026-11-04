@@ -116,6 +116,11 @@ class BaseConfig:
     PAYMENT_PROOF_MAX_BYTES = 5 * 1024 * 1024
     PAYMENT_PROOF_MAX_DIMENSION = 4096
 
+    # Only trust X-Forwarded-* headers when the deployment explicitly declares
+    # the number of proxy hops in front of the application.  The safe default
+    # for local development and direct exposure is zero.
+    TRUSTED_PROXY_HOPS = 0
+
     @classmethod
     def load(cls) -> dict[str, Any]:
         """Return the environment-dependent settings for this configuration."""
@@ -128,6 +133,7 @@ class BaseConfig:
             "BANK_TRANSFER_ACCOUNT_NUMBER": _env_str("BANK_TRANSFER_ACCOUNT_NUMBER"),
             "PAYMENT_PROOF_STORAGE_PATH": _env_str("PAYMENT_PROOF_STORAGE_PATH"),
             "MANUAL_TRANSFER_TTL_HOURS": _env_int("MANUAL_TRANSFER_TTL_HOURS", default=24),
+            "TRUSTED_PROXY_HOPS": _env_int("TRUSTED_PROXY_HOPS", default=0),
         }
 
 
@@ -203,6 +209,7 @@ class TestingConfig(BaseConfig):
             "BANK_TRANSFER_ACCOUNT_NUMBER": _env_str("BANK_TRANSFER_ACCOUNT_NUMBER"),
             "PAYMENT_PROOF_STORAGE_PATH": _env_str("PAYMENT_PROOF_STORAGE_PATH"),
             "MANUAL_TRANSFER_TTL_HOURS": _env_int("MANUAL_TRANSFER_TTL_HOURS", default=24),
+            "TRUSTED_PROXY_HOPS": _env_int("TRUSTED_PROXY_HOPS", default=0),
         }
 
 
@@ -378,6 +385,10 @@ def validate_config(app: Flask) -> None:
     raw_ttl = app.config.get("PAYMENT_ATTEMPT_TTL_MINUTES", 15)
     if type(raw_ttl) is not int or raw_ttl <= 0:
         raise ConfigurationError("PAYMENT_ATTEMPT_TTL_MINUTES must be a positive integer.")
+
+    proxy_hops = app.config.get("TRUSTED_PROXY_HOPS")
+    if type(proxy_hops) is not int or proxy_hops < 0 or proxy_hops > 5:
+        raise ConfigurationError("TRUSTED_PROXY_HOPS must be an integer between 0 and 5.")
 
     if environment == "testing" and not _database_name(database_url).endswith("_test"):
         raise ConfigurationError("Test database names must end with '_test'.")
