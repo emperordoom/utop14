@@ -19,6 +19,7 @@ from app.models.security_event import (
 from app.services.security_event_admin import (
     MAX_PAGE,
     AdminSecurityEventFilters,
+    displayable_metadata,
     normalize_page,
 )
 
@@ -329,3 +330,92 @@ def test_badge_fallbacks_escape_unexpected_values(app) -> None:
     assert "<svg" not in html
     assert "&lt;script&gt;" in html
     assert html.count("security-event-badge--unknown") == 3
+
+
+def test_displayable_metadata_successful_login() -> None:
+    items = displayable_metadata(
+        SECURITY_EVENT_LOGIN_SUCCEEDED,
+        {"auth_method": "password", "remember_requested": True},
+    )
+
+    assert items == (
+        ("Authentication method", "Password"),
+        ("Remember requested", "Yes"),
+    )
+
+
+def test_displayable_metadata_registration_and_false_remember() -> None:
+    items = displayable_metadata(
+        SECURITY_EVENT_LOGIN_SUCCEEDED,
+        {"auth_method": "registration", "remember_requested": False},
+    )
+
+    assert items == (
+        ("Authentication method", "Registration"),
+        ("Remember requested", "No"),
+    )
+
+
+def test_displayable_metadata_failed_login() -> None:
+    items = displayable_metadata(
+        SECURITY_EVENT_LOGIN_FAILED,
+        {"auth_method": "password"},
+    )
+
+    assert items == (("Authentication method", "Password"),)
+
+
+def test_displayable_metadata_omits_unknown_keys_and_values() -> None:
+    items = displayable_metadata(
+        SECURITY_EVENT_LOGIN_SUCCEEDED,
+        {
+            "auth_method": "password",
+            "remember_requested": True,
+            "password": "SECRET",
+            "token": "SECRET",
+            "unknown": "value",
+        },
+    )
+
+    assert items == (
+        ("Authentication method", "Password"),
+        ("Remember requested", "Yes"),
+    )
+
+
+def test_displayable_metadata_omits_invalid_types_and_nested_values() -> None:
+    items = displayable_metadata(
+        SECURITY_EVENT_LOGIN_SUCCEEDED,
+        {
+            "auth_method": ["password"],
+            "remember_requested": "yes",
+            "nested": {"secret": "value"},
+        },
+    )
+
+    assert items == ()
+
+
+def test_displayable_metadata_failed_login_rejects_registration_method() -> None:
+    items = displayable_metadata(
+        SECURITY_EVENT_LOGIN_FAILED,
+        {"auth_method": "registration"},
+    )
+
+    assert items == ()
+
+
+def test_displayable_metadata_logout_and_unknown_event_types_are_empty() -> None:
+    assert (
+        displayable_metadata(
+            SECURITY_EVENT_LOGOUT,
+            {"auth_method": "password"},
+        )
+        == ()
+    )
+    assert displayable_metadata("auth.not_real", {"auth_method": "password"}) == ()
+
+
+def test_displayable_metadata_non_object_is_empty() -> None:
+    assert displayable_metadata(SECURITY_EVENT_LOGIN_SUCCEEDED, []) == ()
+    assert displayable_metadata(SECURITY_EVENT_LOGIN_SUCCEEDED, "password") == ()

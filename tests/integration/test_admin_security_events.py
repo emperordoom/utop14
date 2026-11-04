@@ -1089,3 +1089,385 @@ def test_very_long_email_snapshot_is_safe(
 
     assert response.status_code == 200
     assert long_email in response.get_data(as_text=True)
+
+
+def test_admin_can_view_security_event_detail(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = _admin(make_user)
+    identifier_hash = "a" * 64
+    request_id = "b" * 32
+    event = _add_event(
+        event_type=SECURITY_EVENT_LOGIN_SUCCEEDED,
+        reason_code=SECURITY_REASON_AUTHENTICATED,
+        actor_user_id=admin.id,
+        actor_email=admin.email,
+        subject_user_id=admin.id,
+        subject_email=admin.email,
+        identifier_hash=identifier_hash,
+        ip_address="203.0.113.20",
+        user_agent="Test Agent/1.0",
+        request_id=request_id,
+        metadata={
+            "auth_method": "password",
+            "remember_requested": True,
+            "password": "SECRET-METADATA",
+        },
+    )
+    _silent_login(client, csrf_token, monkeypatch, email=admin.email)
+
+    response = client.get(f"/admin/security-events/{event.id}")
+
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert response.headers["Cache-Control"] == "private, no-store"
+    assert response.headers["Referrer-Policy"] == "no-referrer"
+    assert f"#{event.id}" in html
+    assert event.created_at.strftime("%d %b %Y, %H:%M:%S UTC") in html
+    assert "Login succeeded" in html
+    assert "Success" in html
+    assert "Authenticated" in html
+    assert admin.email in html
+    assert f"User #{admin.id}" in html
+    assert "203.0.113.20" in html
+    assert request_id in html
+    assert "Test Agent/1.0" in html
+    assert identifier_hash in html
+    assert "HMAC-SHA256" in html
+    assert "pseudonymous" in html
+    assert "Authentication method" in html
+    assert "Password" in html
+    assert "Remember requested" in html
+    assert "Yes" in html
+    assert "SECRET-METADATA" not in html
+    assert "SECURITY_EVENT_HASH_KEY" not in html
+
+    list_html = _html(client.get("/admin/security-events"))
+    assert f'href="/admin/security-events/{event.id}"' in list_html
+    assert identifier_hash not in _table_body(list_html)
+
+    related = html.split('class="security-event-related"', 1)[1].split("</article>", 1)[0]
+    assert admin.email not in related
+    assert f"request_id={request_id}" in related
+    assert f"identifier_hash={identifier_hash}" in related
+    assert f"actor_user_id={admin.id}" in related
+    assert f"subject_user_id={admin.id}" in related
+
+
+def test_detail_minimal_states(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = _admin(make_user)
+    event = _add_event(
+        event_type=SECURITY_EVENT_LOGOUT,
+        actor_user_id=None,
+        actor_email=None,
+        subject_user_id=None,
+        subject_email=None,
+        identifier_hash=None,
+        user_agent="",
+        metadata={},
+    )
+    _silent_login(client, csrf_token, monkeypatch, email=admin.email)
+
+    html = _html(client.get(f"/admin/security-events/{event.id}"))
+
+    assert html.count("Not identified") == 2
+    assert "Not recorded." in html
+    assert "Not provided" in html
+    assert "No additional metadata recorded." in html
+    assert "No related-event filters are available" in html
+
+
+def test_detail_unknown_account(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = _admin(make_user)
+    identifier_hash = "c" * 64
+    event = _add_event(
+        event_type=SECURITY_EVENT_LOGIN_FAILED,
+        outcome=SECURITY_OUTCOME_FAILURE,
+        reason_code=SECURITY_REASON_UNKNOWN_ACCOUNT,
+        identifier_hash=identifier_hash,
+        metadata={"auth_method": "password"},
+    )
+    _silent_login(client, csrf_token, monkeypatch, email=admin.email)
+
+    html = _html(client.get(f"/admin/security-events/{event.id}"))
+
+    assert "Unknown account" in html
+    assert "No subject snapshot is stored" in html
+    assert identifier_hash in html
+    assert "Unknown account" in html
+    assert "unknown-account" not in html.lower()
+
+
+def test_detail_deleted_identity_snapshots(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = _admin(make_user)
+    event = _add_event(
+        actor_user_id=None,
+        actor_email="deleted-actor@example.com",
+        subject_user_id=None,
+        subject_email="deleted-subject@example.com",
+    )
+    _silent_login(client, csrf_token, monkeypatch, email=admin.email)
+
+    html = _html(client.get(f"/admin/security-events/{event.id}"))
+
+    assert "deleted-actor@example.com" in html
+    assert "deleted-subject@example.com" in html
+    assert html.count("Account link deleted") == 2
+
+
+def test_detail_metadata_allowlist_and_empty_state(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = _admin(make_user)
+    success = _add_event(
+        event_type=SECURITY_EVENT_LOGIN_SUCCEEDED,
+        reason_code=SECURITY_REASON_AUTHENTICATED,
+        metadata={
+            "auth_method": "password",
+            "remember_requested": "yes",
+            "password": "SECRET",
+            "nested": {"secret": "value"},
+        },
+    )
+    logout = _add_event(event_type=SECURITY_EVENT_LOGOUT, metadata={"auth_method": "password"})
+    _silent_login(client, csrf_token, monkeypatch, email=admin.email)
+
+    success_html = _html(client.get(f"/admin/security-events/{success.id}"))
+    assert "Authentication method" in success_html
+    assert "Password" in success_html
+    assert "Remember requested" not in success_html
+    assert "SECRET" not in success_html
+    assert "nested" not in success_html
+
+    logout_html = _html(client.get(f"/admin/security-events/{logout.id}"))
+    assert "No additional metadata recorded." in logout_html
+
+
+def test_detail_authorization_and_idor_boundary(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = _admin(make_user)
+    event_id = _add_event(actor_email="detail-idor@example.com").id
+    _silent_login(client, csrf_token, monkeypatch, email=admin.email)
+
+    assert client.get(f"/admin/security-events/{event_id}").status_code == 200
+    assert client.get("/admin/security-events/999999").status_code == 404
+    assert client.get("/admin/security-events/not-an-int").status_code == 404
+
+    customer = make_user(email="detail-customer@example.com", role=ROLE_CUSTOMER)
+    _logout(client, csrf_token)
+    _login(client, csrf_token, email=customer.email)
+    with _captured_sql() as statements:
+        customer_existing = client.get(f"/admin/security-events/{event_id}")
+    customer_missing = client.get("/admin/security-events/999999")
+    assert customer_existing.status_code == 403
+    assert customer_missing.status_code == 403
+    assert not any("security_events" in statement for statement in statements)
+    assert "detail-idor@example.com" not in customer_existing.get_data(as_text=True)
+
+    operator = make_user(email="detail-operator@example.com", role=ROLE_OPERATOR)
+    _logout(client, csrf_token)
+    _login(client, csrf_token, email=operator.email)
+    with _captured_sql() as statements:
+        operator_existing = client.get(f"/admin/security-events/{event_id}")
+    operator_missing = client.get("/admin/security-events/999999")
+    assert operator_existing.status_code == 403
+    assert operator_missing.status_code == 403
+    assert not any("security_events" in statement for statement in statements)
+
+    _logout(client, csrf_token)
+    with _captured_sql() as statements:
+        anonymous_existing = client.get(f"/admin/security-events/{event_id}")
+    anonymous_missing = client.get("/admin/security-events/999999")
+    assert anonymous_existing.status_code == 302
+    assert anonymous_missing.status_code == 302
+    assert not any("security_events" in statement for statement in statements)
+
+
+def test_detail_mutation_methods_and_export_are_absent(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = _admin(make_user)
+    event = _add_event(actor_email="detail-read-only@example.com")
+    _silent_login(client, csrf_token, monkeypatch, email=admin.email)
+    before = _count_events()
+
+    for method in ("post", "put", "patch", "delete"):
+        response = getattr(client, method)(f"/admin/security-events/{event.id}")
+        assert response.status_code == 405
+
+    assert client.get(f"/admin/security-events/{event.id}/export").status_code == 404
+    assert client.get(f"/admin/security-events/{event.id}/delete").status_code == 404
+    assert _count_events() == before
+
+    assert client.get(f"/admin/security-events/{event.id}").status_code == 200
+    assert _count_events() == before
+
+
+def test_detail_sql_shape_and_no_relationship_queries(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = _admin(make_user)
+    event = _add_event(
+        actor_user_id=admin.id,
+        actor_email=admin.email,
+        subject_user_id=admin.id,
+        subject_email=admin.email,
+        identifier_hash="d" * 64,
+        request_id="e" * 32,
+        metadata={"auth_method": "password", "remember_requested": True},
+    )
+    event_id = event.id
+    _silent_login(client, csrf_token, monkeypatch, email=admin.email)
+
+    with _captured_sql() as statements:
+        response = client.get(f"/admin/security-events/{event_id}")
+
+    assert response.status_code == 200
+    security_selects = [
+        statement
+        for statement in statements
+        if statement.lstrip().startswith("select") and "security_events" in statement
+    ]
+    user_selects = [statement for statement in statements if "from users" in statement]
+    writes = [
+        statement
+        for statement in statements
+        if statement.lstrip().startswith(("insert", "update", "delete"))
+    ]
+
+    assert len(security_selects) == 1
+    assert len(user_selects) == 1
+    assert not any(" join " in statement for statement in security_selects)
+    assert not any("audit_logs" in statement for statement in statements)
+    assert writes == []
+
+
+def test_detail_xss_payloads_are_escaped(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = _admin(make_user)
+    payload = '"><script>alert(1)</script>'
+    event = _add_event(
+        actor_email=payload,
+        subject_email="<img src=x onerror=alert(1)>",
+        user_agent="<script>alert(1)</script>",
+        request_id=payload,
+        metadata={"auth_method": payload},
+    )
+    _silent_login(client, csrf_token, monkeypatch, email=admin.email)
+
+    html = _html(client.get(f"/admin/security-events/{event.id}"))
+
+    assert payload not in html
+    assert "<script>" not in html
+    assert "<img" not in html
+    assert "&lt;script&gt;" in html
+    assert "&lt;img" in html
+    assert "SECURITY_EVENT_HASH_KEY" not in html
+
+
+def test_detail_long_user_agent_is_escaped_text(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = _admin(make_user)
+    long_agent = "A" * 500 + "<b>"
+    event = _add_event(actor_email="long-agent@example.com", user_agent=long_agent)
+    _silent_login(client, csrf_token, monkeypatch, email=admin.email)
+
+    html = _html(client.get(f"/admin/security-events/{event.id}"))
+
+    assert "A" * 500 in html
+    assert "<b>" not in html
+    assert "&lt;b&gt;" in html
+
+
+def test_related_event_links_follow_and_fail_closed(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = _admin(make_user)
+    request_id = "f" * 32
+    identifier_hash = "a" * 64
+    event = _add_event(
+        actor_user_id=admin.id,
+        actor_email="related-actor@example.com",
+        subject_user_id=admin.id,
+        subject_email="related-subject@example.com",
+        request_id=request_id,
+        identifier_hash=identifier_hash,
+    )
+    _silent_login(client, csrf_token, monkeypatch, email=admin.email)
+
+    html = _html(client.get(f"/admin/security-events/{event.id}"))
+    related = html.split('class="security-event-related"', 1)[1].split("</article>", 1)[0]
+    assert "related-actor@example.com" not in related
+    assert "related-subject@example.com" not in related
+    assert f"request_id={request_id}" in related
+    assert f"identifier_hash={identifier_hash}" in related
+    assert f"actor_user_id={admin.id}" in related
+    assert f"subject_user_id={admin.id}" in related
+
+    request_list = _html(client.get(f"/admin/security-events?request_id={request_id}"))
+    assert "related-actor@example.com" in request_list
+    identifier_list = _html(client.get(f"/admin/security-events?identifier_hash={identifier_hash}"))
+    assert "related-actor@example.com" in identifier_list
+
+    malformed = _add_event(
+        actor_email="malformed-related@example.com",
+        request_id="bad",
+    )
+    malformed_html = _html(client.get(f"/admin/security-events/{malformed.id}"))
+    assert "request_id=bad" in malformed_html
+    malformed_list = _html(client.get("/admin/security-events?request_id=bad"))
+    assert "Request ID" in malformed_list
+    assert "malformed-related@example.com" not in malformed_list

@@ -28,6 +28,10 @@ from app.models.security_event import (
     SecurityEvent,
 )
 from app.request_context import normalize_request_id
+from app.services.security_events import (
+    AUTH_METHOD_PASSWORD,
+    AUTH_METHOD_REGISTRATION,
+)
 
 PER_PAGE: Final = 20
 MAX_PAGE: Final = 1000
@@ -356,6 +360,44 @@ def normalize_page(value: object) -> int:
     if isinstance(value, int) and value >= 1:
         return min(value, MAX_PAGE)
     return 1
+
+
+_AUTH_METHOD_LABELS: Final = {
+    AUTH_METHOD_PASSWORD: "Password",
+    AUTH_METHOD_REGISTRATION: "Registration",
+}
+
+
+def displayable_metadata(
+    event_type: str,
+    metadata: object,
+) -> tuple[tuple[str, str], ...]:
+    """Return only explicitly displayable metadata labels and values."""
+    if not isinstance(metadata, dict):
+        return ()
+
+    items: list[tuple[str, str]] = []
+    if event_type == SECURITY_EVENT_LOGIN_SUCCEEDED:
+        auth_method = metadata.get("auth_method")
+        if isinstance(auth_method, str):
+            label = _AUTH_METHOD_LABELS.get(auth_method)
+            if label is not None:
+                items.append(("Authentication method", label))
+        remember_requested = metadata.get("remember_requested")
+        if isinstance(remember_requested, bool):
+            items.append(("Remember requested", "Yes" if remember_requested else "No"))
+    elif event_type == SECURITY_EVENT_LOGIN_FAILED:
+        auth_method = metadata.get("auth_method")
+        if auth_method == AUTH_METHOD_PASSWORD:
+            items.append(("Authentication method", "Password"))
+    return tuple(items)
+
+
+def get_security_event(event_id: int) -> SecurityEvent | None:
+    """Return one event by primary key without loading relationships."""
+    if type(event_id) is not int or event_id <= 0:
+        return None
+    return db.session.get(SecurityEvent, event_id)
 
 
 def list_security_events(

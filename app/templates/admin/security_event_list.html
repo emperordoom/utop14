@@ -207,6 +207,7 @@
                 <th scope="col">Subject</th>
                 <th scope="col">Client IP</th>
                 <th scope="col">Request ID</th>
+                <th scope="col"><span class="visually-hidden">Actions</span></th>
               </tr>
             </thead>
             <tbody>
@@ -252,6 +253,12 @@
                     {% else %}
                       —
                     {% endif %}
+                  </td>
+                  <td>
+                    <a class="text-link" href="{{ url_for('admin.security_event_detail', event_id=event.id) }}">
+                      Inspect
+                      <span aria-hidden="true">↗</span>
+                    </a>
                   </td>
                 </tr>
               {% endfor %}

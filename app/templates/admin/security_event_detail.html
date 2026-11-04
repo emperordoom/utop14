@@ -1,0 +1,228 @@
+{% extends "base.html" %}
+
+{% from "components/security_event_badges.html" import
+  security_event_type_badge,
+  security_outcome_badge,
+  security_reason_badge
+%}
+
+{% block title %}Security event #{{ event.id }} — Admin — UTOP14{% endblock %}
+
+{% block meta_description %}Read-only detail for one UTOP14 authentication security event.{% endblock %}
+
+{% block styles %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/auth.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css') }}">
+{% endblock %}
+
+{% block body_class %}page-admin-security-events{% endblock %}
+
+{% block content %}
+  {% include "components/admin_nav.html" %}
+
+  <section class="staff-hero" aria-labelledby="security-event-detail-title">
+    <div class="container">
+      <nav class="admin-breadcrumb" aria-label="Breadcrumb">
+        <a href="{{ url_for('admin.security_event_list') }}">Security events</a>
+        <span aria-hidden="true">/</span>
+        <span aria-current="page">Event #{{ event.id }}</span>
+      </nav>
+      <p class="section-kicker">Accounts / Security events / Detail</p>
+      <div class="admin-detail-heading">
+        <div>
+          <h1 class="staff-hero__title" id="security-event-detail-title">
+            Event <em>#{{ event.id }}.</em>
+          </h1>
+          <p class="admin-meta mono">{{ event.event_type }}</p>
+        </div>
+        <div class="user-detail-badges">
+          {{ security_event_type_badge(event.event_type) }}
+          {{ security_outcome_badge(event.outcome) }}
+        </div>
+      </div>
+      <p class="staff-hero__copy">
+        Read-only authentication security event. This record cannot be edited,
+        deleted or used to change the associated account.
+      </p>
+      <div class="staff-hero__actions">
+        <a class="button button--ghost" href="{{ url_for('admin.security_event_list') }}">
+          Back to security events
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <section class="section staff-section" aria-labelledby="security-event-overview-title">
+    <div class="container security-event-detail">
+      <article class="security-event-detail__section">
+        <h2 id="security-event-overview-title">Event overview</h2>
+        <dl class="admin-meta-list">
+          <div>
+            <dt>Event ID</dt>
+            <dd class="mono">#{{ event.id }}</dd>
+          </div>
+          <div>
+            <dt>Timestamp (UTC)</dt>
+            <dd class="mono">{{ event.created_at.strftime("%d %b %Y, %H:%M:%S UTC") }}</dd>
+          </div>
+          <div>
+            <dt>Event type</dt>
+            <dd>
+              {{ security_event_type_badge(event.event_type) }}
+              <span class="mono">{{ event.event_type }}</span>
+            </dd>
+          </div>
+          <div>
+            <dt>Outcome</dt>
+            <dd>
+              {{ security_outcome_badge(event.outcome) }}
+              <span class="mono">{{ event.outcome }}</span>
+            </dd>
+          </div>
+          <div>
+            <dt>Reason</dt>
+            <dd>
+              {{ security_reason_badge(event.reason_code) }}
+              <span class="mono">{{ event.reason_code }}</span>
+            </dd>
+          </div>
+        </dl>
+      </article>
+
+      <article class="security-event-detail__section">
+        <h2>Actor and subject</h2>
+        <div class="security-event-detail__identities">
+          <div class="security-event-detail__identity">
+            <h3>Actor</h3>
+            {% if event.actor_email %}
+              <p class="security-event-detail__value">{{ event.actor_email }}</p>
+              {% if event.actor_user_id is not none %}
+                <p class="admin-meta mono">User #{{ event.actor_user_id }}</p>
+              {% else %}
+                <p class="admin-note">
+                  Account link deleted; the historical email snapshot is preserved.
+                </p>
+              {% endif %}
+            {% else %}
+              <p class="security-event-detail__value">Not identified</p>
+            {% endif %}
+          </div>
+
+          <div class="security-event-detail__identity">
+            <h3>Subject</h3>
+            {% if event.subject_email %}
+              <p class="security-event-detail__value">{{ event.subject_email }}</p>
+              {% if event.subject_user_id is not none %}
+                <p class="admin-meta mono">User #{{ event.subject_user_id }}</p>
+              {% else %}
+                <p class="admin-note">
+                  Account link deleted; the historical email snapshot is preserved.
+                </p>
+              {% endif %}
+            {% elif event.event_type == "auth.login_failed" and event.reason_code == "unknown_account" %}
+              <p class="security-event-detail__value">Unknown account</p>
+              <p class="admin-note">
+                No subject snapshot is stored for this failed authentication attempt.
+              </p>
+            {% else %}
+              <p class="security-event-detail__value">Not identified</p>
+            {% endif %}
+          </div>
+        </div>
+      </article>
+
+      <article class="security-event-detail__section">
+        <h2>Identifier correlation</h2>
+        {% if event.identifier_hash %}
+          <code class="security-event-detail__hash">{{ event.identifier_hash }}</code>
+          <p class="admin-note">
+            This is a keyed HMAC-SHA256 correlation value for a login identifier.
+            It is pseudonymous and linkable; it is not an encrypted or reversible
+            email. Anyone who holds the HMAC key can test candidate identifiers by
+            recomputing their HMAC.
+          </p>
+        {% else %}
+          <p class="security-event-detail__value">Not recorded.</p>
+        {% endif %}
+      </article>
+
+      <article class="security-event-detail__section">
+        <h2>Network and request context</h2>
+        <dl class="admin-meta-list">
+          <div>
+            <dt>Client IP</dt>
+            <dd class="mono">{{ event.ip_address }}</dd>
+          </div>
+          <div>
+            <dt>Request ID</dt>
+            <dd class="mono security-event-detail__value">
+              {{ event.request_id or "Not recorded" }}
+            </dd>
+          </div>
+        </dl>
+        <h3>User agent</h3>
+        {% if event.user_agent %}
+          <pre class="security-event-detail__user-agent">{{ event.user_agent }}</pre>
+        {% else %}
+          <p class="security-event-detail__value">Not provided</p>
+        {% endif %}
+      </article>
+
+      <article class="security-event-detail__section">
+        <h2>Event metadata</h2>
+        {% if metadata_items %}
+          <dl class="admin-meta-list">
+            {% for label, value in metadata_items %}
+              <div>
+                <dt>{{ label }}</dt>
+                <dd>{{ value }}</dd>
+              </div>
+            {% endfor %}
+          </dl>
+        {% else %}
+          <p class="security-event-detail__value">No additional metadata recorded.</p>
+        {% endif %}
+      </article>
+
+      <article class="security-event-detail__section">
+        <h2>Related events</h2>
+        {% if event.request_id or event.identifier_hash or event.actor_user_id or event.subject_user_id %}
+          <div class="security-event-related">
+            {% if event.request_id %}
+              <a
+                class="button button--ghost"
+                href="{{ url_for('admin.security_event_list', request_id=event.request_id) }}"
+              >Same request</a>
+            {% endif %}
+            {% if event.identifier_hash %}
+              <a
+                class="button button--ghost"
+                href="{{ url_for('admin.security_event_list', identifier_hash=event.identifier_hash) }}"
+              >Same identifier</a>
+            {% endif %}
+            {% if event.actor_user_id %}
+              <a
+                class="button button--ghost"
+                href="{{ url_for('admin.security_event_list', actor_user_id=event.actor_user_id) }}"
+              >Actor events</a>
+            {% endif %}
+            {% if event.subject_user_id %}
+              <a
+                class="button button--ghost"
+                href="{{ url_for('admin.security_event_list', subject_user_id=event.subject_user_id) }}"
+              >Subject events</a>
+            {% endif %}
+          </div>
+        {% else %}
+          <p class="admin-note">
+            No related-event filters are available for this record.
+          </p>
+        {% endif %}
+      </article>
+
+      <a class="button button--ghost" href="{{ url_for('admin.security_event_list') }}">
+        Back to security events
+      </a>
+    </div>
+  </section>
+{% endblock %}

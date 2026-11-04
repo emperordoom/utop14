@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from flask import make_response, render_template, request
+from flask import abort, make_response, render_template, request
 from flask.typing import ResponseReturnValue
 
 from app.admin import admin_bp
@@ -13,6 +13,8 @@ from app.services.security_event_admin import (
     OUTCOME_CHOICES,
     REASON_GROUPS,
     AdminSecurityEventFilters,
+    displayable_metadata,
+    get_security_event,
     list_security_events,
     normalize_page,
 )
@@ -46,4 +48,24 @@ def security_event_list() -> ResponseReturnValue:
         )
     )
     response.headers["Cache-Control"] = "private, no-store"
+    return response
+
+
+@admin_bp.get("/admin/security-events/<int:event_id>")
+@role_required(ROLE_ADMIN)
+def security_event_detail(event_id: int) -> ResponseReturnValue:
+    """Render one read-only authentication security event."""
+    event = get_security_event(event_id)
+    if event is None:
+        abort(404)
+
+    response = make_response(
+        render_template(
+            "admin/security_event_detail.html",
+            event=event,
+            metadata_items=displayable_metadata(event.event_type, event.metadata_json),
+        )
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
     return response
