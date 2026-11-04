@@ -9,6 +9,7 @@ from app.config import ConfigurationError, get_config
 
 VALID_TEST_DATABASE_URL = "postgresql+psycopg://localhost:5432/utop14_test"
 VALID_PRODUCTION_SECRET = "unit-test-production-secret-key-0123456789"
+VALID_SECURITY_EVENT_HASH_KEY = "unit-test-production-security-event-key-0123456789"
 
 
 def test_supported_configuration_names_are_resolved() -> None:
@@ -69,6 +70,7 @@ def test_production_configuration_enforces_secure_defaults() -> None:
         {
             "SECRET_KEY": VALID_PRODUCTION_SECRET,
             "SQLALCHEMY_DATABASE_URI": VALID_TEST_DATABASE_URL,
+            "SECURITY_EVENT_HASH_KEY": VALID_SECURITY_EVENT_HASH_KEY,
         },
     )
 
@@ -78,6 +80,7 @@ def test_production_configuration_enforces_secure_defaults() -> None:
     assert app.config["REMEMBER_COOKIE_SECURE"] is True
     assert app.config["SESSION_COOKIE_HTTPONLY"] is True
     assert app.config["WTF_CSRF_ENABLED"] is True
+    assert app.config["SECURITY_EVENT_HASH_KEY"] == VALID_SECURITY_EVENT_HASH_KEY
 
 
 def test_production_rejects_debug_mode() -> None:
@@ -87,6 +90,7 @@ def test_production_rejects_debug_mode() -> None:
             {
                 "SECRET_KEY": VALID_PRODUCTION_SECRET,
                 "SQLALCHEMY_DATABASE_URI": VALID_TEST_DATABASE_URL,
+                "SECURITY_EVENT_HASH_KEY": VALID_SECURITY_EVENT_HASH_KEY,
                 "DEBUG": True,
             },
         )
@@ -99,6 +103,7 @@ def test_production_rejects_insecure_session_cookie() -> None:
             {
                 "SECRET_KEY": VALID_PRODUCTION_SECRET,
                 "SQLALCHEMY_DATABASE_URI": VALID_TEST_DATABASE_URL,
+                "SECURITY_EVENT_HASH_KEY": VALID_SECURITY_EVENT_HASH_KEY,
                 "SESSION_COOKIE_SECURE": False,
             },
         )
@@ -111,6 +116,94 @@ def test_production_rejects_short_secret_key() -> None:
             {
                 "SECRET_KEY": "too-short",
                 "SQLALCHEMY_DATABASE_URI": VALID_TEST_DATABASE_URL,
+                "SECURITY_EVENT_HASH_KEY": VALID_SECURITY_EVENT_HASH_KEY,
+            },
+        )
+
+
+def test_production_requires_security_event_hash_key() -> None:
+    with pytest.raises(ConfigurationError, match="SECURITY_EVENT_HASH_KEY"):
+        create_app(
+            "production",
+            {
+                "SECRET_KEY": VALID_PRODUCTION_SECRET,
+                "SQLALCHEMY_DATABASE_URI": VALID_TEST_DATABASE_URL,
+                "SECURITY_EVENT_HASH_KEY": "",
+            },
+        )
+
+
+def test_production_rejects_short_security_event_hash_key() -> None:
+    with pytest.raises(ConfigurationError, match="32 bytes"):
+        create_app(
+            "production",
+            {
+                "SECRET_KEY": VALID_PRODUCTION_SECRET,
+                "SQLALCHEMY_DATABASE_URI": VALID_TEST_DATABASE_URL,
+                "SECURITY_EVENT_HASH_KEY": "too-short",
+            },
+        )
+
+
+def test_production_rejects_placeholder_security_event_hash_key() -> None:
+    with pytest.raises(ConfigurationError, match="placeholder"):
+        create_app(
+            "production",
+            {
+                "SECRET_KEY": VALID_PRODUCTION_SECRET,
+                "SQLALCHEMY_DATABASE_URI": VALID_TEST_DATABASE_URL,
+                "SECURITY_EVENT_HASH_KEY": "CHANGE_ME_SECURITY_EVENT_HASH_KEY",
+            },
+        )
+
+
+def test_production_rejects_security_event_hash_key_equal_to_secret() -> None:
+    with pytest.raises(ConfigurationError, match="distinct"):
+        create_app(
+            "production",
+            {
+                "SECRET_KEY": VALID_PRODUCTION_SECRET,
+                "SQLALCHEMY_DATABASE_URI": VALID_TEST_DATABASE_URL,
+                "SECURITY_EVENT_HASH_KEY": VALID_PRODUCTION_SECRET,
+            },
+        )
+
+
+def test_production_accepts_valid_security_event_hash_key() -> None:
+    app = create_app(
+        "production",
+        {
+            "SECRET_KEY": VALID_PRODUCTION_SECRET,
+            "SQLALCHEMY_DATABASE_URI": VALID_TEST_DATABASE_URL,
+            "SECURITY_EVENT_HASH_KEY": VALID_SECURITY_EVENT_HASH_KEY,
+        },
+    )
+
+    assert app.config["SECURITY_EVENT_HASH_KEY"] == VALID_SECURITY_EVENT_HASH_KEY
+
+
+def test_security_event_hash_key_error_does_not_leak_key() -> None:
+    weak_key = "short-secret-key-value"
+
+    with pytest.raises(ConfigurationError) as error:
+        create_app(
+            "production",
+            {
+                "SECRET_KEY": VALID_PRODUCTION_SECRET,
+                "SQLALCHEMY_DATABASE_URI": VALID_TEST_DATABASE_URL,
+                "SECURITY_EVENT_HASH_KEY": weak_key,
+            },
+        )
+
+    assert weak_key not in str(error.value)
+
+
+def test_testing_rejects_short_security_event_hash_key() -> None:
+    with pytest.raises(ConfigurationError, match="32 bytes"):
+        create_app(
+            "testing",
+            {
+                "SECURITY_EVENT_HASH_KEY": "too-short",
             },
         )
 
@@ -130,6 +223,7 @@ def test_production_rejects_enabled_payment_simulation() -> None:
             {
                 "SECRET_KEY": VALID_PRODUCTION_SECRET,
                 "SQLALCHEMY_DATABASE_URI": VALID_TEST_DATABASE_URL,
+                "SECURITY_EVENT_HASH_KEY": VALID_SECURITY_EVENT_HASH_KEY,
                 "PAYMENT_SIMULATION_ENABLED": True,
             },
         )
@@ -142,6 +236,7 @@ def test_production_rejects_simulated_provider() -> None:
             {
                 "SECRET_KEY": VALID_PRODUCTION_SECRET,
                 "SQLALCHEMY_DATABASE_URI": VALID_TEST_DATABASE_URL,
+                "SECURITY_EVENT_HASH_KEY": VALID_SECURITY_EVENT_HASH_KEY,
                 "PAYMENT_PROVIDER": "simulated",
             },
         )

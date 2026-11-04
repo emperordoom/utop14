@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 
@@ -26,6 +27,7 @@ from app.models.security_event import (
     SECURITY_REASON_UNKNOWN_ACCOUNT,
     SECURITY_REASON_USER_REQUESTED,
 )
+from app.models.user import ROLE_CUSTOMER
 
 PASSWORD = "ValidPass123"
 
@@ -49,6 +51,7 @@ def _login(
     email: str,
     password: str = PASSWORD,
     follow_redirects: bool = False,
+    headers: dict[str, str] | None = None,
 ) -> Response:
     return client.post(
         "/auth/login",
@@ -58,6 +61,7 @@ def _login(
             "password": password,
         },
         follow_redirects=follow_redirects,
+        headers=headers,
     )
 
 
@@ -99,6 +103,68 @@ def _add_event(user: User) -> SecurityEvent:
     db.session.add(event)
     db.session.commit()
     return event
+
+
+def _csrf_for(client: FlaskClient, path: str) -> str:
+    response = client.get(path)
+    assert response.status_code == 200
+    match = re.search(
+        r'name="csrf_token"[^>]*value="([^"]+)"',
+        response.get_data(as_text=True),
+    )
+    assert match is not None
+    return match.group(1)
+
+
+def _create_user_in_app(
+    application: Flask,
+    email: str,
+    *,
+    is_active: bool = True,
+) -> int:
+    with application.app_context():
+        user = User(
+            email=email,
+            full_name="Pool Test User",
+            role=ROLE_CUSTOMER,
+            is_active=is_active,
+        )
+        user.set_password(PASSWORD)
+        db.session.add(user)
+        db.session.flush()
+        user_id = user.id
+        assert user_id is not None
+        db.session.commit()
+        db.session.remove()
+        return user_id
+
+
+def _event_rows_for_app(application: Flask) -> list[dict[str, object]]:
+    with application.app_context():
+        rows = [
+            {
+                "event_type": event.event_type,
+                "outcome": event.outcome,
+                "reason_code": event.reason_code,
+                "actor_user_id": event.actor_user_id,
+                "actor_email": event.actor_email,
+                "subject_user_id": event.subject_user_id,
+                "subject_email": event.subject_email,
+                "identifier_hash": event.identifier_hash,
+                "ip_address": str(event.ip_address),
+                "user_agent": event.user_agent,
+                "request_id": event.request_id,
+                "metadata": event.metadata_json,
+            }
+            for event in db.session.scalars(select(SecurityEvent).order_by(SecurityEvent.id))
+        ]
+        db.session.remove()
+        return rows
+
+
+def _checked_out(application: Flask) -> int:
+    with application.app_context():
+        return db.engine.pool.checkedout()
 
 
 def test_login_success_records_exactly_one_event(
@@ -155,6 +221,107 @@ def test_registration_auto_login_records_exactly_one_event(
         "auth_method": "registration",
         "remember_requested": False,
     }
+
+
+def test_constrained_pool_login_success(
+    constrained_pool_app: Flask,
+) -> None:
+    with constrained_pool_app.app_context():
+        assert db.engine.pool.size() == 1
+
+    _create_user_in_app(constrained_pool_app, "pool-success@example.com")
+    client = constrained_pool_app.test_client()
+
+    def token_for(path: str) -> str:
+        return _csrf_for(client, path)
+
+    response = _login(
+        client,
+        token_for,
+        email="pool-success@example.com",
+    )
+
+    assert response.status_code == 302
+    assert _checked_out(constrained_pool_app) == 0
+    rows = _event_rows_for_app(constrained_pool_app)
+    assert len(rows) == 1
+    assert rows[0]["event_type"] == SECURITY_EVENT_LOGIN_SUCCEEDED
+    assert _checked_out(constrained_pool_app) == 0
+
+
+def test_constrained_pool_login_failures(
+    constrained_pool_app: Flask,
+) -> None:
+    _create_user_in_app(constrained_pool_app, "pool-failure@example.com")
+    client = constrained_pool_app.test_client()
+
+    def token_for(path: str) -> str:
+        return _csrf_for(client, path)
+
+    wrong = _login(
+        client,
+        token_for,
+        email="pool-failure@example.com",
+        password="WrongPass123",
+    )
+    unknown = _login(client, token_for, email="pool-missing@example.com")
+
+    assert wrong.status_code == 200
+    assert unknown.status_code == 200
+    assert _checked_out(constrained_pool_app) == 0
+    rows = _event_rows_for_app(constrained_pool_app)
+    assert len(rows) == 2
+    assert [row["reason_code"] for row in rows] == [
+        SECURITY_REASON_INVALID_PASSWORD,
+        SECURITY_REASON_UNKNOWN_ACCOUNT,
+    ]
+    assert _checked_out(constrained_pool_app) == 0
+
+
+def test_constrained_pool_logout(
+    constrained_pool_app: Flask,
+) -> None:
+    _create_user_in_app(constrained_pool_app, "pool-logout@example.com")
+    client = constrained_pool_app.test_client()
+
+    def token_for(path: str) -> str:
+        return _csrf_for(client, path)
+
+    login_response = _login(client, token_for, email="pool-logout@example.com")
+    assert login_response.status_code == 302
+    logout_response = client.post(
+        "/auth/logout",
+        data={"csrf_token": token_for("/auth/account")},
+    )
+
+    assert logout_response.status_code == 302
+    assert _checked_out(constrained_pool_app) == 0
+    rows = _event_rows_for_app(constrained_pool_app)
+    assert len(rows) == 2
+    assert rows[1]["event_type"] == SECURITY_EVENT_LOGOUT
+    assert _checked_out(constrained_pool_app) == 0
+
+
+def test_constrained_pool_registration(
+    constrained_pool_app: Flask,
+) -> None:
+    client = constrained_pool_app.test_client()
+
+    def token_for(path: str) -> str:
+        return _csrf_for(client, path)
+
+    response = _register(client, token_for, email="pool-register@example.com")
+
+    assert response.status_code == 302
+    assert _checked_out(constrained_pool_app) == 0
+    rows = _event_rows_for_app(constrained_pool_app)
+    assert len(rows) == 1
+    assert rows[0]["event_type"] == SECURITY_EVENT_LOGIN_SUCCEEDED
+    assert rows[0]["metadata"] == {
+        "auth_method": "registration",
+        "remember_requested": False,
+    }
+    assert _checked_out(constrained_pool_app) == 0
 
 
 def test_wrong_password_records_invalid_password_event(
@@ -386,6 +553,59 @@ def test_logout_records_exactly_one_logout_event(
     assert logout_event.request_id is not None
 
 
+def test_login_success_records_remember_requested_true(
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+) -> None:
+    make_user(email="remember-event@example.com")
+
+    response = client.post(
+        "/auth/login",
+        data={
+            "csrf_token": csrf_token("/auth/login"),
+            "email": "remember-event@example.com",
+            "password": PASSWORD,
+            "remember": "y",
+        },
+    )
+
+    assert response.status_code == 302
+    event = _events()[0]
+    assert event.metadata_json == {
+        "auth_method": "password",
+        "remember_requested": True,
+    }
+
+
+def test_logout_csrf_failure_records_no_logout_event(
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+) -> None:
+    make_user(email="logout-csrf@example.com")
+    _login(client, csrf_token, email="logout-csrf@example.com")
+    assert _event_count() == 1
+
+    response = client.post("/auth/logout", data={})
+
+    assert response.status_code == 400
+    assert _event_count() == 1
+
+
+def test_unauthenticated_logout_records_no_logout_event(
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+) -> None:
+    token = csrf_token("/auth/login")
+
+    response = client.post("/auth/logout", data={"csrf_token": token})
+
+    assert response.status_code == 302
+    assert response.headers["Location"].startswith("/auth/login")
+    assert _event_count() == 0
+
+
 def test_auth_events_do_not_write_to_m13_audit_logs(
     client: FlaskClient,
     csrf_token: Callable[[str], str],
@@ -432,6 +652,58 @@ def test_events_never_contain_credentials_or_session_secrets(
             assert "token" not in lowered
             assert "session" not in lowered
             assert "csrf" not in lowered
+
+
+def test_event_data_excludes_session_remember_csrf_and_password_secrets(
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+) -> None:
+    user = make_user(email="secret-values@example.com")
+    password_hash = user.password_hash
+    token = csrf_token("/auth/login")
+
+    response = client.post(
+        "/auth/login",
+        data={
+            "csrf_token": token,
+            "email": user.email,
+            "password": PASSWORD,
+            "remember": "y",
+        },
+    )
+
+    assert response.status_code == 302
+    session_cookie = client.get_cookie("utop14_session")
+    remember_cookie = client.get_cookie("utop14_remember")
+    assert session_cookie is not None
+    assert remember_cookie is not None
+    forbidden = (
+        PASSWORD,
+        password_hash,
+        token,
+        session_cookie.value,
+        remember_cookie.value,
+    )
+
+    for event in _events():
+        serialized = " ".join(
+            str(value)
+            for value in (
+                event.event_type,
+                event.outcome,
+                event.reason_code,
+                event.actor_email,
+                event.subject_email,
+                event.identifier_hash,
+                event.ip_address,
+                event.user_agent,
+                event.request_id,
+                event.metadata_json,
+            )
+        )
+        for value in forbidden:
+            assert value not in serialized
 
 
 def test_missing_hash_key_does_not_store_raw_unknown_identifier(
@@ -532,6 +804,69 @@ def test_persistence_failure_does_not_change_logout(
     assert client.get("/auth/account").status_code == 302
 
 
+def test_persistence_failure_does_not_break_registration(
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.services.security_events.Session", _FailingSession)
+
+    response = _register(client, csrf_token, email="outage-registration@example.com")
+
+    assert response.status_code == 302
+    user = db.session.scalar(select(User).where(User.email == "outage-registration@example.com"))
+    assert user is not None
+    assert _event_count() == 0
+
+
+def test_internal_exception_is_not_classified_as_login_failure(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    make_user(email="internal-error@example.com")
+
+    def _raise_verification_error(_self, _password):
+        raise RuntimeError("simulated password verification failure")
+
+    monkeypatch.setattr(User, "verify_password", _raise_verification_error)
+    monkeypatch.setitem(app.config, "PROPAGATE_EXCEPTIONS", False)
+
+    response = _login(client, csrf_token, email="internal-error@example.com")
+
+    assert response.status_code == 500
+    assert _event_count() == 0
+
+
+def test_persistence_failure_log_includes_request_id_without_identifiers(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    email = "log-correlation@example.com"
+    make_user(email=email)
+    messages: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        app.logger,
+        "error",
+        lambda *args, **_kwargs: messages.append(args),
+    )
+    monkeypatch.setattr("app.services.security_events.Session", _FailingSession)
+
+    response = _login(client, csrf_token, email=email)
+
+    assert response.status_code == 302
+    joined = " ".join(str(message) for message in messages)
+    assert "request_id=" in joined
+    assert re.search(r"[0-9a-f]{32}", joined)
+    assert email not in joined
+    assert PASSWORD not in joined
+
+
 def test_security_event_update_is_rejected_by_database_trigger(
     app: Flask,
     make_user: Callable[..., User],
@@ -586,6 +921,114 @@ def test_historical_identity_survives_user_deletion(
     assert persisted.subject_email == "deleted-security-user@example.com"
 
 
+def test_fk_set_null_clears_only_the_deleted_identity(
+    app: Flask,
+    make_user: Callable[..., User],
+) -> None:
+    actor = make_user(email="actor-distinct@example.com")
+    subject = make_user(email="subject-distinct@example.com")
+    actor_id = actor.id
+    subject_id = subject.id
+    event = SecurityEvent(
+        event_type=SECURITY_EVENT_LOGOUT,
+        outcome=SECURITY_OUTCOME_SUCCESS,
+        reason_code=SECURITY_REASON_USER_REQUESTED,
+        actor_user_id=actor_id,
+        actor_email=actor.email,
+        subject_user_id=subject_id,
+        subject_email=subject.email,
+        ip_address="127.0.0.1",
+        user_agent="pytest",
+        metadata_json={},
+    )
+    db.session.add(event)
+    db.session.commit()
+    event_id = event.id
+
+    db.session.delete(actor)
+    db.session.commit()
+    db.session.expire_all()
+    persisted = db.session.get(SecurityEvent, event_id)
+    assert persisted is not None
+    assert persisted.actor_user_id is None
+    assert persisted.actor_email == "actor-distinct@example.com"
+    assert persisted.subject_user_id == subject_id
+    assert persisted.subject_email == "subject-distinct@example.com"
+
+    db.session.delete(subject)
+    db.session.commit()
+    db.session.expire_all()
+    persisted = db.session.get(SecurityEvent, event_id)
+    assert persisted is not None
+    assert persisted.subject_user_id is None
+    assert persisted.subject_email == "subject-distinct@example.com"
+
+
+def test_append_only_trigger_permits_direct_identity_clearing(
+    app: Flask,
+    make_user: Callable[..., User],
+) -> None:
+    """Document the narrow trigger boundary: FK links may be cleared directly."""
+    user = make_user(email="direct-clear@example.com")
+    event = _add_event(user)
+    event_id = event.id
+
+    db.session.execute(
+        update(SecurityEvent)
+        .where(SecurityEvent.id == event_id)
+        .values(actor_user_id=None, subject_user_id=None)
+    )
+    db.session.commit()
+    db.session.expire_all()
+
+    persisted = db.session.get(SecurityEvent, event_id)
+    assert persisted is not None
+    assert persisted.actor_user_id is None
+    assert persisted.subject_user_id is None
+    assert persisted.actor_email == "direct-clear@example.com"
+    assert persisted.subject_email == "direct-clear@example.com"
+
+
+def test_security_event_user_agent_is_truncated(
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+) -> None:
+    make_user(email="ua-event@example.com")
+
+    _login(
+        client,
+        csrf_token,
+        email="ua-event@example.com",
+        headers={"User-Agent": "A" * 600},
+    )
+
+    event = _events()[0]
+    assert len(event.user_agent) == 512
+
+
+def test_security_event_invalid_ip_uses_unknown_sentinel(
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+) -> None:
+    make_user(email="ip-event@example.com")
+
+    response = client.post(
+        "/auth/login",
+        data={
+            "csrf_token": csrf_token("/auth/login"),
+            "email": "ip-event@example.com",
+            "password": PASSWORD,
+        },
+        environ_overrides={"REMOTE_ADDR": "not-an-ip"},
+    )
+
+    assert response.status_code == 302
+    event = _events()[0]
+    assert str(event.ip_address) == "0.0.0.0"
+
+
 def test_security_event_database_constraints(
     app: Flask,
     make_user: Callable[..., User],
@@ -630,5 +1073,32 @@ def test_security_event_database_constraints(
     )
     db.session.add(invalid_metadata)
     with pytest.raises(SQLAlchemyError):
+        db.session.commit()
+    db.session.rollback()
+
+    invalid_outcome = SecurityEvent(
+        event_type=SECURITY_EVENT_LOGOUT,
+        outcome="denied",
+        reason_code=SECURITY_REASON_USER_REQUESTED,
+        ip_address="127.0.0.1",
+        user_agent="",
+        metadata_json={},
+    )
+    db.session.add(invalid_outcome)
+    with pytest.raises(IntegrityError):
+        db.session.commit()
+    db.session.rollback()
+
+    invalid_hash = SecurityEvent(
+        event_type=SECURITY_EVENT_LOGIN_FAILED,
+        outcome=SECURITY_OUTCOME_FAILURE,
+        reason_code=SECURITY_REASON_UNKNOWN_ACCOUNT,
+        identifier_hash="not-a-64-character-digest",
+        ip_address="127.0.0.1",
+        user_agent="",
+        metadata_json={},
+    )
+    db.session.add(invalid_hash)
+    with pytest.raises(IntegrityError):
         db.session.commit()
     db.session.rollback()

@@ -119,6 +119,7 @@ class SecurityEvent(Base):
             "identifier_hash",
             "created_at",
         ),
+        Index("ix_security_events_request_id", "request_id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

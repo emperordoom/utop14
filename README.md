@@ -139,7 +139,7 @@ environment take precedence. `.env` is ignored by Git.
 | `TEST_DATABASE_URL` | No | Optional isolated PostgreSQL database for tests; must end in `_test` |
 | `TEST_SECRET_KEY` | No | Optional test-only secret override |
 | `TRUSTED_PROXY_HOPS` | No | Number of trusted reverse-proxy hops for `X-Forwarded-For`; default `0` |
-| `SECURITY_EVENT_HASH_KEY` | No | Dedicated HMAC-SHA256 key for authentication identifier hashes; if empty, unknown identifiers are not stored |
+| `SECURITY_EVENT_HASH_KEY` | Production | Dedicated HMAC-SHA256 key for authentication identifier hashes; at least 32 bytes, distinct from `SECRET_KEY`; optional in development/testing |
 
 Startup validation fails with a clear `ConfigurationError` when `SECRET_KEY`
 or `DATABASE_URL` is missing or when a non-Psycopg database URL is supplied.
@@ -491,6 +491,7 @@ Current revision chain in source:
 - `7c1e4b9a2d30` — product reviews and ratings
 - `3f7a2c9d1b64` — administrative audit log
 - `9b2d4e6f8a10` — authentication security events
+- `c4e7a1b9d2f6` — security event request ID index
 
 ## Admin audit logging and trusted proxy
 
@@ -618,10 +619,21 @@ and it cannot poison the authentication transaction. The failure is logged
 without credentials or raw identifiers.
 
 `SECURITY_EVENT_HASH_KEY` is the dedicated HMAC-SHA256 key for unknown login
-identifiers. `SECRET_KEY` is never used as a fallback. If the dedicated key is
-empty, the event is still recorded but the identifier hash is omitted and a
-configuration error is logged; raw unknown identifiers are never stored.
-Changing the key makes older identifier hashes non-comparable.
+identifiers. `SECRET_KEY` is never used as a fallback. When configured, the key
+must contain at least 32 bytes of UTF-8 key material, must not be a known
+placeholder value, and must differ from `SECRET_KEY`. Production additionally
+requires the key to be present. The key is never included in configuration error
+messages or application logs. Generate it with:
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+In development and testing the key may be empty. In that case the event is still
+recorded but the identifier hash is omitted and a once-per-process configuration
+warning is logged; raw unknown identifiers are never stored. Authentication
+continues normally. Changing the key makes older identifier hashes
+non-comparable.
 
 Unknown and inactive account paths perform a password verification against a
 single precomputed dummy hash so they are not obviously cheaper than a real
@@ -630,11 +642,23 @@ constant execution time. External login responses stay generic.
 
 Event metadata uses an explicit per-event allowlist and never includes
 passwords, password hashes, reset tokens, session cookies or IDs, CSRF tokens,
-access tokens or raw request bodies. Password reset, account recovery, rate
-limiting, session-anomaly detection, remember-cookie restoration events, an
-admin security-event viewer and automatic retention purges are not part of
-M14.1. Retention is permanent until a separately approved archival policy
-exists.
+access tokens or raw request bodies. Authentication callers capture primitive
+event fields and release the request session's checked-out connection before
+best-effort event persistence, so a single auth request does not need two
+simultaneous database connections merely to write an event.
+
+The `security_events` table is indexed by request ID for incident correlation.
+A reason-code index is deferred until the M14.2 viewer defines its filters and
+the query pattern is measured. The append-only trigger permits FK `SET NULL`
+clearing of actor/subject links; it also permits a direct privileged UPDATE that
+clears those two nullable FK values while leaving the email snapshots and every
+other field unchanged. It is not absolute immutability against table owners,
+superusers, `TRUNCATE`, or a compromised privileged account.
+
+Password reset, account recovery, rate limiting, session-anomaly detection,
+remember-cookie restoration events, an admin security-event viewer and automatic
+retention purges are not part of M14.1. Retention is permanent until a separately
+approved archival policy exists.
 
 ## Production notes
 

@@ -47,6 +47,10 @@ def test_hash_identifier_missing_key_returns_none_and_is_observable(
     errors: list[tuple[object, ...]] = []
     monkeypatch.setitem(app.config, "SECURITY_EVENT_HASH_KEY", "")
     monkeypatch.setattr(
+        "app.services.security_events._missing_key_warning_emitted",
+        False,
+    )
+    monkeypatch.setattr(
         app.logger,
         "error",
         lambda *args, **_kwargs: errors.append(args),
@@ -55,6 +59,46 @@ def test_hash_identifier_missing_key_returns_none_and_is_observable(
     assert hash_identifier("user@example.com") is None
     assert errors
     assert "SECURITY_EVENT_HASH_KEY" in str(errors[0])
+
+
+def test_missing_key_warning_is_emitted_once(
+    app: Flask,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(app.config, "SECURITY_EVENT_HASH_KEY", "")
+    monkeypatch.setattr(
+        "app.services.security_events._missing_key_warning_emitted",
+        False,
+    )
+    messages: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        app.logger,
+        "error",
+        lambda *args, **_kwargs: messages.append(args),
+    )
+
+    assert hash_identifier("first@example.com") is None
+    assert hash_identifier("second@example.com") is None
+    assert len(messages) == 1
+    assert "SECURITY_EVENT_HASH_KEY" in str(messages[0])
+
+
+def test_hash_key_is_not_logged(
+    app: Flask,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key = "dedicated-test-key-material-0123456789"
+    monkeypatch.setitem(app.config, "SECURITY_EVENT_HASH_KEY", key)
+    messages: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        app.logger,
+        "error",
+        lambda *args, **_kwargs: messages.append(args),
+    )
+
+    assert hash_identifier("user@example.com") is not None
+    assert messages == []
+    assert key not in str(messages)
 
 
 def test_metadata_allowlist_drops_unknown_and_sensitive_keys() -> None:

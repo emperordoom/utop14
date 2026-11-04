@@ -9,6 +9,10 @@ Persistence is best-effort: every public ``record_*`` helper catches failures
 internally so an authentication outcome never depends on auditing success.  A
 dedicated short-lived SQLAlchemy session is used so a failed event insert cannot
 poison the caller's request transaction.
+
+Callers must pass primitive snapshots, not live ORM instances, and must release
+the request session's checked-out connection before calling these helpers.  That
+keeps the audit insert from requiring a second simultaneous pool connection.
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ import hashlib
 import hmac
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from threading import Lock
 from typing import Any, Final
 
 from flask import current_app
@@ -38,7 +43,7 @@ from app.models.security_event import (
     SECURITY_REASON_USER_REQUESTED,
     SecurityEvent,
 )
-from app.models.user import User, normalize_email
+from app.models.user import normalize_email
 from app.request_context import (
     current_request_id,
     current_request_ip,
@@ -61,6 +66,24 @@ _LOGIN_FAILURE_REASONS: Final = (
     SECURITY_REASON_INACTIVE_ACCOUNT,
     SECURITY_REASON_INVALID_PASSWORD,
 )
+
+_MISSING_KEY_WARNING_LOCK: Final = Lock()
+_missing_key_warning_emitted = False
+
+
+def _warn_missing_hash_key() -> None:
+    """Log the missing-key warning at most once per worker process."""
+    global _missing_key_warning_emitted
+
+    if _missing_key_warning_emitted:
+        return
+    with _MISSING_KEY_WARNING_LOCK:
+        if _missing_key_warning_emitted:
+            return
+        _missing_key_warning_emitted = True
+
+    current_app.logger.error("SECURITY_EVENT_HASH_KEY is not configured; identifier hash omitted.")
+
 
 # Explicit per-event metadata allowlists.  Values are never taken from request
 # payloads beyond the validated names built by the helpers below.
@@ -122,9 +145,10 @@ def _normalize_email_snapshot(value: object) -> str | None:
 def hash_identifier(identifier: object) -> str | None:
     """Return a deterministic HMAC-SHA256 hash for a login identifier.
 
-    ``SECURITY_EVENT_HASH_KEY`` is required.  When it is missing the helper
-    returns ``None`` and logs an observable configuration error; it never falls
-    back to ``SECRET_KEY`` and never returns the raw identifier.
+    ``SECURITY_EVENT_HASH_KEY`` is required in production.  When it is missing
+    in another environment the helper returns ``None`` and emits a
+    once-per-process configuration warning; it never falls back to
+    ``SECRET_KEY`` and never returns the raw identifier.
     """
     if not isinstance(identifier, str):
         return None
@@ -135,9 +159,7 @@ def hash_identifier(identifier: object) -> str | None:
 
     key = current_app.config.get("SECURITY_EVENT_HASH_KEY")
     if not isinstance(key, str) or not key:
-        current_app.logger.error(
-            "SECURITY_EVENT_HASH_KEY is not configured; identifier hash omitted."
-        )
+        _warn_missing_hash_key()
         return None
 
     digest = hmac.new(
@@ -178,11 +200,12 @@ def _persist(event: SecurityEvent) -> None:
             session.add(event)
             session.commit()
     except Exception as exc:  # noqa: BLE001 - auditing must never break auth
-        # Log only the event type and exception class.  Exception messages from
-        # the database can contain parameter values such as identifiers.
+        # Log only safe correlation/type fields.  Exception messages from the
+        # database can contain parameter values such as identifiers.
         current_app.logger.error(
-            "Security event persistence failed for %s (%s).",
+            "Security event persistence failed for %s (request_id=%s, %s).",
             event.event_type,
+            event.request_id or "none",
             type(exc).__name__,
         )
 
@@ -219,21 +242,22 @@ def _build_event(
 
 def record_login_succeeded(
     *,
-    user: User,
+    user_id: int,
+    email: str,
     auth_method: str,
     remember_requested: bool = False,
 ) -> None:
-    """Record one successful authentication (best-effort)."""
+    """Record one successful authentication from primitive snapshot values."""
     try:
         event = _build_event(
             event_type=SECURITY_EVENT_LOGIN_SUCCEEDED,
             outcome=SECURITY_OUTCOME_SUCCESS,
             reason_code=SECURITY_REASON_AUTHENTICATED,
             context=build_security_event_context(),
-            actor_user_id=user.id,
-            actor_email=user.email,
-            subject_user_id=user.id,
-            subject_email=user.email,
+            actor_user_id=user_id,
+            actor_email=email,
+            subject_user_id=user_id,
+            subject_email=email,
             metadata={
                 "auth_method": auth_method,
                 "remember_requested": bool(remember_requested),
@@ -253,9 +277,10 @@ def record_login_failed(
     *,
     identifier: str,
     reason: str,
-    user: User | None = None,
+    subject_user_id: int | None = None,
+    subject_email: str | None = None,
 ) -> None:
-    """Record one failed credential attempt (best-effort).
+    """Record one failed credential attempt from primitive snapshot values.
 
     Unknown accounts are represented only by a keyed hash of the normalized
     identifier.  Known but inactive or wrongly-authenticated accounts may carry
@@ -270,8 +295,8 @@ def record_login_failed(
             outcome=SECURITY_OUTCOME_FAILURE,
             reason_code=reason,
             context=build_security_event_context(),
-            subject_user_id=user.id if user is not None else None,
-            subject_email=user.email if user is not None else None,
+            subject_user_id=subject_user_id,
+            subject_email=subject_email,
             identifier_hash=hash_identifier(identifier),
             metadata={"auth_method": AUTH_METHOD_PASSWORD},
         )

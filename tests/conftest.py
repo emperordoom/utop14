@@ -34,6 +34,12 @@ from app.services.payments import create_payment_attempt
 
 PROJECT_ROOT: Final = Path(__file__).resolve().parents[1]
 MIGRATIONS_DIR: Final = PROJECT_ROOT / "migrations"
+CONSTRAINED_POOL_OPTIONS: Final = {
+    "pool_pre_ping": True,
+    "pool_size": 1,
+    "max_overflow": 0,
+    "pool_timeout": 1,
+}
 RESET_TABLES: Final = (
     "security_events",
     "audit_logs",
@@ -89,7 +95,7 @@ def _database_app(tmp_path_factory: pytest.TempPathFactory) -> Flask:
         "testing",
         {
             "AVATAR_STORAGE_PATH": str(avatar_storage_path),
-            "SECURITY_EVENT_HASH_KEY": "unit-test-security-event-hash-key",
+            "SECURITY_EVENT_HASH_KEY": "unit-test-security-event-hash-key-0123456789",
         },
     )
     _assert_test_database(application)
@@ -113,6 +119,31 @@ def app(_database_app: Flask) -> Iterator[Flask]:
 def client(app: Flask) -> FlaskClient:
     """Return a test client bound to the test application."""
     return app.test_client()
+
+
+@pytest.fixture()
+def constrained_pool_app(
+    _database_app: Flask,
+    tmp_path: Path,
+) -> Iterator[Flask]:
+    """Application on the isolated test DB with a one-connection pool."""
+    application = create_app(
+        "testing",
+        {
+            "AVATAR_STORAGE_PATH": str(tmp_path / "avatars"),
+            "SECURITY_EVENT_HASH_KEY": "unit-test-security-event-hash-key-0123456789",
+            "SQLALCHEMY_ENGINE_OPTIONS": dict(CONSTRAINED_POOL_OPTIONS),
+        },
+    )
+    _assert_test_database(application)
+    with application.app_context():
+        _reset_tables()
+        try:
+            yield application
+        finally:
+            db.session.remove()
+            _reset_tables()
+            db.engine.dispose()
 
 
 @pytest.fixture()
