@@ -10,7 +10,7 @@ from app.admin import admin_bp
 from app.admin.forms import ActionForm, AdminUserProfileForm, AdminUserRoleForm
 from app.auth.permissions import role_required
 from app.models.user import ROLE_ADMIN, ROLES
-from app.services.audit import build_audit_context
+from app.services.audit import AuditError, build_audit_context
 from app.services.user_admin import (
     AdminUserFilters,
     UserAdminConflictError,
@@ -109,6 +109,8 @@ def user_profile_update(user_id: int) -> ResponseReturnValue:
         flash(str(exc), "error")
     except UserAdminError:
         flash("Account details could not be saved. Please try again.", "error")
+    except AuditError:
+        flash("Account details could not be saved. Please try again.", "error")
     else:
         flash(result.message, result.category)
 
@@ -140,6 +142,8 @@ def user_role_update(user_id: int) -> ResponseReturnValue:
         flash(str(exc), "error")
     except UserAdminError:
         flash("Account role could not be updated. Please try again.", "error")
+    except AuditError:
+        flash("Account role could not be updated. Please try again.", "error")
     else:
         flash(result.message, result.category)
 
@@ -167,6 +171,8 @@ def _change_status(user_id: int, *, is_active: bool) -> ResponseReturnValue:
     except UserAdminStateError as exc:
         flash(str(exc), "error")
     except UserAdminError:
+        flash("Account status could not be updated. Please try again.", "error")
+    except AuditError:
         flash("Account status could not be updated. Please try again.", "error")
     else:
         flash(result.message, result.category)

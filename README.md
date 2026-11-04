@@ -2,12 +2,14 @@
 
 UTOP14 is a streetwear e-commerce platform built for Well Architected SOC 14.
 
-**Current milestone:** Milestone 7 — payment integration (simulated only). The
-storefront, catalog, authentication, RBAC, cart, checkout and order lifecycle
-from M1–M6 remain in place. Orders can now have multiple simulated payment
-attempts with server-derived IDR amounts, a 15-minute deadline and a single
-successful payment per order. Real payment gateways and refunds are not part of
-this milestone.
+**Project status:**
+
+- Integrated into `main`: M1–M11.
+- Implemented and verified on `feature/admin-audit-log`, pending integration:
+  M12 Admin User Management, M13 Admin Audit Log, and M13.2 Audit Log
+  Hardening.
+- Current: M13.5 CI validation and final integration readiness review.
+- Pending and not started: M14 and later milestones.
 
 ## Technology
 

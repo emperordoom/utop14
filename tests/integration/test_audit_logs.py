@@ -139,6 +139,42 @@ def test_profile_update_records_audit_event(
     assert log.request_id == response.headers["X-Request-ID"]
 
 
+def test_malformed_legacy_actor_email_is_handled_without_mutation(
+    app: Flask,
+    client: FlaskClient,
+    make_user,
+    login,
+    csrf_token,
+) -> None:
+    admin = _admin(make_user, email="legacy-admin@example.com")
+    target = make_user(email="legacy-target@example.com", full_name="Before Legacy")
+    login(admin.email)
+
+    # Simulate malformed legacy data that predates current validation rules.
+    admin.email = ""
+    db.session.commit()
+    token = csrf_token(f"/admin/users/{target.id}")
+
+    response = client.post(
+        f"/admin/users/{target.id}/profile",
+        data={
+            "csrf_token": token,
+            "full_name": "After Legacy",
+            "email": "after-legacy@example.com",
+        },
+        follow_redirects=True,
+    )
+
+    db.session.refresh(target)
+    assert target.full_name == "Before Legacy"
+    assert target.email == "legacy-target@example.com"
+    assert _audit_count() == 0
+    body = response.get_data(as_text=True).lower()
+    assert "could not be saved" in body
+    assert "sqlalchemy" not in body
+    assert "audit_logs" not in body
+
+
 def test_role_change_records_audit_event(
     app: Flask,
     client: FlaskClient,
