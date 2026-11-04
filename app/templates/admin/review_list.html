@@ -1,0 +1,176 @@
+{% extends "base.html" %}
+
+{% from "components/review_badges.html" import review_status_badge, star_rating %}
+{% from "components/pagination.html" import render_pagination %}
+
+{% block title %}Reviews — Admin — UTOP14{% endblock %}
+
+{% block meta_description %}Admin moderation queue for verified-purchase product reviews.{% endblock %}
+
+{% block styles %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/auth.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/reviews.css') }}">
+{% endblock %}
+
+{% block body_class %}page-admin-reviews{% endblock %}
+
+{% block content %}
+  {% include "components/admin_nav.html" %}
+
+  <section class="staff-hero" aria-labelledby="review-list-title">
+    <div class="container">
+      <p class="section-kicker">Community / Review moderation</p>
+      <h1 class="staff-hero__title" id="review-list-title">
+        Moderate the <em>verdicts.</em>
+      </h1>
+      <p class="staff-hero__copy">
+        Every review is tied to a delivered, paid order. Hide inappropriate
+        reviews with a written reason or publish a hidden review again. Public
+        averages and distributions only include published reviews.
+      </p>
+      <div class="staff-hero__actions">
+        <a class="button button--ghost" href="{{ url_for('admin.dashboard') }}">Admin dashboard</a>
+        <a class="button button--ghost" href="{{ url_for('admin.order_list') }}">Order queue</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="section staff-section" aria-labelledby="review-queue-title">
+    <div class="container">
+      <div class="section-heading">
+        <p class="section-kicker">01 / Review queue</p>
+        <h2 class="section-title" id="review-queue-title">Product <em>reviews.</em></h2>
+      </div>
+
+      <form class="admin-filters" method="get" action="{{ url_for('admin.review_list') }}">
+        <div class="admin-filters__field">
+          <label class="form-label" for="review-status">Status</label>
+          <select class="form-control" id="review-status" name="status">
+            <option value=""{% if filters.status is none %} selected{% endif %}>All statuses</option>
+            {% for status in statuses %}
+              <option value="{{ status }}"{% if filters.status == status %} selected{% endif %}>
+                {{ status|title }}
+              </option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="admin-filters__field">
+          <label class="form-label" for="review-rating">Rating</label>
+          <select class="form-control" id="review-rating" name="rating">
+            <option value=""{% if filters.rating is none %} selected{% endif %}>All ratings</option>
+            {% for rating in ratings %}
+              <option value="{{ rating }}"{% if filters.rating == rating %} selected{% endif %}>
+                {{ rating }} star{% if rating != 1 %}s{% endif %}
+              </option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="admin-filters__field">
+          <label class="form-label" for="review-product">Product</label>
+          <input
+            class="form-control"
+            id="review-product"
+            name="product"
+            type="search"
+            value="{{ filters.product or '' }}"
+            maxlength="80"
+            placeholder="Name or slug"
+            autocomplete="off"
+          >
+        </div>
+
+        <div class="admin-filters__field">
+          <label class="form-label" for="review-query">Reviewer</label>
+          <input
+            class="form-control"
+            id="review-query"
+            name="q"
+            type="search"
+            value="{{ filters.query or '' }}"
+            maxlength="80"
+            placeholder="Name or email"
+            autocomplete="off"
+          >
+        </div>
+
+        <div class="admin-filters__actions">
+          <button class="button button--primary" type="submit">Apply filters</button>
+          <a class="text-link" href="{{ url_for('admin.review_list') }}">Reset</a>
+        </div>
+      </form>
+
+      {% if pagination.items %}
+        <div class="admin-toolbar">
+          <p class="mono">{{ pagination.total }} review{% if pagination.total != 1 %}s{% endif %}</p>
+          <p class="mono">Page {{ pagination.page }} / {{ pagination.pages }}</p>
+        </div>
+
+        <div class="admin-table-wrap">
+          <table class="admin-table admin-table--reviews">
+            <caption class="visually-hidden">Product reviews with moderation status</caption>
+            <thead>
+              <tr>
+                <th scope="col">Submitted</th>
+                <th scope="col">Product</th>
+                <th scope="col">Reviewer</th>
+                <th scope="col">Rating</th>
+                <th scope="col">Status</th>
+                <th scope="col">Moderated</th>
+                <th scope="col"><span class="visually-hidden">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for review in pagination.items %}
+                <tr>
+                  <td class="mono">{{ review.created_at.strftime("%d %b %Y") }}</td>
+                  <td>
+                    <a class="text-link" href="{{ url_for('admin.review_detail', review_id=review.id) }}">
+                      {{ review.product.name }}
+                    </a>
+                    <p class="admin-meta mono">{{ review.product.slug }}</p>
+                  </td>
+                  <td>
+                    <p>{{ review.user.full_name or "UTOP14 customer" }}</p>
+                    <p class="admin-meta mono">{{ review.user.email }}</p>
+                  </td>
+                  <td>{{ star_rating(review.rating, label=(review.rating ~ " out of 5 stars")) }}</td>
+                  <td>{{ review_status_badge(review.status) }}</td>
+                  <td>
+                    {% if review.moderated_at %}
+                      <p>{{ review.moderated_by.full_name if review.moderated_by else "Admin" }}</p>
+                      <p class="admin-meta mono">{{ review.moderated_at.strftime("%d %b %Y") }}</p>
+                    {% else %}
+                      <p class="admin-meta">Not moderated</p>
+                    {% endif %}
+                  </td>
+                  <td>
+                    <a class="text-link" href="{{ url_for('admin.review_detail', review_id=review.id) }}">
+                      Open
+                      <span aria-hidden="true">↗</span>
+                    </a>
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+
+        {{ render_pagination(pagination, 'admin.review_list', query_params) }}
+      {% else %}
+        <div class="admin-empty">
+          <p class="mono">No reviews</p>
+          <h2>Nothing to <em>moderate.</em></h2>
+          <p>No reviews match this view. Clear the filters to widen the queue.</p>
+          <a class="button button--ghost" href="{{ url_for('admin.review_list') }}">Clear filters</a>
+        </div>
+      {% endif %}
+    </div>
+  </section>
+{% endblock %}
+
+{% block scripts %}
+  <script src="{{ url_for('static', filename='js/admin.js') }}" defer></script>
+{% endblock %}

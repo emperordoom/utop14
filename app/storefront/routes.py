@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from flask import abort, render_template, request
+from flask_login import current_user
 
 from app.cart.forms import AddToCartForm
+from app.reviews.forms import ReviewForm
 from app.services.catalog import (
     CatalogFilters,
     get_catalog_page,
@@ -13,6 +15,11 @@ from app.services.catalog import (
     get_related_products,
     list_categories,
     list_products,
+)
+from app.services.reviews import (
+    get_product_reviews,
+    get_review_eligibility,
+    get_review_summary,
 )
 from app.storefront import storefront_bp
 from app.storefront.content import FEATURED_COLLECTION
@@ -63,9 +70,21 @@ def product_detail(slug: str) -> str:
     if product is None:
         abort(404)
 
+    review_page_number = max(1, request.args.get("page", 1, type=int) or 1)
+    review_eligibility = None
+    review_form = None
+    if current_user.is_authenticated:
+        review_eligibility = get_review_eligibility(current_user.id, product.id)
+        if review_eligibility.eligible:
+            review_form = ReviewForm()
+
     return render_template(
         "storefront/product.html",
         product=product,
         related_products=get_related_products(product),
         add_to_cart_form=AddToCartForm(),
+        review_page=get_product_reviews(product.id, page=review_page_number),
+        review_summary=get_review_summary(product.id),
+        review_eligibility=review_eligibility,
+        review_form=review_form,
     )

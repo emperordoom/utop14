@@ -22,6 +22,7 @@ from app.models.base import Base, TimestampMixin, validate_image_path
 if TYPE_CHECKING:
     from app.models.category import Category
     from app.models.product_image import ProductImage
+    from app.models.product_review import ProductReview
     from app.models.product_variant import ProductVariant
 
 
@@ -65,6 +66,11 @@ class Product(TimestampMixin, Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
         order_by="ProductImage.position",
+    )
+    reviews: Mapped[list[ProductReview]] = relationship(
+        back_populates="product",
+        passive_deletes=True,
+        order_by="ProductReview.created_at.desc(), ProductReview.id.desc()",
     )
 
     @validates("image_path")

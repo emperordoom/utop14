@@ -178,3 +178,14 @@ class PaymentProofRejectForm(FlaskForm):
         validators=[DataRequired(), Length(max=500)],
     )
     submit = SubmitField("Reject proof")
+
+
+class ReviewModerationForm(FlaskForm):
+    """Hide a review with a bounded moderation reason."""
+
+    reason = TextAreaField(
+        "Moderation reason",
+        filters=[_strip],
+        validators=[Optional(), Length(max=500)],
+    )
+    submit = SubmitField("Hide review")

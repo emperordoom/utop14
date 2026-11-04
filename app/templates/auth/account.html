@@ -88,6 +88,7 @@
             Shop the drop
             <span class="button__arrow" aria-hidden="true">→</span>
           </a>
+          <a class="button button--ghost" href="{{ url_for('reviews.history') }}">My reviews</a>
           {% if current_user.is_admin %}
             <a class="button button--ghost" href="{{ url_for('admin.dashboard') }}">Admin dashboard</a>
           {% elif current_user.is_operator %}

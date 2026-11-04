@@ -79,6 +79,7 @@ def _register_blueprints(app: Flask) -> None:
     from app.orders import orders_bp
     from app.payments import payments_bp
     from app.payments import routes as _payment_routes  # noqa: F401
+    from app.reviews import reviews_bp
     from app.storefront import storefront_bp
 
     app.register_blueprint(main_bp)
@@ -89,6 +90,7 @@ def _register_blueprints(app: Flask) -> None:
     app.register_blueprint(checkout_bp)
     app.register_blueprint(orders_bp)
     app.register_blueprint(payments_bp)
+    app.register_blueprint(reviews_bp)
 
 
 def _register_models() -> None:

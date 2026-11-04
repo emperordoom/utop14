@@ -1,0 +1,13 @@
+{% macro review_status_badge(status) -%}
+  <span class="review-status review-status--{{ status }}">
+    {%- if status == "published" -%}Published{%- else -%}Hidden{%- endif -%}
+  </span>
+{%- endmacro %}
+
+{% macro star_rating(rating, label=None) -%}
+  <span class="review-stars" role="img" aria-label="{{ label or (rating ~ ' out of 5 stars') }}">
+    {%- for value in range(1, 6) -%}
+      <span class="review-stars__star{% if value <= rating %} review-stars__star--on{% endif %}" aria-hidden="true">★</span>
+    {%- endfor -%}
+  </span>
+{%- endmacro %}
