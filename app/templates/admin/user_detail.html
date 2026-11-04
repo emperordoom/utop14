@@ -1,0 +1,209 @@
+{% extends "base.html" %}
+
+{% from "components/user_badges.html" import user_role_badge, user_status_badge %}
+
+{% block title %}{{ user.full_name or "Account" }} — Users — Admin — UTOP14{% endblock %}
+
+{% block meta_description %}Manage one UTOP14 account, role and activation state.{% endblock %}
+
+{% block styles %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/auth.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css') }}">
+{% endblock %}
+
+{% block body_class %}page-admin-users{% endblock %}
+
+{% block content %}
+  {% include "components/admin_nav.html" %}
+
+  <section class="staff-hero" aria-labelledby="user-detail-title">
+    <div class="container">
+      <nav class="admin-breadcrumb" aria-label="Breadcrumb">
+        <a href="{{ url_for('admin.user_list') }}">Users</a>
+        <span aria-hidden="true">/</span>
+        <span aria-current="page">Account #{{ user.id }}</span>
+      </nav>
+      <p class="section-kicker">Accounts / Directory / Detail</p>
+      <div class="admin-detail-heading">
+        <div>
+          <h1 class="staff-hero__title" id="user-detail-title">
+            {{ user.full_name or "Unnamed account" }}<em>.</em>
+          </h1>
+          <p class="admin-meta mono">{{ user.email }} · Account #{{ user.id }}</p>
+        </div>
+        <div class="user-detail-badges">
+          {{ user_role_badge(user.role) }}
+          {{ user_status_badge(user.is_active) }}
+        </div>
+      </div>
+      <div class="staff-hero__actions">
+        <a class="button button--ghost" href="{{ url_for('admin.user_list') }}">Back to directory</a>
+        <a class="button button--ghost" href="{{ url_for('admin.order_list') }}">Order queue</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="section staff-section" aria-labelledby="user-edit-title">
+    <div class="container admin-detail-grid">
+      <div class="admin-form-card">
+        <div class="order-panel__header">
+          <p class="mono" id="user-edit-title">Account details</p>
+          <p class="mono">Admin</p>
+        </div>
+
+        <form class="admin-form" method="post" action="{{ url_for('admin.user_profile_update', user_id=user.id) }}" novalidate>
+          {{ profile_form.hidden_tag() }}
+
+          <div class="admin-form__field">
+            <label class="form-label" for="user-full-name">Full name</label>
+            <input
+              class="form-control{% if profile_form.full_name.errors %} form-control--invalid{% endif %}"
+              id="user-full-name"
+              name="full_name"
+              type="text"
+              value="{{ profile_form.full_name.data or '' }}"
+              maxlength="120"
+              autocomplete="name"
+              required
+            >
+            {% if profile_form.full_name.errors %}
+              <p class="form-error">{{ profile_form.full_name.errors[0] }}</p>
+            {% endif %}
+          </div>
+
+          <div class="admin-form__field">
+            <label class="form-label" for="user-email">Email</label>
+            <input
+              class="form-control{% if profile_form.email.errors %} form-control--invalid{% endif %}"
+              id="user-email"
+              name="email"
+              type="email"
+              value="{{ profile_form.email.data or '' }}"
+              maxlength="255"
+              autocomplete="email"
+              required
+            >
+            {% if profile_form.email.errors %}
+              <p class="form-error">{{ profile_form.email.errors[0] }}</p>
+            {% endif %}
+          </div>
+
+          <p class="admin-note">
+            Only the display name and email can be changed here. Password
+            material is never displayed, accepted or reset from this screen.
+          </p>
+
+          <button class="button button--primary" type="submit">
+            Save account
+            <span class="button__arrow" aria-hidden="true">→</span>
+          </button>
+        </form>
+      </div>
+
+      <aside class="admin-side-card">
+        <div class="order-panel__header">
+          <p class="mono">Access control</p>
+          <p class="mono">Server enforced</p>
+        </div>
+
+        <dl class="admin-meta-list">
+          <div>
+            <dt>Role</dt>
+            <dd>{{ user_role_badge(user.role) }}</dd>
+          </div>
+          <div>
+            <dt>Status</dt>
+            <dd>{{ user_status_badge(user.is_active) }}</dd>
+          </div>
+          <div>
+            <dt>Member since</dt>
+            <dd>{{ user.created_at.strftime("%d %b %Y, %H:%M UTC") }}</dd>
+          </div>
+          <div>
+            <dt>Last sign-in</dt>
+            <dd>
+              {% if user.last_login_at %}
+                {{ user.last_login_at.strftime("%d %b %Y, %H:%M UTC") }}
+              {% else %}
+                Never
+              {% endif %}
+            </dd>
+          </div>
+          <div>
+            <dt>Avatar</dt>
+            <dd>{{ "Private avatar on file" if user.avatar_filename else "Default initials" }}</dd>
+          </div>
+        </dl>
+
+        <div class="account-divider" role="presentation"></div>
+
+        <div class="order-panel__header">
+          <p class="mono">Role</p>
+          <p class="mono">Hierarchy</p>
+        </div>
+
+        {% if can_change_role %}
+          <form class="admin-form" method="post" action="{{ url_for('admin.user_role_update', user_id=user.id) }}">
+            {{ role_form.hidden_tag() }}
+            <div class="admin-form__field">
+              {{ role_form.role.label(class_="form-label") }}
+              {{ role_form.role(class_="form-control") }}
+            </div>
+            <button class="button button--ghost" type="submit">Update role</button>
+          </form>
+        {% else %}
+          <p class="admin-note">
+            You cannot change your own admin role. Another admin must perform
+            that change if your access needs to be reduced.
+          </p>
+        {% endif %}
+
+        <div class="account-divider" role="presentation"></div>
+
+        <div class="order-panel__header">
+          <p class="mono">Activation</p>
+          <p class="mono">{{ "Live" if user.is_active else "Paused" }}</p>
+        </div>
+
+        {% if can_deactivate %}
+          <form
+            class="admin-form"
+            method="post"
+            action="{{ url_for('admin.user_deactivate', user_id=user.id) }}"
+            data-confirm="Deactivate {{ user.email }}? Their existing session will be invalidated."
+          >
+            {{ status_form.hidden_tag() }}
+            <p class="admin-note">
+              Deactivation keeps every order and review record intact and blocks
+              future sign-ins immediately. It does not delete the account.
+            </p>
+            <button class="button button--danger" type="submit">Deactivate account</button>
+          </form>
+        {% elif user.is_active %}
+          <p class="admin-note">
+            This account cannot be deactivated here because it would remove the
+            last or your own administrative access.
+          </p>
+        {% else %}
+          <form class="admin-form" method="post" action="{{ url_for('admin.user_activate', user_id=user.id) }}">
+            {{ status_form.hidden_tag() }}
+            <p class="admin-note">
+              Reactivation restores sign-in access. The account keeps its role
+              and all historical records.
+            </p>
+            <button class="button button--primary" type="submit">Activate account</button>
+          </form>
+        {% endif %}
+
+        <p class="admin-note">
+          At least one active admin must always remain. Sensitive changes are
+          constrained by server-side policy on every request.
+        </p>
+      </aside>
+    </div>
+  </section>
+{% endblock %}
+
+{% block scripts %}
+  <script src="{{ url_for('static', filename='js/admin.js') }}" defer></script>
+{% endblock %}

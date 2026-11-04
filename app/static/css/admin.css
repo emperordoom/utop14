@@ -724,3 +724,45 @@
     flex-wrap: wrap;
   }
 }
+
+/* Account directory and access control */
+.admin-filters--users {
+  grid-template-columns:
+    minmax(14rem, 1.6fr) minmax(9rem, 0.8fr) minmax(9rem, 0.8fr) auto;
+}
+
+.admin-table--users {
+  min-width: 56rem;
+}
+
+.user-detail-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.role-badge--admin {
+  border-color: rgb(163 230 53 / 45%);
+  color: var(--acid);
+}
+
+.role-badge--operator {
+  border-color: rgb(147 197 253 / 45%);
+  color: #93c5fd;
+}
+
+.role-badge--customer {
+  border-color: var(--line);
+  color: var(--muted);
+}
+
+@media (max-width: 760px) {
+  .admin-filters--users {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .user-detail-badges {
+    align-items: flex-start;
+  }
+}

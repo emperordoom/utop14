@@ -46,6 +46,13 @@
             {% if endpoint.startswith('admin.review') %}aria-current="page"{% endif %}
           >Reviews</a>
         </li>
+        <li>
+          <a
+            class="admin-nav__link{% if endpoint.startswith('admin.user') %} admin-nav__link--active{% endif %}"
+            href="{{ url_for('admin.user_list') }}"
+            {% if endpoint.startswith('admin.user') %}aria-current="page"{% endif %}
+          >Users</a>
+        </li>
       {% endif %}
       <li>
         <a
