@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time
 from typing import Any, Final
 
 from sqlalchemy import or_, select
@@ -280,13 +280,9 @@ def list_audit_logs(
             AuditLog.created_at >= datetime.combine(filters.date_from, time.min, tzinfo=UTC)
         )
     if filters.date_to is not None:
+        # Inclusive end-of-day comparison avoids overflowing at date.max.
         conditions.append(
-            AuditLog.created_at
-            < datetime.combine(
-                filters.date_to + timedelta(days=1),
-                time.min,
-                tzinfo=UTC,
-            )
+            AuditLog.created_at <= datetime.combine(filters.date_to, time.max, tzinfo=UTC)
         )
 
     statement = (

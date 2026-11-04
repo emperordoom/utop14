@@ -513,27 +513,82 @@ policy exists.
 
 ### Trusted proxy configuration
 
-`TRUSTED_PROXY_HOPS` defaults to `0`, so `X-Forwarded-For` is ignored and the
-application records the direct peer address. Behind Nginx, enable exactly the
-number of proxy hops in front of Gunicorn. A simple single-Nginx topology uses:
+`TRUSTED_PROXY_HOPS` defaults to `0`. With the default, `ProxyFix` is not
+enabled, `X-Forwarded-For` is ignored, and the application records the direct
+peer address. Enable forwarded headers only when the application is actually
+behind the stated number of trusted proxies.
+
+`ProxyFix(x_for=N)` trusts the rightmost `N` forwarded addresses. The configured
+hop count must match the real trusted proxy chain; an incorrect count can record
+the proxy address or an attacker-controlled address as the client IP. No proxy
+configuration should ever let untrusted clients control values the application
+treats as trusted.
+
+#### Single trusted Nginx proxy
+
+For exactly one trusted Nginx proxy in front of Gunicorn, overwrite the forwarded
+header with the immediate client address:
 
 ```bash
 TRUSTED_PROXY_HOPS=1
 ```
 
-Nginx must overwrite the forwarded header rather than append client-supplied
-values:
-
 ```nginx
-proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+proxy_set_header X-Forwarded-For $remote_addr;
 proxy_set_header X-Request-ID $request_id;
 ```
 
-Do not set `TRUSTED_PROXY_HOPS` greater than the real number of trusted proxies.
-With the default `0`, a spoofed `X-Forwarded-For` header has no effect. The
-application generates a server-side request ID for every request and returns it
-in the `X-Request-ID` response header; a valid inbound request ID is reused only
-when trusted proxy hops are configured.
+`$remote_addr` is the address of the client connecting directly to Nginx and
+overwrites any inbound `X-Forwarded-For` value. This is the least ambiguous
+single-proxy configuration.
+
+`$proxy_add_x_forwarded_for` is a different behavior: it appends the connecting
+address to an existing forwarded chain. With one proxy and
+`TRUSTED_PROXY_HOPS=1`, `ProxyFix` still uses only the rightmost address, so
+client-supplied entries to the left are ignored; however, the request header
+retains the untrusted chain. Do not treat the whole chain as trusted unless the
+deployment has actually validated it.
+
+#### Multiple trusted proxies
+
+A multi-proxy deployment normally uses `$proxy_add_x_forwarded_for` at each
+trusted proxy so each hop appends its immediate peer. Set
+`TRUSTED_PROXY_HOPS` to the exact number of trusted proxies; for example, two
+trusted proxies use `TRUSTED_PROXY_HOPS=2`. `ProxyFix` then selects the address
+`N` positions from the right and ignores values further left. Every trusted hop
+must append consistently, and the edge proxy must prevent untrusted clients from
+injecting values into the portion of the chain the application trusts.
+
+The same trust rules apply to inbound `X-Request-ID`: the application reuses a
+valid inbound UUID only when trusted proxy hops are configured. A proxy should
+overwrite it with a server-generated value (`$request_id`) rather than passing
+an arbitrary client-supplied identifier.
+
+### Audit technical debt
+
+- **F-01 — actor/target filter performance:** current filters use partial
+  `ILIKE '%term%'` on snapshot emails and joined current full names. The
+  existing `(actor_id, created_at)` and `(target_user_id, created_at)` indexes do
+  not accelerate those predicates. No `pg_trgm` extension or GIN migration is
+  added without realistic volume/query-plan evidence; benchmark before changing
+  the schema.
+- **F-04 — unknown IP sentinel:** an unavailable or malformed remote address is
+  stored as `0.0.0.0`; this is a sentinel, not a guaranteed real client address.
+- **F-06 — database privilege boundary:** the trigger blocks ordinary row-level
+  UPDATE/DELETE, but table owners, superusers, `TRUNCATE`, and a compromised
+  privileged account remain outside its protection. Runtime DB roles are not
+  separated by this application.
+- **F-08 — JSONB validation:** PostgreSQL enforces JSON object type; flatness and
+  sensitive-key exclusion are application-level controls. Direct privileged DB
+  inserts are outside that allowlist.
+- **F-09 — historical name search:** deleted users retain email snapshots, but
+  current-name search no longer has a User row to join. Email search remains.
+- **F-10 — no-op transaction contract:** no-op service paths roll back to release
+  row locks; this assumes the service owns the top-level transaction.
+- **F-11 — request ID trust:** inbound request IDs depend on correct proxy
+  overwrite behavior and are not an authorization control.
+- **F-12 — audit scope:** login, logout, password reset, order, payment, and
+  failed-action auditing are outside M13 scope.
 
 ## Production notes
 

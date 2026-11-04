@@ -26,6 +26,12 @@ def test_filters_normalize_and_trim_values() -> None:
     assert filters.query == "need"
 
 
+def test_filters_accept_maximum_date() -> None:
+    filters = AdminAuditFilters.from_values(date_to="9999-12-31")
+
+    assert filters.date_to == date.max
+
+
 def test_filters_reject_unknown_action_and_invalid_dates() -> None:
     filters = AdminAuditFilters.from_values(
         action="user.deleted",

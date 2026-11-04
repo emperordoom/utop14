@@ -595,6 +595,29 @@ def test_audit_filters_date_range(
     assert html.count('class="audit-action') == 1
 
 
+def test_audit_filter_accepts_maximum_date_without_overflow(
+    app: Flask,
+    client: FlaskClient,
+    make_user,
+    login,
+) -> None:
+    admin = _admin(make_user)
+    target = make_user(email="max-date-target@example.com")
+    _add_log(
+        admin,
+        target,
+        created_at=datetime(9999, 12, 31, 12, 0, tzinfo=UTC),
+    )
+    login(admin.email)
+
+    response = client.get("/admin/audit-logs?date_from=9999-12-31&date_to=9999-12-31")
+
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert target.email in html
+    assert html.count('class="audit-action') == 1
+
+
 def test_audit_filter_escapes_like_wildcards(
     app: Flask,
     client: FlaskClient,
