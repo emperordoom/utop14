@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+
+{% from "components/review_badges.html" import review_status_badge, star_rating %}
+{% from "components/pagination.html" import render_pagination %}
+
+{% block title %}My reviews — UTOP14{% endblock %}
+
+{% block meta_description %}Your verified UTOP14 product reviews, including hidden reviews.{% endblock %}
+
+{% block styles %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/auth.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/reviews.css') }}">
+{% endblock %}
+
+{% block body_class %}page-account-reviews{% endblock %}
+
+{% block content %}
+  <section class="section account-page review-history-page" aria-labelledby="review-history-title">
+    <div class="container">
+      <nav class="admin-breadcrumb" aria-label="Breadcrumb">
+        <a href="{{ url_for('auth.account') }}">Account</a>
+        <span aria-hidden="true">/</span>
+        <span aria-current="page">Reviews</span>
+      </nav>
+
+      <div class="section-heading section-heading--split">
+        <div>
+          <p class="section-kicker">Account / Reviews</p>
+          <h1 class="section-title" id="review-history-title">Your <em>verdicts.</em></h1>
+        </div>
+        <a class="text-link" href="{{ url_for('storefront.shop') }}">Shop the drop <span aria-hidden="true">↗</span></a>
+      </div>
+
+      <p class="account-copy">
+        Every review is tied to a delivered, paid order. Hidden reviews stay
+        visible here for you, but they do not appear on the product page or in
+        public rating aggregates until an admin publishes them again.
+      </p>
+
+      {% if pagination.items %}
+        <div class="review-history">
+          {% for review in pagination.items %}
+            <article class="review-history__row">
+              <div class="review-history__identity">
+                <a class="review-history__product" href="{{ url_for('storefront.product_detail', slug=review.product.slug) }}">
+                  {{ review.product.name }}
+                </a>
+                <p class="mono">{{ review.created_at.strftime("%d %b %Y, %H:%M UTC") }}</p>
+              </div>
+              <div class="review-history__score">
+                {{ star_rating(review.rating, label=(review.rating ~ " out of 5 stars")) }}
+                {{ review_status_badge(review.status) }}
+              </div>
+              <p class="review-history__comment">{{ review.comment }}</p>
+              <div class="review-history__actions">
+                <a class="text-link" href="{{ url_for('reviews.edit', review_id=review.id) }}">
+                  Edit review
+                  <span aria-hidden="true">↗</span>
+                </a>
+              </div>
+            </article>
+          {% endfor %}
+        </div>
+
+        {{ render_pagination(pagination, 'reviews.history') }}
+      {% else %}
+        <div class="review-empty">
+          <p class="mono">No reviews yet</p>
+          <h2>Nothing <em>reported.</em></h2>
+          <p>Reviews unlock after an order is delivered and paid.</p>
+          <a class="button button--primary" href="{{ url_for('storefront.shop') }}">
+            Shop the drop
+            <span class="button__arrow" aria-hidden="true">→</span>
+          </a>
+        </div>
+      {% endif %}
+    </div>
+  </section>
+{% endblock %}

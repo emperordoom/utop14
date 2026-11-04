@@ -23,10 +23,12 @@ from app.models.base import Base, TimestampMixin
 if TYPE_CHECKING:
     from app.models.payment import Payment
     from app.models.product import Product
+    from app.models.product_review import ProductReview
     from app.models.product_variant import ProductVariant
     from app.models.user import User
 
 ORDER_STATUS_PENDING: Final = "pending"
+ORDER_STATUS_DELIVERED: Final = "delivered"
 ORDER_STATUS_CANCELLED: Final = "cancelled"
 ORDER_STATUSES: Final[tuple[str, ...]] = (
     "pending",
@@ -173,6 +175,10 @@ class OrderItem(Base):
     order: Mapped[Order] = relationship(back_populates="items")
     product: Mapped[Product | None] = relationship()
     variant: Mapped[ProductVariant | None] = relationship()
+    review: Mapped[ProductReview | None] = relationship(
+        back_populates="order_item",
+        uselist=False,
+    )
 
     def __repr__(self) -> str:
         return f"<OrderItem order_id={self.order_id!r} sku={self.sku!r}>"

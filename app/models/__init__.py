@@ -15,6 +15,7 @@ from app.models.payment import Payment
 from app.models.payment_proof import PaymentProof
 from app.models.product import Product
 from app.models.product_image import ProductImage
+from app.models.product_review import ProductReview
 from app.models.product_variant import ProductVariant
 from app.models.user import User
 
@@ -29,6 +30,7 @@ __all__ = [
     "PaymentProof",
     "Product",
     "ProductImage",
+    "ProductReview",
     "ProductVariant",
     "User",
 ]

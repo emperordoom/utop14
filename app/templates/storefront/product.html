@@ -1,5 +1,7 @@
 {% extends "base.html" %}
 
+{% from "components/review_badges.html" import star_rating %}
+
 {% block title %}{{ product.name }} — UTOP14{% endblock %}
 
 {% block meta_description %}{{ product.description|truncate(155) }}{% endblock %}
@@ -7,6 +9,8 @@
 {% block styles %}
   <link rel="stylesheet" href="{{ url_for('static', filename='css/catalog.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/cart.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/auth.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/reviews.css') }}">
 {% endblock %}
 
 {% block body_class %}page-product{% endblock %}
@@ -169,6 +173,158 @@
               <span class="button__arrow" aria-hidden="true">→</span>
             </a>
           </div>
+        {% endif %}
+      </div>
+    </div>
+  </section>
+
+  <section class="section product-reviews" id="reviews" aria-labelledby="reviews-title">
+    <div class="container">
+      <div class="section-heading section-heading--split">
+        <div>
+          <p class="section-kicker">Community / Verified purchases</p>
+          <h2 class="section-title" id="reviews-title">Worn and <em>rated.</em></h2>
+        </div>
+        {% if review_summary.has_reviews %}
+          <div class="review-score">
+            <p class="review-score__average">{{ "%.1f"|format(review_summary.average) }}</p>
+            <div>
+              {{ star_rating(review_summary.average|round|int, label=("Average rating " ~ review_summary.average ~ " out of 5")) }}
+              <p class="mono">
+                {{ review_summary.total }} published review{% if review_summary.total != 1 %}s{% endif %}
+              </p>
+            </div>
+          </div>
+        {% endif %}
+      </div>
+
+      {% if review_summary.has_reviews %}
+        <div class="review-overview">
+          <div class="review-distribution" aria-label="Rating distribution">
+            <p class="mono review-distribution__title">Rating breakdown</p>
+            {% for value in [5, 4, 3, 2, 1] %}
+              <div class="review-distribution__row">
+                <span class="review-distribution__label mono">{{ value }} ★</span>
+                <span class="review-distribution__track" aria-hidden="true">
+                  <span class="review-distribution__fill" style="width: {{ review_summary.percentage(value) }}%"></span>
+                </span>
+                <span class="review-distribution__count mono">{{ review_summary.distribution[value] }}</span>
+              </div>
+            {% endfor %}
+          </div>
+
+          <div class="review-list">
+            {% for review in review_page.items %}
+              <article class="review-card">
+                <div class="review-card__head">
+                  <div>
+                    <p class="review-card__author">{{ review.user.full_name or "UTOP14 customer" }}</p>
+                    <p class="review-card__meta mono">
+                      {{ review.created_at.strftime("%d %b %Y") }}
+                    </p>
+                  </div>
+                  <div class="review-card__score">
+                    {{ star_rating(review.rating, label=(review.rating ~ " out of 5 stars")) }}
+                    <span class="review-verified">Verified buyer</span>
+                  </div>
+                </div>
+                <p class="review-card__comment">{{ review.comment }}</p>
+              </article>
+            {% endfor %}
+          </div>
+        </div>
+
+        {% if review_page.pages > 1 %}
+          <nav class="pagination review-pagination" aria-label="Review pagination">
+            <ul class="pagination__list" role="list">
+              {% if review_page.has_prev %}
+                <li>
+                  <a class="pagination__link" href="{{ url_for('storefront.product_detail', slug=product.slug, page=review_page.prev_num, _anchor='reviews') }}">Previous</a>
+                </li>
+              {% endif %}
+
+              {% for page_num in review_page.iter_pages(left_edge=1, left_current=1, right_current=2, right_edge=1) %}
+                {% if page_num %}
+                  {% if page_num == review_page.page %}
+                    <li><span class="pagination__link pagination__link--current" aria-current="page">{{ page_num }}</span></li>
+                  {% else %}
+                    <li>
+                      <a class="pagination__link" href="{{ url_for('storefront.product_detail', slug=product.slug, page=page_num, _anchor='reviews') }}">{{ page_num }}</a>
+                    </li>
+                  {% endif %}
+                {% else %}
+                  <li><span class="pagination__ellipsis" aria-hidden="true">…</span></li>
+                {% endif %}
+              {% endfor %}
+
+              {% if review_page.has_next %}
+                <li>
+                  <a class="pagination__link" href="{{ url_for('storefront.product_detail', slug=product.slug, page=review_page.next_num, _anchor='reviews') }}">Next</a>
+                </li>
+              {% endif %}
+            </ul>
+          </nav>
+        {% endif %}
+      {% else %}
+        <div class="review-empty">
+          <p class="mono">No published reviews</p>
+          <h3>Be the first to <em>report back.</em></h3>
+          <p>Reviews open after a verified purchase is delivered and paid.</p>
+        </div>
+      {% endif %}
+
+      <div class="review-form-panel" id="write-review">
+        {% if not current_user.is_authenticated %}
+          <p class="mono">Verified reviews</p>
+          <h3>Sign in to <em>review.</em></h3>
+          <p>Only signed-in customers with a delivered, paid order can review this piece.</p>
+          <a class="button button--primary" href="{{ url_for('auth.login', next=request.path) }}">
+            Sign in
+            <span class="button__arrow" aria-hidden="true">→</span>
+          </a>
+        {% elif review_form %}
+          <div class="review-form-panel__head">
+            <div>
+              <p class="mono">Verified review</p>
+              <h3>Write the <em>verdict.</em></h3>
+            </div>
+            <p class="review-verified">{{ review_eligibility.message }}</p>
+          </div>
+
+          <form class="review-form" method="post" action="{{ url_for('reviews.create', slug=product.slug) }}" novalidate>
+            {{ review_form.csrf_token }}
+            {% if review_eligibility and review_eligibility.order_item_id %}
+              <input type="hidden" name="order_item_id" value="{{ review_eligibility.order_item_id }}">
+            {% endif %}
+
+            <div class="form-field">
+              <label class="form-label" for="review-rating">Rating</label>
+              <select class="form-control" id="review-rating" name="rating" required>
+                <option value="" disabled{% if not review_form.rating.data %} selected{% endif %}>Choose 1–5 stars</option>
+                {% for value in range(1, 6) %}
+                  <option value="{{ value }}"{% if review_form.rating.data == value %} selected{% endif %}>
+                    {{ value }} star{% if value != 1 %}s{% endif %}
+                  </option>
+                {% endfor %}
+              </select>
+            </div>
+
+            <div class="form-field">
+              <label class="form-label" for="review-comment">Review</label>
+              <textarea class="form-control" id="review-comment" name="comment" rows="5" maxlength="2000" required>{{ review_form.comment.data or '' }}</textarea>
+              <p class="form-hint">Maximum 2000 characters. Your comment is shown exactly as written and safely escaped.</p>
+            </div>
+
+            <button class="button button--primary" type="submit">
+              Publish review
+              <span class="button__arrow" aria-hidden="true">→</span>
+            </button>
+          </form>
+        {% else %}
+          <p class="mono">Review eligibility</p>
+          <h3>Verified purchase <em>required.</em></h3>
+          <p>{{ review_eligibility.message if review_eligibility else "Sign in to check review eligibility." }}</p>
+          <a class="button button--ghost" href="{{ url_for('reviews.history') }}">Manage your reviews</a>
         {% endif %}
       </div>
     </div>

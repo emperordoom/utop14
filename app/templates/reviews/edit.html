@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+
+{% from "components/review_badges.html" import review_status_badge, star_rating %}
+
+{% block title %}Edit review — {{ review.product.name }} — UTOP14{% endblock %}
+
+{% block meta_description %}Edit your verified UTOP14 product review.{% endblock %}
+
+{% block styles %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/auth.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/reviews.css') }}">
+{% endblock %}
+
+{% block body_class %}page-account-reviews{% endblock %}
+
+{% block content %}
+  <section class="section account-page review-editor-page" aria-labelledby="review-edit-title">
+    <div class="container review-editor">
+      <nav class="admin-breadcrumb" aria-label="Breadcrumb">
+        <a href="{{ url_for('auth.account') }}">Account</a>
+        <span aria-hidden="true">/</span>
+        <a href="{{ url_for('reviews.history') }}">Reviews</a>
+        <span aria-hidden="true">/</span>
+        <span aria-current="page">Edit</span>
+      </nav>
+
+      <p class="section-kicker">Review / Edit</p>
+      <h1 class="section-title" id="review-edit-title">Refine the <em>verdict.</em></h1>
+
+      <div class="review-editor__product">
+        <div>
+          <p class="mono">Product</p>
+          <a class="review-history__product" href="{{ url_for('storefront.product_detail', slug=review.product.slug) }}">
+            {{ review.product.name }}
+          </a>
+        </div>
+        <div class="review-editor__status">
+          {{ star_rating(review.rating, label=(review.rating ~ " out of 5 stars")) }}
+          {{ review_status_badge(review.status) }}
+        </div>
+      </div>
+
+      {% if review.status == "hidden" %}
+        <p class="review-hidden-note">
+          This review is hidden by moderation. Editing it does not publish it
+          again; an admin must publish it before it returns to public
+          aggregates.
+        </p>
+      {% endif %}
+
+      <form class="review-form review-editor__form" method="post" action="{{ url_for('reviews.edit', review_id=review.id) }}" novalidate>
+        {{ form.hidden_tag() }}
+
+        <div class="form-field">
+          <label class="form-label" for="review-edit-rating">Rating</label>
+          <select class="form-control{% if form.rating.errors %} form-control--invalid{% endif %}" id="review-edit-rating" name="rating" required>
+            <option value="" disabled{% if not form.rating.data %} selected{% endif %}>Choose 1–5 stars</option>
+            {% for value in range(1, 6) %}
+              <option value="{{ value }}"{% if form.rating.data == value %} selected{% endif %}>
+                {{ value }} star{% if value != 1 %}s{% endif %}
+              </option>
+            {% endfor %}
+          </select>
+          {% if form.rating.errors %}
+            <p class="form-error">{{ form.rating.errors[0] }}</p>
+          {% endif %}
+        </div>
+
+        <div class="form-field">
+          <label class="form-label" for="review-edit-comment">Review</label>
+          <textarea class="form-control{% if form.comment.errors %} form-control--invalid{% endif %}" id="review-edit-comment" name="comment" rows="6" maxlength="2000" required>{{ form.comment.data or '' }}</textarea>
+          <p class="form-hint">Maximum 2000 characters. Comments are always escaped when rendered.</p>
+          {% if form.comment.errors %}
+            <p class="form-error">{{ form.comment.errors[0] }}</p>
+          {% endif %}
+        </div>
+
+        <div class="review-editor__actions">
+          <button class="button button--primary" type="submit">
+            Save review
+            <span class="button__arrow" aria-hidden="true">→</span>
+          </button>
+          <a class="button button--ghost" href="{{ url_for('reviews.history') }}">Cancel</a>
+        </div>
+      </form>
+    </div>
+  </section>
+{% endblock %}
