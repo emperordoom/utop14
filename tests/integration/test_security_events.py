@@ -10,6 +10,7 @@ import pytest
 from flask import Flask
 from flask.testing import FlaskClient
 from sqlalchemy import delete, func, select, update
+from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from werkzeug.wrappers import Response
 
@@ -840,6 +841,38 @@ def test_internal_exception_is_not_classified_as_login_failure(
     assert _event_count() == 0
 
 
+def test_database_exception_is_not_classified_as_login_failure(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    make_user(email="database-error@example.com")
+
+    def _raise_for_user_lookup(
+        _conn,
+        _cursor,
+        statement,
+        _parameters,
+        _context,
+        _executemany,
+    ) -> None:
+        if "from users" in statement.lower():
+            raise SQLAlchemyError("simulated database lookup failure")
+
+    sqlalchemy_event.listen(db.engine, "before_cursor_execute", _raise_for_user_lookup)
+    monkeypatch.setitem(app.config, "PROPAGATE_EXCEPTIONS", False)
+    try:
+        response = _login(client, csrf_token, email="database-error@example.com")
+    finally:
+        sqlalchemy_event.remove(db.engine, "before_cursor_execute", _raise_for_user_lookup)
+        db.session.rollback()
+
+    assert response.status_code == 500
+    assert _event_count() == 0
+
+
 def test_persistence_failure_log_includes_request_id_without_identifiers(
     app: Flask,
     client: FlaskClient,
@@ -1009,6 +1042,31 @@ def test_security_event_user_agent_is_truncated(
     assert len(event.user_agent) == 512
 
 
+def test_security_event_user_agent_strips_control_characters(
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+) -> None:
+    make_user(email="ua-controls@example.com")
+
+    response = client.post(
+        "/auth/login",
+        data={
+            "csrf_token": csrf_token("/auth/login"),
+            "email": "ua-controls@example.com",
+            "password": PASSWORD,
+        },
+        environ_overrides={"HTTP_USER_AGENT": "bad\x00value\r\n" + "A" * 600},
+    )
+
+    assert response.status_code == 302
+    event = _events()[0]
+    assert event.user_agent == "badvalue" + "A" * 504
+    assert "\x00" not in event.user_agent
+    assert "\r" not in event.user_agent
+    assert "\n" not in event.user_agent
+
+
 def test_security_event_invalid_ip_uses_unknown_sentinel(
     client: FlaskClient,
     csrf_token: Callable[[str], str],
@@ -1102,5 +1160,46 @@ def test_security_event_database_constraints(
     )
     db.session.add(invalid_hash)
     with pytest.raises(IntegrityError):
+        db.session.commit()
+    db.session.rollback()
+
+
+def test_security_event_request_id_length_is_enforced(
+    app: Flask,
+    make_user: Callable[..., User],
+) -> None:
+    make_user(email="constraint-request-id@example.com")
+
+    event = SecurityEvent(
+        event_type=SECURITY_EVENT_LOGOUT,
+        outcome=SECURITY_OUTCOME_SUCCESS,
+        reason_code=SECURITY_REASON_USER_REQUESTED,
+        ip_address="127.0.0.1",
+        user_agent="",
+        request_id="a" * 65,
+        metadata_json={},
+    )
+    db.session.add(event)
+    with pytest.raises(SQLAlchemyError):
+        db.session.commit()
+    db.session.rollback()
+
+
+def test_security_event_user_agent_length_is_enforced(
+    app: Flask,
+    make_user: Callable[..., User],
+) -> None:
+    make_user(email="constraint-user-agent@example.com")
+
+    event = SecurityEvent(
+        event_type=SECURITY_EVENT_LOGOUT,
+        outcome=SECURITY_OUTCOME_SUCCESS,
+        reason_code=SECURITY_REASON_USER_REQUESTED,
+        ip_address="127.0.0.1",
+        user_agent="a" * 513,
+        metadata_json={},
+    )
+    db.session.add(event)
+    with pytest.raises(SQLAlchemyError):
         db.session.commit()
     db.session.rollback()

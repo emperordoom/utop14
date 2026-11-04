@@ -160,6 +160,18 @@ def test_production_rejects_placeholder_security_event_hash_key() -> None:
         )
 
 
+def test_production_rejects_prefixed_placeholder_security_event_hash_key() -> None:
+    with pytest.raises(ConfigurationError, match="placeholder"):
+        create_app(
+            "production",
+            {
+                "SECRET_KEY": VALID_PRODUCTION_SECRET,
+                "SQLALCHEMY_DATABASE_URI": VALID_TEST_DATABASE_URL,
+                "SECURITY_EVENT_HASH_KEY": "unit-test-security-event-hash-key-0123456789",
+            },
+        )
+
+
 def test_production_rejects_security_event_hash_key_equal_to_secret() -> None:
     with pytest.raises(ConfigurationError, match="distinct"):
         create_app(
