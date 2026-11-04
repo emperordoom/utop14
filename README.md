@@ -139,6 +139,7 @@ environment take precedence. `.env` is ignored by Git.
 | `TEST_DATABASE_URL` | No | Optional isolated PostgreSQL database for tests; must end in `_test` |
 | `TEST_SECRET_KEY` | No | Optional test-only secret override |
 | `TRUSTED_PROXY_HOPS` | No | Number of trusted reverse-proxy hops for `X-Forwarded-For`; default `0` |
+| `SECURITY_EVENT_HASH_KEY` | No | Dedicated HMAC-SHA256 key for authentication identifier hashes; if empty, unknown identifiers are not stored |
 
 Startup validation fails with a clear `ConfigurationError` when `SECRET_KEY`
 or `DATABASE_URL` is missing or when a non-Psycopg database URL is supplied.
@@ -489,6 +490,7 @@ Current revision chain in source:
 - `2f863a992991` — manual-transfer payment proofs
 - `7c1e4b9a2d30` — product reviews and ratings
 - `3f7a2c9d1b64` — administrative audit log
+- `9b2d4e6f8a10` — authentication security events
 
 ## Admin audit logging and trusted proxy
 
@@ -590,7 +592,49 @@ an arbitrary client-supplied identifier.
 - **F-11 — request ID trust:** inbound request IDs depend on correct proxy
   overwrite behavior and are not an authorization control.
 - **F-12 — audit scope:** login, logout, password reset, order, payment, and
-  failed-action auditing are outside M13 scope.
+  failed-action auditing are outside M13 scope. M14.1 covers authentication
+  events in the separate `security_events` table.
+
+## Authentication security events
+
+M14.1 records exactly three authentication events in a dedicated append-only
+`security_events` table, separate from the M13 administrative `audit_logs`:
+
+- `auth.login_succeeded` — form login or registration auto-login
+- `auth.login_failed` — valid credential attempt with reason
+  `unknown_account`, `inactive_account` or `invalid_password`
+- `auth.logout` — user-requested logout
+
+Each record stores event type, outcome, reason code, nullable actor and subject
+identity, an optional HMAC-SHA256 identifier hash, client IP, sanitized user
+agent, request ID, allowlisted JSONB metadata and a UTC timestamp. The table is
+append-only at the application layer and protected against row-level
+UPDATE/DELETE by its own PostgreSQL trigger; only foreign-key `SET NULL`
+clearing of actor/subject identity links is permitted.
+
+Event persistence is best-effort and uses a separate short-lived transaction.
+An audit failure never changes whether login, registration or logout succeeds,
+and it cannot poison the authentication transaction. The failure is logged
+without credentials or raw identifiers.
+
+`SECURITY_EVENT_HASH_KEY` is the dedicated HMAC-SHA256 key for unknown login
+identifiers. `SECRET_KEY` is never used as a fallback. If the dedicated key is
+empty, the event is still recorded but the identifier hash is omitted and a
+configuration error is logged; raw unknown identifiers are never stored.
+Changing the key makes older identifier hashes non-comparable.
+
+Unknown and inactive account paths perform a password verification against a
+single precomputed dummy hash so they are not obviously cheaper than a real
+password check. This narrows a timing difference; it is not a claim of perfectly
+constant execution time. External login responses stay generic.
+
+Event metadata uses an explicit per-event allowlist and never includes
+passwords, password hashes, reset tokens, session cookies or IDs, CSRF tokens,
+access tokens or raw request bodies. Password reset, account recovery, rate
+limiting, session-anomaly detection, remember-cookie restoration events, an
+admin security-event viewer and automatic retention purges are not part of
+M14.1. Retention is permanent until a separately approved archival policy
+exists.
 
 ## Production notes
 

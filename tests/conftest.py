@@ -35,6 +35,7 @@ from app.services.payments import create_payment_attempt
 PROJECT_ROOT: Final = Path(__file__).resolve().parents[1]
 MIGRATIONS_DIR: Final = PROJECT_ROOT / "migrations"
 RESET_TABLES: Final = (
+    "security_events",
     "audit_logs",
     "product_reviews",
     "payment_proofs",
@@ -86,7 +87,10 @@ def _database_app(tmp_path_factory: pytest.TempPathFactory) -> Flask:
     avatar_storage_path = tmp_path_factory.mktemp("avatars")
     application = create_app(
         "testing",
-        {"AVATAR_STORAGE_PATH": str(avatar_storage_path)},
+        {
+            "AVATAR_STORAGE_PATH": str(avatar_storage_path),
+            "SECURITY_EVENT_HASH_KEY": "unit-test-security-event-hash-key",
+        },
     )
     _assert_test_database(application)
     _run_migrations(application)

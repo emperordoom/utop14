@@ -121,6 +121,10 @@ class BaseConfig:
     # for local development and direct exposure is zero.
     TRUSTED_PROXY_HOPS = 0
 
+    # Dedicated HMAC key for non-reversible authentication identifier hashes.
+    # No raw unknown identifiers are stored when this is unset.
+    SECURITY_EVENT_HASH_KEY = ""
+
     @classmethod
     def load(cls) -> dict[str, Any]:
         """Return the environment-dependent settings for this configuration."""
@@ -134,6 +138,7 @@ class BaseConfig:
             "PAYMENT_PROOF_STORAGE_PATH": _env_str("PAYMENT_PROOF_STORAGE_PATH"),
             "MANUAL_TRANSFER_TTL_HOURS": _env_int("MANUAL_TRANSFER_TTL_HOURS", default=24),
             "TRUSTED_PROXY_HOPS": _env_int("TRUSTED_PROXY_HOPS", default=0),
+            "SECURITY_EVENT_HASH_KEY": _env_str("SECURITY_EVENT_HASH_KEY"),
         }
 
 
@@ -210,6 +215,7 @@ class TestingConfig(BaseConfig):
             "PAYMENT_PROOF_STORAGE_PATH": _env_str("PAYMENT_PROOF_STORAGE_PATH"),
             "MANUAL_TRANSFER_TTL_HOURS": _env_int("MANUAL_TRANSFER_TTL_HOURS", default=24),
             "TRUSTED_PROXY_HOPS": _env_int("TRUSTED_PROXY_HOPS", default=0),
+            "SECURITY_EVENT_HASH_KEY": _env_str("SECURITY_EVENT_HASH_KEY"),
         }
 
 

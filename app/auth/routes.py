@@ -19,7 +19,13 @@ from app.auth.forms import (
     RegistrationForm,
     RemoveAvatarForm,
 )
+from app.auth.passwords import verify_dummy_password
 from app.extensions import db
+from app.models.security_event import (
+    SECURITY_REASON_INACTIVE_ACCOUNT,
+    SECURITY_REASON_INVALID_PASSWORD,
+    SECURITY_REASON_UNKNOWN_ACCOUNT,
+)
 from app.models.user import ROLE_CUSTOMER, User
 from app.services.avatars import (
     AvatarError,
@@ -34,6 +40,13 @@ from app.services.profiles import (
     ProfileError,
     ProfileValidationError,
     update_profile,
+)
+from app.services.security_events import (
+    AUTH_METHOD_PASSWORD,
+    AUTH_METHOD_REGISTRATION,
+    record_login_failed,
+    record_login_succeeded,
+    record_logout,
 )
 
 _SAFE_NEXT_MAX_LENGTH = 2048
@@ -110,6 +123,10 @@ def register() -> ResponseReturnValue:
             else:
                 _clear_session()
                 login_user(user)
+                record_login_succeeded(
+                    user=user,
+                    auth_method=AUTH_METHOD_REGISTRATION,
+                )
                 flash("Account created. Welcome to UTOP14.", "success")
                 return redirect(url_for("auth.account"))
 
@@ -128,7 +145,29 @@ def login() -> ResponseReturnValue:
 
     if form.validate_on_submit():
         user = db.session.scalar(select(User).where(User.email == form.email.data))
-        if user is None or not user.is_active or not user.verify_password(form.password.data):
+        if user is None:
+            # Verify against a precomputed dummy hash so an unknown account is
+            # not obviously cheaper than a known account.
+            verify_dummy_password(form.password.data)
+            record_login_failed(
+                identifier=form.email.data,
+                reason=SECURITY_REASON_UNKNOWN_ACCOUNT,
+            )
+            flash("Invalid email or password.", "error")
+        elif not user.is_active:
+            verify_dummy_password(form.password.data)
+            record_login_failed(
+                identifier=form.email.data,
+                reason=SECURITY_REASON_INACTIVE_ACCOUNT,
+                user=user,
+            )
+            flash("Invalid email or password.", "error")
+        elif not user.verify_password(form.password.data):
+            record_login_failed(
+                identifier=form.email.data,
+                reason=SECURITY_REASON_INVALID_PASSWORD,
+                user=user,
+            )
             flash("Invalid email or password.", "error")
         else:
             user.last_login_at = datetime.now(UTC)
@@ -136,6 +175,11 @@ def login() -> ResponseReturnValue:
 
             _clear_session()
             login_user(user, remember=form.remember.data)
+            record_login_succeeded(
+                user=user,
+                auth_method=AUTH_METHOD_PASSWORD,
+                remember_requested=bool(form.remember.data),
+            )
             flash("Signed in. Welcome back.", "success")
             destination = _safe_next_url(form.next.data) or url_for("storefront.home")
             return redirect(destination)
@@ -147,8 +191,12 @@ def login() -> ResponseReturnValue:
 @login_required
 def logout() -> ResponseReturnValue:
     """End the current session.  Logout is POST-only and CSRF protected."""
+    # Capture identity before logout_user() turns current_user anonymous.
+    user_id = current_user.id
+    user_email = current_user.email
     logout_user()
     _clear_session()
+    record_logout(user_id=user_id, email=user_email)
     flash("Signed out.", "info")
     return redirect(url_for("storefront.home"))
 

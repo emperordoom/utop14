@@ -18,6 +18,7 @@ from app.models.product import Product
 from app.models.product_image import ProductImage
 from app.models.product_review import ProductReview
 from app.models.product_variant import ProductVariant
+from app.models.security_event import SecurityEvent
 from app.models.user import User
 
 __all__ = [
@@ -34,5 +35,6 @@ __all__ = [
     "ProductImage",
     "ProductReview",
     "ProductVariant",
+    "SecurityEvent",
     "User",
 ]
