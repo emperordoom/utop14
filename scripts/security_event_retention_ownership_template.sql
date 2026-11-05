@@ -23,8 +23,8 @@
 --   1. Run all Alembic migrations as <schema_owner>/DBA.
 --   2. Run this ownership template as a superuser (review first).
 --   3. Run scripts/security_event_retention_roles.sql as a superuser.
---   4. Run scripts/security_event_retention_verify.sql as the DBA; it must
---      exit 0.
+--   4. Run scripts/security_event_retention_verify.sql as a PostgreSQL
+--      superuser; it must exit 0.
 --
 -- The template is repeatable: it fails closed before changing anything if the
 -- object inventory has drifted, and it is wrapped in a single transaction.
@@ -316,6 +316,30 @@ ALTER FUNCTION public.security_event_retention_holds_lock() OWNER TO <schema_own
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 REVOKE CREATE ON SCHEMA public FROM utop14_app;
 
+-- 6b. Remove database-level CREATE from the app, retention roles (if they
+--     already exist), and PUBLIC.  CONNECT/TEMP are intentionally preserved.
+--     Run this template connected to the application database; current_database()
+--     is used for the database privilege revocation.
+DO $$
+DECLARE
+    r text;
+BEGIN
+    FOREACH r IN ARRAY ARRAY['utop14_app',
+                             'utop14_retention_owner',
+                             'utop14_retention_runner'] LOOP
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+            EXECUTE format(
+                'REVOKE CREATE ON DATABASE %I FROM %I',
+                current_database(), r
+            );
+        END IF;
+    END LOOP;
+    EXECUTE format(
+        'REVOKE CREATE ON DATABASE %I FROM PUBLIC',
+        current_database()
+    );
+END $$;
+
 -- ---------------------------------------------------------------------------
 -- 7. Postconditions: every application object must be owned by the schema
 -- owner; the app/retention roles must not own anything.  The retention
@@ -336,6 +360,38 @@ BEGIN
     FROM pg_namespace WHERE nspname = 'public';
     IF v_owner IS DISTINCT FROM '<schema_owner>' THEN
         RAISE EXCEPTION 'FAIL: postcondition schema public owner=%', v_owner;
+    END IF;
+
+    IF has_database_privilege('utop14_app', current_database(), 'CREATE') THEN
+        RAISE EXCEPTION 'FAIL: postcondition utop14_app has database CREATE';
+    END IF;
+    IF to_regrole('utop14_retention_owner') IS NOT NULL THEN
+        IF has_database_privilege(
+            'utop14_retention_owner', current_database(), 'CREATE'
+        ) THEN
+            RAISE EXCEPTION
+                'FAIL: postcondition utop14_retention_owner has database CREATE';
+        END IF;
+    END IF;
+    IF to_regrole('utop14_retention_runner') IS NOT NULL THEN
+        IF has_database_privilege(
+            'utop14_retention_runner', current_database(), 'CREATE'
+        ) THEN
+            RAISE EXCEPTION
+                'FAIL: postcondition utop14_retention_runner has database CREATE';
+        END IF;
+    END IF;
+    IF EXISTS (
+        SELECT 1
+        FROM pg_database d
+        CROSS JOIN LATERAL aclexplode(
+            COALESCE(d.datacl, acldefault('d', d.datdba))
+        ) a
+        WHERE d.datname = current_database()
+          AND a.grantee = 0
+          AND a.privilege_type = 'CREATE'
+    ) THEN
+        RAISE EXCEPTION 'FAIL: postcondition PUBLIC has database CREATE';
     END IF;
 
     FOR r IN

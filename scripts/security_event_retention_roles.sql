@@ -18,9 +18,11 @@
 -- deployment login role if different).
 --
 -- Least-privilege model:
---   * utop14_app: DML only; no TRUNCATE/TRIGGER/REFERENCES, no ownership, no
---     retention function execution, no retention run-log access, no CREATE or
---     USAGE outside public, and no role memberships.
+--   * utop14_app: DML only; no TRUNCATE/TRIGGER/REFERENCES/MAINTAIN, no
+--     ownership, no retention function execution, no retention run-log access,
+--     no CREATE or USAGE outside public, no database CREATE, no column-level
+--     grants or GRANT OPTION, no role memberships, and a configured
+--     search_path of public, pg_catalog.
 --   * utop14_retention_owner: NOLOGIN; owns the SECURITY DEFINER retention
 --     function; can read/delete events, read holds, append run rows.
 --   * utop14_retention_runner: LOGIN; only the retention function entry point
@@ -33,6 +35,9 @@
 --     objects, wrong ownership, an unexpected migration head, unexpected
 --     schemas/types/extensions/objects, dangerous role attributes, dangerous
 --     custom default ACLs, or reverse memberships.
+--   * The full table grant reset removes column ACLs and all table privileges,
+--     including PG17+ MAINTAIN.  Database-level CREATE is revoked from managed
+--     roles and PUBLIC, and the app search_path is set to public, pg_catalog.
 --   * The whole script runs in one transaction.  CREATE ROLE, ALTER ROLE,
 --     GRANT/REVOKE and ALTER FUNCTION ... OWNER are transactional on the
 --     supported PostgreSQL versions, so a mid-script failure rolls back
@@ -442,6 +447,37 @@ ALTER ROLE utop14_retention_runner
 ALTER ROLE utop14_app
     NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
     NOREPLICATION NOBYPASSRLS;
+-- Remove the default "$user", public search path so a schema named after the
+-- role cannot shadow application tables.  Also clear any database-specific
+-- override for the app role; existing pooled connections keep their old session
+-- setting until they reconnect, so recycle pools after provisioning.
+DO $$
+BEGIN
+    EXECUTE format(
+        'ALTER ROLE %I IN DATABASE %I RESET search_path',
+        'utop14_app', current_database()
+    );
+END $$;
+ALTER ROLE utop14_app SET search_path = public, pg_catalog;
+
+-- ---------------------------------------------------------------------------
+-- 2. Database-level CREATE: app/retention roles and PUBLIC must not be able
+-- to create schemas.  CONNECT/TEMP are intentionally preserved.
+-- ---------------------------------------------------------------------------
+DO $$
+BEGIN
+    EXECUTE format(
+        'REVOKE CREATE ON DATABASE %I FROM %I, %I, %I',
+        current_database(),
+        'utop14_app',
+        'utop14_retention_owner',
+        'utop14_retention_runner'
+    );
+    EXECUTE format(
+        'REVOKE CREATE ON DATABASE %I FROM PUBLIC',
+        current_database()
+    );
+END $$;
 
 -- ---------------------------------------------------------------------------
 -- 2. Default-deny membership reconciliation
@@ -676,6 +712,72 @@ BEGIN
     END IF;
     IF has_schema_privilege('utop14_app', 'public', 'CREATE') THEN
         RAISE EXCEPTION 'FAIL: postcondition app has schema CREATE';
+    END IF;
+    IF has_database_privilege('utop14_app', current_database(), 'CREATE')
+       OR has_database_privilege('utop14_retention_owner',
+                                 current_database(), 'CREATE')
+       OR has_database_privilege('utop14_retention_runner',
+                                 current_database(), 'CREATE') THEN
+        RAISE EXCEPTION
+            'FAIL: postcondition managed role still has database CREATE';
+    END IF;
+    IF EXISTS (
+        SELECT 1
+        FROM pg_database d
+        CROSS JOIN LATERAL aclexplode(
+            COALESCE(d.datacl, acldefault('d', d.datdba))
+        ) a
+        WHERE d.datname = current_database()
+          AND a.grantee = 0
+          AND a.privilege_type = 'CREATE'
+    ) THEN
+        RAISE EXCEPTION 'FAIL: postcondition PUBLIC has database CREATE';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_roles
+        WHERE rolname = 'utop14_app'
+          AND rolconfig IS NOT NULL
+          AND EXISTS (
+              SELECT 1
+              FROM unnest(rolconfig) c
+              WHERE replace(replace(c, ' ', ''), '"', '')
+                    = 'search_path=public,pg_catalog'
+          )
+    ) THEN
+        RAISE EXCEPTION
+            'FAIL: postcondition app search_path is not public, pg_catalog';
+    END IF;
+    IF EXISTS (
+        SELECT 1
+        FROM pg_db_role_setting s
+        CROSS JOIN LATERAL unnest(s.setconfig) c
+        WHERE s.setrole = 'utop14_app'::regrole
+          AND s.setdatabase = (
+              SELECT oid FROM pg_database WHERE datname = current_database()
+          )
+          AND replace(replace(c, ' ', ''), '"', '') LIKE 'search_path=%'
+          AND replace(replace(c, ' ', ''), '"', '')
+                <> 'search_path=public,pg_catalog'
+    ) THEN
+        RAISE EXCEPTION
+            'FAIL: postcondition app has an overriding database-level search_path';
+    END IF;
+    IF EXISTS (
+        SELECT 1
+        FROM pg_attribute a
+        JOIN pg_class c ON c.oid = a.attrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        CROSS JOIN LATERAL aclexplode(a.attacl) x
+        WHERE n.nspname = 'public'
+          AND c.relkind IN ('r', 'p', 'f')
+          AND a.attnum > 0
+          AND NOT a.attisdropped
+          AND a.attacl IS NOT NULL
+          AND x.grantee <> c.relowner
+    ) THEN
+        RAISE EXCEPTION
+            'FAIL: postcondition unexpected non-owner column ACL remains';
     END IF;
     IF EXISTS (
         SELECT 1 FROM pg_class c

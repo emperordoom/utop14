@@ -1,30 +1,64 @@
 -- UTOP14 comprehensive application and retention privilege verification.
 --
--- Run as the DBA/schema owner (NOT as utop14_app) after:
+-- Run as a PostgreSQL **superuser** (NOT as utop14_app) after:
 --   migrations -> ownership template -> role provisioning.
+-- Superuser execution is required because the runtime probes use SET ROLE.
+-- A non-superuser verifier cannot be a member of utop14_app without violating
+-- the default-deny membership model, so the script fails its preflight if the
+-- current role is not a superuser.
+--
 -- The script is read-only except for privilege probes that are rolled back if
 -- they unexpectedly succeed.  It exits non-zero on the first failed assertion.
 --
 -- Replace utop14_app / utop14_schema_owner / public with deployment values if
 -- they differ.  Every assertion names its role explicitly.
 --
--- Supported PostgreSQL: 16 or newer for membership option columns
--- (inherit_option/set_option).  The membership query reads those options
--- through to_jsonb and treats a missing option as TRUE, so the script also
--- runs on older catalogs without falsely reporting a clean membership.
+-- Supported PostgreSQL: 16 or newer.  MAINTAIN is checked only on PostgreSQL
+-- 17+; on older servers that specific check is skipped with an INFO notice.
+-- Membership option columns (inherit_option/set_option) are read through
+-- to_jsonb and a missing option is treated as TRUE, so older catalogs are
+-- handled conservatively.
 --
 -- Security model enforced here:
 --   * default-deny role memberships for utop14_app, utop14_retention_owner
 --     and utop14_retention_runner (direct, transitive, INHERIT/SET/ADMIN,
 --     predefined, custom and nested paths);
 --   * only the allowlisted application schema (public) may exist;
---   * no app/retention CREATE or USAGE outside public;
+--   * no app/retention CREATE or USAGE outside public, and no database-level
+--     CREATE for app/retention roles or PUBLIC;
 --   * complete table/sequence/function/trigger/type/extension inventory;
+--   * complete table ACL, column ACL, and effective column privilege matrix;
+--     no explicit column-level grants for managed roles or PUBLIC;
+--   * no GRANT OPTION for managed roles or PUBLIC;
 --   * complete EXECUTE matrix for every function and PUBLIC;
---   * no custom default privileges for managed roles or PUBLIC.
+--   * no custom default privileges for managed roles or PUBLIC;
+--   * deterministic search_path for verification itself.
 
 \set ON_ERROR_STOP on
 \pset pager off
+
+-- Never resolve application objects or helper functions through a caller-owned
+-- schema.  pg_catalog first prevents function shadowing; public is the only
+-- application schema.
+SET search_path = pg_catalog, public;
+
+-- ---------------------------------------------------------------------------
+-- 0. Execution-role preflight
+--
+-- The runtime probes use SET ROLE utop14_app.  If the verifier cannot do so,
+-- that is a hard execution failure, never a PASS for a denied operation.
+-- ---------------------------------------------------------------------------
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_roles WHERE rolname = current_user AND rolsuper
+    ) THEN
+        RAISE EXCEPTION
+            'FAIL: verification must run as a PostgreSQL superuser; current_user=% cannot assume utop14_app without a forbidden membership',
+            current_user;
+    END IF;
+    RAISE NOTICE 'PASS: verification is running as a superuser';
+END $$;
 
 -- ---------------------------------------------------------------------------
 -- 1. Role attributes and LOGIN/NOLOGIN
@@ -78,6 +112,77 @@ BEGIN
         RAISE EXCEPTION 'FAIL: app/retention roles must be NOINHERIT';
     END IF;
     RAISE NOTICE 'PASS: role attributes and LOGIN/NOLOGIN';
+END $$;
+
+-- ---------------------------------------------------------------------------
+-- 1b. Database-level CREATE and application-role search_path
+-- ---------------------------------------------------------------------------
+DO $$
+DECLARE
+    r record;
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM pg_database d
+        CROSS JOIN LATERAL aclexplode(
+            COALESCE(d.datacl, acldefault('d', d.datdba))
+        ) a
+        WHERE d.datname = current_database()
+          AND a.grantee = 0
+          AND a.privilege_type = 'CREATE'
+    ) THEN
+        RAISE EXCEPTION 'FAIL: PUBLIC has database-level CREATE';
+    END IF;
+
+    FOR r IN
+        SELECT unnest(ARRAY['utop14_app',
+                            'utop14_retention_owner',
+                            'utop14_retention_runner']) AS role_name
+    LOOP
+        IF has_database_privilege(r.role_name, current_database(), 'CREATE') THEN
+            RAISE EXCEPTION
+                'FAIL: % has database-level CREATE; CREATE SCHEMA must be denied',
+                r.role_name;
+        END IF;
+    END LOOP;
+
+    -- The application role must not keep the default "$user", public path; a
+    -- schema named after the role could otherwise shadow application tables.
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_roles
+        WHERE rolname = 'utop14_app'
+          AND rolconfig IS NOT NULL
+          AND EXISTS (
+              SELECT 1
+              FROM unnest(rolconfig) c
+              WHERE replace(replace(c, ' ', ''), '"', '')
+                    = 'search_path=public,pg_catalog'
+          )
+    ) THEN
+        RAISE EXCEPTION
+            'FAIL: utop14_app search_path must be set to public, pg_catalog';
+    END IF;
+
+    -- A database-specific role setting overrides the role-level setting.
+    IF EXISTS (
+        SELECT 1
+        FROM pg_db_role_setting s
+        CROSS JOIN LATERAL unnest(s.setconfig) c
+        WHERE s.setrole = 'utop14_app'::regrole
+          AND s.setdatabase = (
+              SELECT oid FROM pg_database WHERE datname = current_database()
+          )
+          AND replace(replace(c, ' ', ''), '"', '') LIKE 'search_path=%'
+          AND replace(replace(c, ' ', ''), '"', '')
+                <> 'search_path=public,pg_catalog'
+    ) THEN
+        RAISE EXCEPTION
+            'FAIL: utop14_app has an overriding database-level search_path; run ALTER ROLE utop14_app IN DATABASE %I RESET search_path',
+            current_database();
+    END IF;
+
+    RAISE NOTICE 'PASS: database CREATE denied; app search_path locked';
 END $$;
 
 -- ---------------------------------------------------------------------------
@@ -580,13 +685,55 @@ BEGIN
 END $$;
 
 -- ---------------------------------------------------------------------------
--- 6. Application table privilege matrix
+-- 5b. No schema GRANT OPTION for non-owner grantees
 -- ---------------------------------------------------------------------------
 DO $$
 DECLARE
     r record;
-    p text;
 BEGIN
+    FOR r IN
+        SELECT n.nspname,
+               CASE WHEN a.grantee = 0 THEN 'PUBLIC'
+                    ELSE pg_get_userbyid(a.grantee) END AS grantee,
+               a.privilege_type
+        FROM pg_namespace n
+        CROSS JOIN LATERAL aclexplode(
+            COALESCE(n.nspacl, acldefault('n', n.nspowner))
+        ) a
+        WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+          AND n.nspname NOT LIKE 'pg\_%' ESCAPE '\'
+          AND a.grantee <> n.nspowner
+          AND a.is_grantable
+    LOOP
+        RAISE EXCEPTION
+            'FAIL: schema privilege % on % to % has GRANT OPTION',
+            r.privilege_type, r.nspname, r.grantee;
+    END LOOP;
+    RAISE NOTICE 'PASS: no non-owner schema GRANT OPTION';
+END $$;
+
+-- ---------------------------------------------------------------------------
+-- 6. Application table and effective column privilege matrix
+-- ---------------------------------------------------------------------------
+DO $$
+DECLARE
+    r record;
+    col record;
+    p text;
+    cp text;
+    v_server_num integer := current_setting('server_version_num')::integer;
+    v_table_privs text[] := ARRAY[
+        'SELECT','INSERT','UPDATE','DELETE','TRUNCATE','TRIGGER','REFERENCES'
+    ];
+    v_column_privs text[] := ARRAY['SELECT','INSERT','UPDATE','REFERENCES'];
+BEGIN
+    IF v_server_num >= 170000 THEN
+        v_table_privs := array_append(v_table_privs, 'MAINTAIN');
+    ELSE
+        RAISE NOTICE
+            'INFO: MAINTAIN privilege is not available on this PostgreSQL version; skipping that specific check';
+    END IF;
+
     FOR r IN
         SELECT * FROM (VALUES
             ('alembic_version', ARRAY[]::text[]),
@@ -609,19 +756,292 @@ BEGIN
             ('users', ARRAY['SELECT','INSERT','UPDATE']::text[])
         ) AS t(table_name, allowed)
     LOOP
-        FOR p IN SELECT unnest(
-            ARRAY['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','TRIGGER','REFERENCES']::text[]
-        )
+        FOR p IN SELECT unnest(v_table_privs)
         LOOP
-            IF has_table_privilege('utop14_app', r.table_name, p)
-               <> (p = ANY (r.allowed)) THEN
+            IF has_table_privilege(
+                'utop14_app', format('public.%I', r.table_name), p
+            ) <> (p = ANY (r.allowed)) THEN
                 RAISE EXCEPTION
                     'FAIL: app privilege % on % expected=%',
                     p, r.table_name, (p = ANY (r.allowed));
             END IF;
         END LOOP;
+
+        -- Table-level grants legitimately apply to every column.  Compare the
+        -- effective column privilege with the same approved matrix so a
+        -- column-only grant on a table with no table-level privilege fails.
+        FOREACH cp IN ARRAY v_column_privs LOOP
+            IF has_any_column_privilege(
+                'utop14_app', format('public.%I', r.table_name), cp
+            ) <> (cp = ANY (r.allowed)) THEN
+                RAISE EXCEPTION
+                    'FAIL: app any-column privilege % on % expected=%',
+                    cp, r.table_name, (cp = ANY (r.allowed));
+            END IF;
+        END LOOP;
+        FOR col IN
+            SELECT c.oid AS table_oid, a.attname
+            FROM pg_attribute a
+            JOIN pg_class c ON c.oid = a.attrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = 'public'
+              AND c.relname = r.table_name
+              AND c.relkind IN ('r', 'p', 'f')
+              AND a.attnum > 0
+              AND NOT a.attisdropped
+        LOOP
+            FOREACH cp IN ARRAY v_column_privs LOOP
+                IF has_column_privilege(
+                    'utop14_app', col.table_oid, col.attname, cp
+                ) <> (cp = ANY (r.allowed)) THEN
+                    RAISE EXCEPTION
+                        'FAIL: app column privilege % on %.% expected=%',
+                        cp, r.table_name, col.attname, (cp = ANY (r.allowed));
+                END IF;
+            END LOOP;
+        END LOOP;
     END LOOP;
-    RAISE NOTICE 'PASS: application table privilege matrix';
+    RAISE NOTICE 'PASS: application table and effective column privilege matrix';
+END $$;
+
+-- ---------------------------------------------------------------------------
+-- 6b. Complete table ACL, column ACL, and retention-role column matrix
+-- ---------------------------------------------------------------------------
+DO $$
+DECLARE
+    r record;
+    col record;
+    cp text;
+    v_column_privs text[] := ARRAY['SELECT','INSERT','UPDATE','REFERENCES'];
+BEGIN
+    -- Every non-owner table ACL entry must belong to a managed role and carry
+    -- an explicitly approved privilege.  PUBLIC and custom grantees are never
+    -- allowed.  This catches MAINTAIN and any other privilege not in the matrix.
+    FOR r IN
+        WITH matrix(table_name, app_allowed, owner_allowed, runner_allowed) AS (
+            VALUES
+                ('alembic_version', ARRAY[]::text[], ARRAY[]::text[], ARRAY[]::text[]),
+                ('audit_logs', ARRAY['SELECT','INSERT']::text[], ARRAY[]::text[], ARRAY[]::text[]),
+                ('auth_rate_limits', ARRAY['SELECT','INSERT','UPDATE','DELETE']::text[], ARRAY[]::text[], ARRAY[]::text[]),
+                ('cart_items', ARRAY['SELECT','INSERT','UPDATE','DELETE']::text[], ARRAY[]::text[], ARRAY[]::text[]),
+                ('carts', ARRAY['SELECT','INSERT','UPDATE']::text[], ARRAY[]::text[], ARRAY[]::text[]),
+                ('categories', ARRAY['SELECT','INSERT','UPDATE']::text[], ARRAY[]::text[], ARRAY[]::text[]),
+                ('order_items', ARRAY['SELECT','INSERT']::text[], ARRAY[]::text[], ARRAY[]::text[]),
+                ('orders', ARRAY['SELECT','INSERT','UPDATE']::text[], ARRAY[]::text[], ARRAY[]::text[]),
+                ('payment_proofs', ARRAY['SELECT','INSERT','UPDATE']::text[], ARRAY[]::text[], ARRAY[]::text[]),
+                ('payments', ARRAY['SELECT','INSERT','UPDATE']::text[], ARRAY[]::text[], ARRAY[]::text[]),
+                ('product_images', ARRAY['SELECT','INSERT','UPDATE','DELETE']::text[], ARRAY[]::text[], ARRAY[]::text[]),
+                ('product_reviews', ARRAY['SELECT','INSERT','UPDATE']::text[], ARRAY[]::text[], ARRAY[]::text[]),
+                ('product_variants', ARRAY['SELECT','INSERT','UPDATE']::text[], ARRAY[]::text[], ARRAY[]::text[]),
+                ('products', ARRAY['SELECT','INSERT','UPDATE']::text[], ARRAY[]::text[], ARRAY[]::text[]),
+                ('security_event_retention_holds', ARRAY['SELECT','INSERT','UPDATE']::text[], ARRAY['SELECT']::text[], ARRAY[]::text[]),
+                ('security_event_retention_runs', ARRAY[]::text[], ARRAY['SELECT','INSERT']::text[], ARRAY['SELECT','INSERT']::text[]),
+                ('security_events', ARRAY['SELECT','INSERT']::text[], ARRAY['SELECT','DELETE']::text[], ARRAY[]::text[]),
+                ('users', ARRAY['SELECT','INSERT','UPDATE']::text[], ARRAY[]::text[], ARRAY[]::text[])
+        )
+        SELECT c.relname AS table_name,
+               CASE WHEN a.grantee = 0 THEN 'PUBLIC'
+                    ELSE pg_get_userbyid(a.grantee) END AS grantee,
+               a.privilege_type,
+               a.is_grantable,
+               m.app_allowed,
+               m.owner_allowed,
+               m.runner_allowed
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        JOIN matrix m ON m.table_name = c.relname
+        CROSS JOIN LATERAL aclexplode(
+            COALESCE(c.relacl, acldefault('r', c.relowner))
+        ) a
+        WHERE n.nspname = 'public'
+          AND c.relkind IN ('r', 'p', 'f')
+          AND NOT EXISTS (
+              SELECT 1 FROM pg_depend d
+              WHERE d.classid = 'pg_class'::regclass
+                AND d.objid = c.oid
+                AND d.deptype = 'e'
+          )
+          AND a.grantee <> c.relowner
+    LOOP
+        IF r.is_grantable THEN
+            RAISE EXCEPTION
+                'FAIL: table privilege % on % to % has GRANT OPTION',
+                r.privilege_type, r.table_name, r.grantee;
+        END IF;
+        IF r.grantee = 'PUBLIC' THEN
+            RAISE EXCEPTION
+                'FAIL: PUBLIC has table privilege % on %',
+                r.privilege_type, r.table_name;
+        ELSIF r.grantee = 'utop14_app' THEN
+            IF NOT (r.privilege_type = ANY (r.app_allowed)) THEN
+                RAISE EXCEPTION
+                    'FAIL: unexpected app table privilege % on %',
+                    r.privilege_type, r.table_name;
+            END IF;
+        ELSIF r.grantee = 'utop14_retention_owner' THEN
+            IF NOT (r.privilege_type = ANY (r.owner_allowed)) THEN
+                RAISE EXCEPTION
+                    'FAIL: unexpected retention-owner table privilege % on %',
+                    r.privilege_type, r.table_name;
+            END IF;
+        ELSIF r.grantee = 'utop14_retention_runner' THEN
+            IF NOT (r.privilege_type = ANY (r.runner_allowed)) THEN
+                RAISE EXCEPTION
+                    'FAIL: unexpected retention-runner table privilege % on %',
+                    r.privilege_type, r.table_name;
+            END IF;
+        ELSE
+            RAISE EXCEPTION
+                'FAIL: unexpected table grantee % with privilege % on %',
+                r.grantee, r.privilege_type, r.table_name;
+        END IF;
+    END LOOP;
+
+    -- No explicit column-level grant is approved for any non-owner grantee.
+    -- This catches redundant grants (where table-level access already exists)
+    -- as well as grants on tables/columns the role must not access at all.
+    FOR r IN
+        SELECT c.relname AS table_name,
+               a.attname AS column_name,
+               CASE WHEN x.grantee = 0 THEN 'PUBLIC'
+                    ELSE pg_get_userbyid(x.grantee) END AS grantee,
+               x.privilege_type,
+               x.is_grantable
+        FROM pg_attribute a
+        JOIN pg_class c ON c.oid = a.attrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        CROSS JOIN LATERAL aclexplode(a.attacl) x
+        WHERE n.nspname = 'public'
+          AND c.relkind IN ('r', 'p', 'f')
+          AND a.attnum > 0
+          AND NOT a.attisdropped
+          AND a.attacl IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM pg_depend d
+              WHERE d.classid = 'pg_class'::regclass
+                AND d.objid = c.oid
+                AND d.deptype = 'e'
+          )
+          AND x.grantee <> c.relowner
+    LOOP
+        RAISE EXCEPTION
+            'FAIL: unexpected column ACL % on %.% to % (grant_option=%); column-level grants are not in the approved matrix',
+            r.privilege_type, r.table_name, r.column_name,
+            r.grantee, r.is_grantable;
+    END LOOP;
+
+    -- Effective column privileges for the retention roles must match their
+    -- approved table-level matrices.  Table-level grants legitimately apply to
+    -- every column; a column-only grant on another table/column fails.
+    FOR r IN
+        SELECT table_name, allowed FROM (VALUES
+            ('alembic_version', ARRAY[]::text[]),
+            ('audit_logs', ARRAY[]::text[]),
+            ('auth_rate_limits', ARRAY[]::text[]),
+            ('cart_items', ARRAY[]::text[]),
+            ('carts', ARRAY[]::text[]),
+            ('categories', ARRAY[]::text[]),
+            ('order_items', ARRAY[]::text[]),
+            ('orders', ARRAY[]::text[]),
+            ('payment_proofs', ARRAY[]::text[]),
+            ('payments', ARRAY[]::text[]),
+            ('product_images', ARRAY[]::text[]),
+            ('product_reviews', ARRAY[]::text[]),
+            ('product_variants', ARRAY[]::text[]),
+            ('products', ARRAY[]::text[]),
+            ('security_event_retention_holds', ARRAY['SELECT']::text[]),
+            ('security_event_retention_runs', ARRAY['SELECT','INSERT']::text[]),
+            ('security_events', ARRAY['SELECT','DELETE']::text[]),
+            ('users', ARRAY[]::text[])
+        ) AS t(table_name, allowed)
+    LOOP
+        FOREACH cp IN ARRAY v_column_privs LOOP
+            IF has_any_column_privilege(
+                'utop14_retention_owner', format('public.%I', r.table_name), cp
+            ) <> (cp = ANY (r.allowed)) THEN
+                RAISE EXCEPTION
+                    'FAIL: retention-owner any-column privilege % on % expected=%',
+                    cp, r.table_name, (cp = ANY (r.allowed));
+            END IF;
+        END LOOP;
+        FOR col IN
+            SELECT c.oid AS table_oid, a.attname
+            FROM pg_attribute a
+            JOIN pg_class c ON c.oid = a.attrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = 'public'
+              AND c.relname = r.table_name
+              AND c.relkind IN ('r', 'p', 'f')
+              AND a.attnum > 0
+              AND NOT a.attisdropped
+        LOOP
+            FOREACH cp IN ARRAY v_column_privs LOOP
+                IF has_column_privilege(
+                    'utop14_retention_owner', col.table_oid, col.attname, cp
+                ) <> (cp = ANY (r.allowed)) THEN
+                    RAISE EXCEPTION
+                        'FAIL: retention-owner column privilege % on %.% expected=%',
+                        cp, r.table_name, col.attname, (cp = ANY (r.allowed));
+                END IF;
+            END LOOP;
+        END LOOP;
+    END LOOP;
+
+    FOR r IN
+        SELECT table_name, allowed FROM (VALUES
+            ('alembic_version', ARRAY[]::text[]),
+            ('audit_logs', ARRAY[]::text[]),
+            ('auth_rate_limits', ARRAY[]::text[]),
+            ('cart_items', ARRAY[]::text[]),
+            ('carts', ARRAY[]::text[]),
+            ('categories', ARRAY[]::text[]),
+            ('order_items', ARRAY[]::text[]),
+            ('orders', ARRAY[]::text[]),
+            ('payment_proofs', ARRAY[]::text[]),
+            ('payments', ARRAY[]::text[]),
+            ('product_images', ARRAY[]::text[]),
+            ('product_reviews', ARRAY[]::text[]),
+            ('product_variants', ARRAY[]::text[]),
+            ('products', ARRAY[]::text[]),
+            ('security_event_retention_holds', ARRAY[]::text[]),
+            ('security_event_retention_runs', ARRAY['SELECT','INSERT']::text[]),
+            ('security_events', ARRAY[]::text[]),
+            ('users', ARRAY[]::text[])
+        ) AS t(table_name, allowed)
+    LOOP
+        FOREACH cp IN ARRAY v_column_privs LOOP
+            IF has_any_column_privilege(
+                'utop14_retention_runner', format('public.%I', r.table_name), cp
+            ) <> (cp = ANY (r.allowed)) THEN
+                RAISE EXCEPTION
+                    'FAIL: retention-runner any-column privilege % on % expected=%',
+                    cp, r.table_name, (cp = ANY (r.allowed));
+            END IF;
+        END LOOP;
+        FOR col IN
+            SELECT c.oid AS table_oid, a.attname
+            FROM pg_attribute a
+            JOIN pg_class c ON c.oid = a.attrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = 'public'
+              AND c.relname = r.table_name
+              AND c.relkind IN ('r', 'p', 'f')
+              AND a.attnum > 0
+              AND NOT a.attisdropped
+        LOOP
+            FOREACH cp IN ARRAY v_column_privs LOOP
+                IF has_column_privilege(
+                    'utop14_retention_runner', col.table_oid, col.attname, cp
+                ) <> (cp = ANY (r.allowed)) THEN
+                    RAISE EXCEPTION
+                        'FAIL: retention-runner column privilege % on %.% expected=%',
+                        cp, r.table_name, col.attname, (cp = ANY (r.allowed));
+                END IF;
+            END LOOP;
+        END LOOP;
+    END LOOP;
+
+    RAISE NOTICE 'PASS: complete table and column ACL matrix';
 END $$;
 
 -- ---------------------------------------------------------------------------
@@ -647,7 +1067,9 @@ BEGIN
     LOOP
         FOR p IN SELECT unnest(ARRAY['USAGE','SELECT','UPDATE']::text[])
         LOOP
-            IF has_sequence_privilege('utop14_app', r.seq_name, p)
+            IF has_sequence_privilege(
+                'utop14_app', format('public.%I', r.seq_name), p
+            )
                <> (r.allowed AND p IN ('USAGE','SELECT')) THEN
                 RAISE EXCEPTION
                     'FAIL: app sequence privilege % on % expected=%',
@@ -747,13 +1169,17 @@ BEGIN
     LOOP
         FOR p IN SELECT unnest(ARRAY['USAGE','SELECT','UPDATE']::text[])
         LOOP
-            IF has_sequence_privilege('utop14_retention_owner', r.seq_name, p)
+            IF has_sequence_privilege(
+                'utop14_retention_owner', format('public.%I', r.seq_name), p
+            )
                <> (r.allowed AND p IN ('USAGE','SELECT')) THEN
                 RAISE EXCEPTION
                     'FAIL: retention owner sequence % on % expected=%',
                     p, r.seq_name, (r.allowed AND p IN ('USAGE','SELECT'));
             END IF;
-            IF has_sequence_privilege('utop14_retention_runner', r.seq_name, p)
+            IF has_sequence_privilege(
+                'utop14_retention_runner', format('public.%I', r.seq_name), p
+            )
                <> (r.allowed AND p IN ('USAGE','SELECT')) THEN
                 RAISE EXCEPTION
                     'FAIL: retention runner sequence % on % expected=%',
@@ -762,6 +1188,67 @@ BEGIN
         END LOOP;
     END LOOP;
     RAISE NOTICE 'PASS: retention owner/runner sequence matrices';
+END $$;
+
+-- ---------------------------------------------------------------------------
+-- 9b. Complete sequence ACL matrix
+-- ---------------------------------------------------------------------------
+DO $$
+DECLARE
+    r record;
+BEGIN
+    FOR r IN
+        SELECT c.relname AS seq_name,
+               CASE WHEN a.grantee = 0 THEN 'PUBLIC'
+                    ELSE pg_get_userbyid(a.grantee) END AS grantee,
+               a.privilege_type,
+               a.is_grantable
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        CROSS JOIN LATERAL aclexplode(
+            COALESCE(c.relacl, acldefault('s', c.relowner))
+        ) a
+        WHERE n.nspname = 'public'
+          AND c.relkind = 'S'
+          AND NOT EXISTS (
+              SELECT 1 FROM pg_depend d
+              WHERE d.classid = 'pg_class'::regclass
+                AND d.objid = c.oid
+                AND d.deptype = 'e'
+          )
+          AND a.grantee <> c.relowner
+    LOOP
+        IF r.is_grantable THEN
+            RAISE EXCEPTION
+                'FAIL: sequence privilege % on % to % has GRANT OPTION',
+                r.privilege_type, r.seq_name, r.grantee;
+        END IF;
+        IF r.grantee = 'PUBLIC' THEN
+            RAISE EXCEPTION
+                'FAIL: PUBLIC has sequence privilege % on %',
+                r.privilege_type, r.seq_name;
+        ELSIF r.grantee = 'utop14_app' THEN
+            IF r.seq_name = 'security_event_retention_runs_id_seq'
+               OR NOT (r.privilege_type = ANY (ARRAY['USAGE','SELECT'])) THEN
+                RAISE EXCEPTION
+                    'FAIL: unexpected app sequence privilege % on %',
+                    r.privilege_type, r.seq_name;
+            END IF;
+        ELSIF r.grantee IN ('utop14_retention_owner',
+                            'utop14_retention_runner') THEN
+            IF r.seq_name <> 'security_event_retention_runs_id_seq'
+               OR NOT (r.privilege_type = ANY (ARRAY['USAGE','SELECT'])) THEN
+                RAISE EXCEPTION
+                    'FAIL: unexpected retention sequence privilege % on % to %',
+                    r.privilege_type, r.seq_name, r.grantee;
+            END IF;
+        ELSE
+            RAISE EXCEPTION
+                'FAIL: unexpected sequence grantee % with privilege % on %',
+                r.grantee, r.privilege_type, r.seq_name;
+        END IF;
+    END LOOP;
+    RAISE NOTICE 'PASS: complete sequence ACL matrix';
 END $$;
 
 -- ---------------------------------------------------------------------------
@@ -850,11 +1337,17 @@ BEGIN
         FOR a IN
             SELECT CASE WHEN x.grantee = 0 THEN 'PUBLIC'
                         ELSE pg_get_userbyid(x.grantee) END AS grantee,
-                   x.privilege_type
+                   x.privilege_type,
+                   x.is_grantable
             FROM aclexplode(
                 COALESCE(r.proacl, acldefault('f', r.proowner))
             ) x
         LOOP
+            IF a.is_grantable THEN
+                RAISE EXCEPTION
+                    'FAIL: function % privilege % to % has GRANT OPTION',
+                    r.proname, a.privilege_type, a.grantee;
+            END IF;
             IF a.grantee = 'PUBLIC' THEN
                 RAISE EXCEPTION
                     'FAIL: PUBLIC has % on function %',
@@ -944,6 +1437,11 @@ DO $$
 BEGIN
     BEGIN
         EXECUTE 'SET LOCAL ROLE utop14_app';
+    EXCEPTION WHEN insufficient_privilege THEN
+        RAISE EXCEPTION
+            'FAIL: verifier cannot SET ROLE utop14_app; run verification as a PostgreSQL superuser';
+    END;
+    BEGIN
         UPDATE public.audit_logs SET actor_email = actor_email WHERE false;
         RAISE EXCEPTION 'FAIL: app can UPDATE audit_logs';
     EXCEPTION WHEN insufficient_privilege THEN
@@ -956,6 +1454,11 @@ DO $$
 BEGIN
     BEGIN
         EXECUTE 'SET LOCAL ROLE utop14_app';
+    EXCEPTION WHEN insufficient_privilege THEN
+        RAISE EXCEPTION
+            'FAIL: verifier cannot SET ROLE utop14_app; run verification as a PostgreSQL superuser';
+    END;
+    BEGIN
         DELETE FROM public.audit_logs WHERE false;
         RAISE EXCEPTION 'FAIL: app can DELETE audit_logs';
     EXCEPTION WHEN insufficient_privilege THEN
@@ -968,6 +1471,11 @@ DO $$
 BEGIN
     BEGIN
         EXECUTE 'SET LOCAL ROLE utop14_app';
+    EXCEPTION WHEN insufficient_privilege THEN
+        RAISE EXCEPTION
+            'FAIL: verifier cannot SET ROLE utop14_app; run verification as a PostgreSQL superuser';
+    END;
+    BEGIN
         UPDATE public.security_events SET user_agent = user_agent WHERE false;
         RAISE EXCEPTION 'FAIL: app can UPDATE security_events';
     EXCEPTION WHEN insufficient_privilege THEN
@@ -980,6 +1488,11 @@ DO $$
 BEGIN
     BEGIN
         EXECUTE 'SET LOCAL ROLE utop14_app';
+    EXCEPTION WHEN insufficient_privilege THEN
+        RAISE EXCEPTION
+            'FAIL: verifier cannot SET ROLE utop14_app; run verification as a PostgreSQL superuser';
+    END;
+    BEGIN
         DELETE FROM public.security_events WHERE false;
         RAISE EXCEPTION 'FAIL: app can DELETE security_events';
     EXCEPTION WHEN insufficient_privilege THEN

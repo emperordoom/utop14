@@ -3,7 +3,9 @@
 These tests are intentionally gated: set ``UTOP14_DISPOSABLE_PG=1`` to run
 them.  They create a throwaway PostgreSQL cluster, run all migrations as a
 dedicated schema owner, provision the retention roles as a superuser, and then
-verify OPS-01 ownership separation plus the M14331-02 hold races.
+verify OPS-01 ownership separation plus the M14331-02 hold races.  They also
+cover M14.3.14 column ACLs, database-level CREATE, MAINTAIN, verifier-role and
+search_path checks.
 
 They never touch the shared development database or production.
 """
@@ -147,6 +149,55 @@ def _verify(port: int) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         check=False,
+    )
+
+
+def _verify_as(port: int, role: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "psql",
+            "-h",
+            "127.0.0.1",
+            "-p",
+            str(port),
+            "-U",
+            role,
+            "-d",
+            DB,
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-f",
+            "scripts/security_event_retention_verify.sql",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _verify_with_search_path(port: int, search_path: str) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["PGOPTIONS"] = f"-c search_path={search_path}"
+    return subprocess.run(
+        [
+            "psql",
+            "-h",
+            "127.0.0.1",
+            "-p",
+            str(port),
+            "-U",
+            "postgres",
+            "-d",
+            DB,
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-f",
+            "scripts/security_event_retention_verify.sql",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
     )
 
 
@@ -727,6 +778,41 @@ def test_disposable_ownership_and_hold_concurrency() -> None:
             result = _psql(port, statement)
             assert result.returncode == 0, result.stderr
         assert _verify(port).returncode == 0
+
+        # --- M14314-06: application role search_path -----------------------
+        search_engine = create_engine(_role_dsn(port, "utop14_app"))
+        with search_engine.connect() as conn:
+            assert conn.execute(text("SHOW search_path")).scalar_one() == "public, pg_catalog"
+        search_engine.dispose()
+
+        result = _psql(
+            port,
+            f"ALTER ROLE utop14_app IN DATABASE {DB} SET search_path = pg_catalog, public",
+        )
+        assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "search_path", "utop14_app")
+        result = _psql(
+            port,
+            f"ALTER ROLE utop14_app IN DATABASE {DB} RESET search_path",
+        )
+        assert result.returncode == 0, result.stderr
+        assert _verify(port).returncode == 0
+
+        # --- M14314-04: verification requires an actual superuser ---------
+        schema_verify = _verify_as(port, "utop14_schema_owner")
+        schema_output = schema_verify.stdout + schema_verify.stderr
+        assert schema_verify.returncode != 0, schema_output
+        assert "superuser" in schema_output.lower(), schema_output
+        result = _psql(
+            port,
+            "CREATE ROLE m14314_verifier LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT",
+        )
+        assert result.returncode == 0, result.stderr
+        ordinary_verify = _verify_as(port, "m14314_verifier")
+        ordinary_output = ordinary_verify.stdout + ordinary_verify.stderr
+        assert ordinary_verify.returncode != 0, ordinary_output
+        assert "superuser" in ordinary_output.lower(), ordinary_output
+        assert _psql(port, "DROP ROLE m14314_verifier").returncode == 0
 
         # --- M14311-01: default-deny predefined/custom/nested memberships ---
         # Direct predefined role with SET-only membership.
@@ -1326,7 +1412,371 @@ def test_disposable_ownership_and_hold_concurrency() -> None:
             assert result.returncode == 0, result.stderr
             assert _verify(port).returncode == 0
 
-        # A privileged non-owner role proves the M13/M14.1 append-only triggers
+        # --- M14313-01: column-level ACLs are forbidden ---------------------
+        with admin.begin() as conn:
+            column_user_id = conn.execute(
+                text(
+                    "INSERT INTO users "
+                    "(email, password_hash, full_name, role, is_active) "
+                    "VALUES ('m14314-audit@example.com', 'x', 'M14314', "
+                    "'customer', true) RETURNING id"
+                )
+            ).scalar_one()
+            column_audit_id = conn.execute(
+                text(
+                    "INSERT INTO audit_logs "
+                    "(actor_id, actor_email, target_email, action, before_data, "
+                    "after_data, ip_address, user_agent) "
+                    "VALUES (:uid, 'actor@example.com', 'target@example.com', "
+                    "'user.activated', '{}'::jsonb, '{}'::jsonb, "
+                    "'127.0.0.1', '') RETURNING id"
+                ),
+                {"uid": column_user_id},
+            ).scalar_one()
+
+        result = _psql(
+            port,
+            "GRANT UPDATE(actor_id) ON public.audit_logs TO utop14_app",
+        )
+        assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "audit_logs", "column")
+        with app_engine.begin() as conn:
+            conn.execute(
+                text("UPDATE public.audit_logs SET actor_id=NULL WHERE id=:id"),
+                {"id": column_audit_id},
+            )
+        with admin.connect() as conn:
+            assert (
+                conn.execute(
+                    text("SELECT actor_id IS NULL FROM audit_logs WHERE id=:id"),
+                    {"id": column_audit_id},
+                ).scalar_one()
+                is True
+            )
+        assert (
+            _psql(
+                port,
+                "REVOKE UPDATE(actor_id) ON public.audit_logs FROM utop14_app",
+            ).returncode
+            == 0
+        )
+        assert _verify(port).returncode == 0
+
+        result = _psql(
+            port,
+            "GRANT SELECT(scope) ON public.security_event_retention_runs TO utop14_app",
+        )
+        assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "security_event_retention_runs", "column")
+        with app_engine.begin() as conn:
+            conn.execute(
+                text("SELECT count(scope) FROM public.security_event_retention_runs")
+            ).scalar_one()
+        assert (
+            _psql(
+                port,
+                "REVOKE SELECT(scope) ON public.security_event_retention_runs FROM utop14_app",
+            ).returncode
+            == 0
+        )
+        assert _verify(port).returncode == 0
+
+        run_columns = (
+            "id, run_id, batch_index, scope, cutoff, deleted_count, status, started_at, finished_at"
+        )
+        result = _psql(
+            port,
+            f"GRANT INSERT({run_columns}) ON public.security_event_retention_runs TO utop14_app",
+        )
+        assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "security_event_retention_runs", "column")
+        with app_engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO public.security_event_retention_runs "
+                    "(id, run_id, batch_index, scope, cutoff, deleted_count, "
+                    "status, started_at, finished_at) "
+                    "VALUES (999998, "
+                    "'11111111-1111-1111-1111-111111111111', 0, "
+                    "'success_logout', now() - interval '100 days', 0, "
+                    "'success', now(), now())"
+                )
+            )
+        with admin.connect() as conn:
+            assert (
+                conn.execute(
+                    text("SELECT count(*) FROM security_event_retention_runs WHERE id=999998")
+                ).scalar_one()
+                == 1
+            )
+        assert (
+            _psql(
+                port,
+                f"REVOKE INSERT({run_columns}) "
+                "ON public.security_event_retention_runs FROM utop14_app",
+            ).returncode
+            == 0
+        )
+        assert _verify(port).returncode == 0
+
+        result = _psql(
+            port,
+            "GRANT UPDATE(deleted_count) ON public.security_event_retention_runs TO utop14_app",
+        )
+        assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "security_event_retention_runs", "column")
+        with app_engine.begin() as conn:
+            conn.execute(text("UPDATE public.security_event_retention_runs SET deleted_count=777"))
+        with admin.connect() as conn:
+            assert (
+                conn.execute(
+                    text("SELECT deleted_count FROM security_event_retention_runs WHERE id=999998")
+                ).scalar_one()
+                == 777
+            )
+        assert (
+            _psql(
+                port,
+                "REVOKE UPDATE(deleted_count) "
+                "ON public.security_event_retention_runs FROM utop14_app",
+            ).returncode
+            == 0
+        )
+        assert (
+            _psql(
+                port, "DELETE FROM public.security_event_retention_runs WHERE id=999998"
+            ).returncode
+            == 0
+        )
+        assert _verify(port).returncode == 0
+
+        with admin.connect() as conn:
+            original_head = conn.execute(
+                text("SELECT version_num FROM public.alembic_version")
+            ).scalar_one()
+        result = _psql(
+            port,
+            "GRANT UPDATE(version_num) ON public.alembic_version TO utop14_app",
+        )
+        assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "alembic_version", "column")
+        with app_engine.begin() as conn:
+            conn.execute(text("UPDATE public.alembic_version SET version_num='deadbeef'"))
+        with admin.connect() as conn:
+            assert (
+                conn.execute(text("SELECT version_num FROM public.alembic_version")).scalar_one()
+                == "deadbeef"
+            )
+        with admin.begin() as conn:
+            conn.execute(
+                text("UPDATE public.alembic_version SET version_num=:v"),
+                {"v": original_head},
+            )
+        assert (
+            _psql(
+                port,
+                "REVOKE UPDATE(version_num) ON public.alembic_version FROM utop14_app",
+            ).returncode
+            == 0
+        )
+        assert _verify(port).returncode == 0
+
+        # A column grant to an unexpected role is also forbidden.
+        for statement in (
+            "CREATE ROLE m14314_column_role NOLOGIN",
+            "GRANT UPDATE(actor_id) ON public.audit_logs TO m14314_column_role",
+        ):
+            result = _psql(port, statement)
+            assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "m14314_column_role", "column")
+        for statement in (
+            "REVOKE UPDATE(actor_id) ON public.audit_logs FROM m14314_column_role",
+            "DROP ROLE m14314_column_role",
+        ):
+            result = _psql(port, statement)
+            assert result.returncode == 0, result.stderr
+        assert _verify(port).returncode == 0
+
+        # GRANT OPTION is itself an unexpected privilege.
+        result = _psql(
+            port,
+            "GRANT SELECT ON public.audit_logs TO utop14_app WITH GRANT OPTION",
+        )
+        assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "GRANT OPTION", "audit_logs")
+        assert (
+            _psql(
+                port,
+                "REVOKE SELECT ON public.audit_logs FROM utop14_app",
+            ).returncode
+            == 0
+        )
+        assert (
+            _psql(
+                port,
+                "GRANT SELECT, INSERT ON public.audit_logs TO utop14_app",
+            ).returncode
+            == 0
+        )
+        assert _verify(port).returncode == 0
+
+        result = _psql(
+            port,
+            "GRANT USAGE ON SCHEMA public TO utop14_app WITH GRANT OPTION",
+        )
+        assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "GRANT OPTION", "schema")
+        assert (
+            _psql(
+                port,
+                "REVOKE USAGE ON SCHEMA public FROM utop14_app",
+            ).returncode
+            == 0
+        )
+        assert (
+            _psql(
+                port,
+                "GRANT USAGE ON SCHEMA public TO utop14_app",
+            ).returncode
+            == 0
+        )
+        assert _verify(port).returncode == 0
+
+        with admin.connect() as conn:
+            remaining_column_acls = conn.execute(
+                text(
+                    "SELECT count(*) FROM pg_attribute a "
+                    "JOIN pg_class c ON c.oid = a.attrelid "
+                    "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                    "CROSS JOIN LATERAL aclexplode(a.attacl) x "
+                    "WHERE n.nspname='public' "
+                    "AND c.relkind IN ('r','p','f') "
+                    "AND a.attnum > 0 AND NOT a.attisdropped "
+                    "AND a.attacl IS NOT NULL "
+                    "AND x.grantee <> c.relowner"
+                )
+            ).scalar_one()
+        assert remaining_column_acls == 0, remaining_column_acls
+
+        # --- M14313-02: database-level CREATE is forbidden -----------------
+        for role in ("utop14_retention_owner", "utop14_retention_runner"):
+            try:
+                with admin.begin() as conn:
+                    conn.execute(text(f"SET LOCAL ROLE {role}"))
+                    conn.execute(text("CREATE SCHEMA m14314_create_probe"))
+                role_created = True
+            except SQLAlchemyError:
+                role_created = False
+            assert role_created is False, role
+        try:
+            with app_engine.begin() as conn:
+                conn.execute(text("CREATE SCHEMA m14314_create_probe"))
+            app_created = True
+        except SQLAlchemyError:
+            app_created = False
+        assert app_created is False
+        result = _psql(port, "CREATE ROLE m14314_public_probe NOLOGIN")
+        assert result.returncode == 0, result.stderr
+        try:
+            with admin.begin() as conn:
+                conn.execute(text("SET LOCAL ROLE m14314_public_probe"))
+                conn.execute(text("CREATE SCHEMA m14314_create_probe"))
+            public_created = True
+        except SQLAlchemyError:
+            public_created = False
+        assert public_created is False
+        assert _psql(port, "DROP ROLE m14314_public_probe").returncode == 0
+
+        result = _psql(port, f"GRANT CREATE ON DATABASE {DB} TO utop14_app")
+        assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "database", "CREATE")
+        with app_engine.begin() as conn:
+            conn.execute(text("CREATE SCHEMA m14314_create_probe"))
+        assert _psql(port, "DROP SCHEMA m14314_create_probe CASCADE").returncode == 0
+        provisioning_after_db_create = _psql_file(
+            port, "scripts/security_event_retention_roles.sql"
+        )
+        assert provisioning_after_db_create.returncode == 0, (
+            provisioning_after_db_create.stdout + provisioning_after_db_create.stderr
+        )
+        with admin.connect() as conn:
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT has_database_privilege('utop14_app', current_database(), 'CREATE')"
+                    )
+                ).scalar_one()
+                is False
+            )
+        assert _verify(port).returncode == 0
+
+        # PUBLIC CREATE SCHEMA is forbidden and provisioning reconciles it.
+        result = _psql(port, f"GRANT CREATE ON DATABASE {DB} TO PUBLIC")
+        assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "database", "PUBLIC")
+        result = _psql(port, "CREATE ROLE m14314_public_probe NOLOGIN")
+        assert result.returncode == 0, result.stderr
+        with admin.begin() as conn:
+            conn.execute(text("SET LOCAL ROLE m14314_public_probe"))
+            conn.execute(text("CREATE SCHEMA m14314_public_create_probe"))
+        assert _psql(port, "DROP SCHEMA m14314_public_create_probe CASCADE").returncode == 0
+        provisioning_after_public_create = _psql_file(
+            port, "scripts/security_event_retention_roles.sql"
+        )
+        assert provisioning_after_public_create.returncode == 0, (
+            provisioning_after_public_create.stdout + provisioning_after_public_create.stderr
+        )
+        assert _psql(port, "DROP ROLE m14314_public_probe").returncode == 0
+        assert _verify(port).returncode == 0
+
+        # --- M14313-03: MAINTAIN is forbidden on PostgreSQL 17+ -----------
+        with admin.connect() as conn:
+            server_version = conn.execute(
+                text("SELECT current_setting('server_version_num')::integer")
+            ).scalar_one()
+        if server_version >= 170000:
+            result = _psql(
+                port,
+                "GRANT MAINTAIN ON public.audit_logs TO utop14_app",
+            )
+            assert result.returncode == 0, result.stderr
+            _assert_verify_fails(port, "MAINTAIN", "audit_logs")
+            provisioning_after_maintain = _psql_file(
+                port, "scripts/security_event_retention_roles.sql"
+            )
+            assert provisioning_after_maintain.returncode == 0, (
+                provisioning_after_maintain.stdout + provisioning_after_maintain.stderr
+            )
+            with admin.connect() as conn:
+                assert (
+                    conn.execute(
+                        text(
+                            "SELECT has_table_privilege('utop14_app', "
+                            "'public.audit_logs', 'MAINTAIN')"
+                        )
+                    ).scalar_one()
+                    is False
+                )
+            assert _verify(port).returncode == 0
+
+        # --- M14313-05: hostile schema / caller search_path ----------------
+        for statement in (
+            "CREATE SCHEMA m14314_hostile",
+            "CREATE TABLE m14314_hostile.audit_logs (id integer, actor_email text)",
+            "GRANT SELECT ON m14314_hostile.audit_logs TO utop14_app",
+            "CREATE FUNCTION m14314_hostile.has_table_privilege("
+            "text, text, text) RETURNS boolean LANGUAGE plpgsql AS $$ "
+            "BEGIN RAISE EXCEPTION 'shadow function called'; END $$",
+        ):
+            result = _psql(port, statement)
+            assert result.returncode == 0, result.stderr
+        hostile = _verify_with_search_path(port, "m14314_hostile,public")
+        hostile_output = hostile.stdout + hostile.stderr
+        assert hostile.returncode != 0, hostile_output
+        assert "m14314_hostile" in hostile_output, hostile_output
+        assert _psql(port, "DROP SCHEMA m14314_hostile CASCADE").returncode == 0
+        assert _verify(port).returncode == 0
+
         # deny row mutation even when table privileges are present.
         for statement in (
             "CREATE ROLE utop14_trigger_tester LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT",
@@ -1374,6 +1824,15 @@ def test_disposable_ownership_and_hold_concurrency() -> None:
             raise AssertionError("trigger tester disabled audit_logs trigger")
         except SQLAlchemyError as exc:
             assert "must be owner" in str(exc).lower(), str(exc)
+
+        # The trigger tester is a temporary probe role.  Remove its grants so
+        # the complete table ACL matrix stays clean for later verification.
+        trigger_engine.dispose()
+        result = _psql(port, "DROP OWNED BY utop14_trigger_tester")
+        assert result.returncode == 0, result.stderr
+        result = _psql(port, "DROP ROLE utop14_trigger_tester")
+        assert result.returncode == 0, result.stderr
+        assert _verify(port).returncode == 0
 
         # --- Function validation ------------------------------------------
         for statement, needle in (
