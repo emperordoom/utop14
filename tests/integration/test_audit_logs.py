@@ -9,7 +9,7 @@ from uuid import uuid4
 import pytest
 from flask import Flask
 from flask.testing import FlaskClient
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from werkzeug.middleware.proxy_fix import ProxyFix
 
@@ -978,3 +978,34 @@ def test_audit_database_constraints(
     with pytest.raises(SQLAlchemyError):
         db.session.commit()
     db.session.rollback()
+
+
+@pytest.mark.parametrize("timezone", ["UTC", "Asia/Jakarta"])
+def test_audit_log_timestamps_render_utc_for_database_timezone(
+    app: Flask,
+    client: FlaskClient,
+    make_user,
+    login,
+    database_timezone,
+    timezone: str,
+) -> None:
+    database_timezone(timezone)
+    assert db.session.execute(text("SHOW timezone")).scalar_one() == timezone
+
+    admin = _admin(make_user)
+    target = make_user(email=f"audit-timestamp-{timezone.replace('/', '-')}@example.com")
+    log = _add_log(
+        admin,
+        target,
+        created_at=datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC),
+    )
+    log_id = log.id
+    login(admin.email)
+
+    list_html = client.get("/admin/audit-logs").get_data(as_text=True)
+    detail_html = client.get(f"/admin/audit-logs/{log_id}").get_data(as_text=True)
+
+    assert "01 Jan 2026, 00:00:00" in list_html
+    assert "01 Jan 2026, 00:00:00 UTC" in detail_html
+    assert "01 Jan 2026, 07:00:00" not in list_html
+    assert "01 Jan 2026, 07:00:00 UTC" not in detail_html

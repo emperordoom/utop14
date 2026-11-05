@@ -10,7 +10,7 @@ import pytest
 from flask import Flask
 from flask.testing import FlaskClient
 from sqlalchemy import event as sqlalchemy_event
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy import inspect as sa_inspect
 
 from app.extensions import db
@@ -1127,7 +1127,7 @@ def test_admin_can_view_security_event_detail(
     assert response.headers["Cache-Control"] == "private, no-store"
     assert response.headers["Referrer-Policy"] == "no-referrer"
     assert f"#{event.id}" in html
-    assert event.created_at.strftime("%d %b %Y, %H:%M:%S UTC") in html
+    assert event.created_at.astimezone(UTC).strftime("%d %b %Y, %H:%M:%S UTC") in html
     assert "Login succeeded" in html
     assert "Success" in html
     assert "Authenticated" in html
@@ -1471,3 +1471,30 @@ def test_related_event_links_follow_and_fail_closed(
     malformed_list = _html(client.get("/admin/security-events?request_id=bad"))
     assert "Request ID" in malformed_list
     assert "malformed-related@example.com" not in malformed_list
+
+
+@pytest.mark.parametrize("timezone", ["UTC", "Asia/Jakarta"])
+def test_security_event_timestamps_render_utc_for_database_timezone(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+    database_timezone: Callable[[str], None],
+    timezone: str,
+) -> None:
+    database_timezone(timezone)
+    assert db.session.execute(text("SHOW timezone")).scalar_one() == timezone
+
+    admin = _admin(make_user)
+    event = _add_event(created_at=datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC))
+    event_id = event.id
+    _silent_login(client, csrf_token, monkeypatch, email=admin.email)
+
+    list_html = _html(client.get("/admin/security-events"))
+    detail_html = _html(client.get(f"/admin/security-events/{event_id}"))
+
+    assert "01 Jan 2026, 00:00:00 UTC" in list_html
+    assert "01 Jan 2026, 00:00:00 UTC" in detail_html
+    assert "01 Jan 2026, 07:00:00 UTC" not in list_html
+    assert "01 Jan 2026, 07:00:00 UTC" not in detail_html

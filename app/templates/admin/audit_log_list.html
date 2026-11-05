@@ -149,7 +149,7 @@
             <tbody>
               {% for log in pagination.items %}
                 <tr>
-                  <td class="mono">{{ log.created_at.strftime("%d %b %Y, %H:%M:%S") }}</td>
+                  <td class="mono">{{ log.created_at|utc("%d %b %Y, %H:%M:%S") }}</td>
                   <td>{{ audit_action_badge(log.action) }}</td>
                   <td>
                     <p class="admin-table__primary">{{ log.actor_email }}</p>

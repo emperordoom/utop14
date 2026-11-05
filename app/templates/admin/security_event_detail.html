@@ -63,7 +63,7 @@
           </div>
           <div>
             <dt>Timestamp (UTC)</dt>
-            <dd class="mono">{{ event.created_at.strftime("%d %b %Y, %H:%M:%S UTC") }}</dd>
+            <dd class="mono">{{ event.created_at|utc }}</dd>
           </div>
           <div>
             <dt>Event type</dt>

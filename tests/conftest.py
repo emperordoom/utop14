@@ -254,6 +254,33 @@ def csrf_token(client: FlaskClient) -> Callable[[str], str]:
 
 
 @pytest.fixture()
+def database_timezone(app: Flask) -> Iterator[Callable[[str], None]]:
+    """Set the PostgreSQL session timezone and restore it after the test.
+
+    The app fixture keeps one scoped session for the test, so setting the
+    session timezone affects the same connection used by test-client requests.
+    The previous value is restored even when an assertion fails.
+    """
+    previous = db.session.execute(text("SHOW timezone")).scalar_one()
+
+    def _set_timezone(name: str) -> None:
+        db.session.execute(
+            text("SELECT set_config('TimeZone', :name, false)"),
+            {"name": name},
+        )
+
+    try:
+        yield _set_timezone
+    finally:
+        db.session.rollback()
+        db.session.execute(
+            text("SELECT set_config('TimeZone', :name, false)"),
+            {"name": previous},
+        )
+        db.session.rollback()
+
+
+@pytest.fixture()
 def login(
     client: FlaskClient,
     csrf_token: Callable[[str], str],

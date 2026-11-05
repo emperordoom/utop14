@@ -215,7 +215,7 @@
                 <tr class="security-event-row">
                   <td class="mono">#{{ event.id }}</td>
                   <td class="mono security-event-timestamp">
-                    {{ event.created_at.strftime("%d %b %Y, %H:%M:%S UTC") }}
+                    {{ event.created_at|utc }}
                   </td>
                   <td>{{ security_event_type_badge(event.event_type) }}</td>
                   <td>{{ security_outcome_badge(event.outcome) }}</td>
