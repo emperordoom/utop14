@@ -125,6 +125,29 @@ def _psql(port: int, sql: str, *, db: str = DB) -> subprocess.CompletedProcess[s
     )
 
 
+def _psql_as(port: int, role: str, sql: str, *, db: str = DB) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "psql",
+            "-h",
+            "127.0.0.1",
+            "-p",
+            str(port),
+            "-U",
+            role,
+            "-d",
+            db,
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-c",
+            sql,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
 def _role_dsn(port: int, role: str) -> str:
     return f"postgresql+psycopg://{role}@127.0.0.1:{port}/{DB}"
 
@@ -1758,6 +1781,403 @@ def test_disposable_ownership_and_hold_concurrency() -> None:
                     is False
                 )
             assert _verify(port).returncode == 0
+
+        # --- M14315-01: parameter ACLs and persistent GUCs ----------------
+        # Before any grant, the app cannot set a superuser-only GUC.
+        try:
+            with app_engine.begin() as conn:
+                conn.execute(text("SET LOCAL session_preload_libraries = ''"))
+            preload_denied = False
+        except SQLAlchemyError:
+            preload_denied = True
+        assert preload_denied is True
+
+        for parameter, runtime_sql in (
+            (
+                "session_preload_libraries",
+                "SET LOCAL session_preload_libraries = ''",
+            ),
+            ("log_statement", "SET LOCAL log_statement = 'all'"),
+        ):
+            result = _psql(
+                port,
+                f"GRANT SET ON PARAMETER {parameter} TO utop14_app",
+            )
+            assert result.returncode == 0, result.stderr
+            _assert_verify_fails(port, "parameter", parameter)
+            with app_engine.begin() as conn:
+                conn.execute(text(runtime_sql))
+            provisioned = _psql_file(port, "scripts/security_event_retention_roles.sql")
+            assert provisioned.returncode == 0, provisioned.stdout + provisioned.stderr
+            with admin.connect() as conn:
+                assert (
+                    conn.execute(
+                        text("SELECT has_parameter_privilege('utop14_app', :p, 'SET')"),
+                        {"p": parameter},
+                    ).scalar_one()
+                    is False
+                )
+            assert _verify(port).returncode == 0
+
+        result = _psql(
+            port,
+            "GRANT SET ON PARAMETER session_authorization TO utop14_app",
+        )
+        assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "parameter", "session_authorization")
+        provisioned = _psql_file(port, "scripts/security_event_retention_roles.sql")
+        assert provisioned.returncode == 0, provisioned.stdout + provisioned.stderr
+        with admin.connect() as conn:
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT has_parameter_privilege("
+                        "'utop14_app', 'session_authorization', 'SET')"
+                    )
+                ).scalar_one()
+                is False
+            )
+        assert _verify(port).returncode == 0
+
+        # PUBLIC parameter grants.
+        for parameter, runtime_sql in (
+            (
+                "session_preload_libraries",
+                "SET LOCAL session_preload_libraries = ''",
+            ),
+            ("log_statement", "SET LOCAL log_statement = 'all'"),
+        ):
+            result = _psql(
+                port,
+                f"GRANT SET ON PARAMETER {parameter} TO PUBLIC",
+            )
+            assert result.returncode == 0, result.stderr
+            _assert_verify_fails(port, "parameter", parameter)
+            with app_engine.begin() as conn:
+                conn.execute(text(runtime_sql))
+            provisioned = _psql_file(port, "scripts/security_event_retention_roles.sql")
+            assert provisioned.returncode == 0, provisioned.stdout + provisioned.stderr
+            with admin.connect() as conn:
+                assert (
+                    conn.execute(
+                        text(
+                            "SELECT count(*) FROM pg_parameter_acl pa "
+                            "CROSS JOIN LATERAL aclexplode(pa.paracl) a "
+                            "WHERE pa.parname=:p AND a.grantee=0"
+                        ),
+                        {"p": parameter},
+                    ).scalar_one()
+                    == 0
+                )
+            assert _verify(port).returncode == 0
+
+        # Parameter GRANT OPTION and delegation to PUBLIC.
+        result = _psql(
+            port,
+            "GRANT SET ON PARAMETER log_statement TO utop14_app WITH GRANT OPTION",
+        )
+        assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "GRANT OPTION", "parameter")
+        result = _psql_as(
+            port,
+            "utop14_app",
+            "GRANT SET ON PARAMETER log_statement TO PUBLIC",
+        )
+        assert result.returncode == 0, result.stderr
+        provisioned = _psql_file(port, "scripts/security_event_retention_roles.sql")
+        assert provisioned.returncode == 0, provisioned.stdout + provisioned.stderr
+        with admin.connect() as conn:
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT count(*) FROM pg_parameter_acl pa "
+                        "CROSS JOIN LATERAL aclexplode(pa.paracl) a "
+                        "WHERE pa.parname='log_statement' "
+                        "AND (a.grantee=0 OR pg_get_userbyid(a.grantee) IN "
+                        "('utop14_app','utop14_retention_owner',"
+                        "'utop14_retention_runner'))"
+                    )
+                ).scalar_one()
+                == 0
+            )
+        assert _verify(port).returncode == 0
+
+        # ALTER SYSTEM parameter privilege.
+        result = _psql(
+            port,
+            "GRANT ALTER SYSTEM ON PARAMETER log_statement TO utop14_app",
+        )
+        assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "ALTER SYSTEM", "parameter")
+        altsys = _psql_as(
+            port,
+            "utop14_app",
+            "ALTER SYSTEM SET log_statement = 'all'",
+        )
+        assert altsys.returncode == 0, altsys.stderr
+        assert _psql(port, "ALTER SYSTEM RESET log_statement").returncode == 0
+        provisioned = _psql_file(port, "scripts/security_event_retention_roles.sql")
+        assert provisioned.returncode == 0, provisioned.stdout + provisioned.stderr
+        with admin.connect() as conn:
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT has_parameter_privilege("
+                        "'utop14_app', 'log_statement', 'ALTER SYSTEM')"
+                    )
+                ).scalar_one()
+                is False
+            )
+        assert _verify(port).returncode == 0
+
+        # Unrelated custom-role parameter grant passes; an effective membership
+        # path fails and is removed by provisioning.
+        for statement in (
+            "CREATE ROLE m14316_param_role NOLOGIN",
+            "GRANT SET ON PARAMETER session_preload_libraries TO m14316_param_role",
+        ):
+            result = _psql(port, statement)
+            assert result.returncode == 0, result.stderr
+        assert _verify(port).returncode == 0
+        result = _psql(
+            port,
+            "GRANT m14316_param_role TO utop14_app WITH SET TRUE, INHERIT FALSE",
+        )
+        assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "m14316_param_role")
+        assert _psql(port, "REVOKE m14316_param_role FROM utop14_app").returncode == 0
+        assert _verify(port).returncode == 0
+        assert (
+            _psql(
+                port,
+                "REVOKE SET ON PARAMETER session_preload_libraries FROM m14316_param_role",
+            ).returncode
+            == 0
+        )
+        assert _psql(port, "DROP ROLE m14316_param_role").returncode == 0
+        assert _verify(port).returncode == 0
+
+        # Role-level GUCs: every entry except the approved app search_path fails.
+        for statement, needle in (
+            (
+                "ALTER ROLE utop14_app SET session_preload_libraries = ''",
+                "session_preload_libraries",
+            ),
+            (
+                "ALTER ROLE utop14_app SET log_statement = 'all'",
+                "log_statement",
+            ),
+            (
+                "ALTER ROLE utop14_app SET work_mem = '64MB'",
+                "work_mem",
+            ),
+            (
+                "ALTER ROLE utop14_app SET search_path = pg_catalog, public",
+                "search_path",
+            ),
+        ):
+            result = _psql(port, statement)
+            assert result.returncode == 0, result.stderr
+            _assert_verify_fails(port, needle, "utop14_app")
+            provisioned = _psql_file(port, "scripts/security_event_retention_roles.sql")
+            assert provisioned.returncode == 0, provisioned.stdout + provisioned.stderr
+            with admin.connect() as conn:
+                assert conn.execute(
+                    text("SELECT rolconfig FROM pg_roles WHERE rolname='utop14_app'")
+                ).scalar_one() == ["search_path=public, pg_catalog"]
+            assert _verify(port).returncode == 0
+
+        result = _psql(
+            port,
+            "ALTER ROLE utop14_app SET search_path = public, pg_catalog",
+        )
+        assert result.returncode == 0, result.stderr
+        assert _verify(port).returncode == 0
+
+        result = _psql(
+            port,
+            "ALTER ROLE utop14_retention_owner SET work_mem = '64MB'",
+        )
+        assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "work_mem", "utop14_retention_owner")
+        provisioned = _psql_file(port, "scripts/security_event_retention_roles.sql")
+        assert provisioned.returncode == 0, provisioned.stdout + provisioned.stderr
+        assert _verify(port).returncode == 0
+
+        # Schema-owner non-search_path settings require DBA reconciliation.
+        result = _psql(
+            port,
+            "ALTER ROLE utop14_schema_owner SET session_preload_libraries = ''",
+        )
+        assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "session_preload_libraries", "utop14_schema_owner")
+        schema_failed = _psql_file(port, "scripts/security_event_retention_roles.sql")
+        schema_failed_output = schema_failed.stdout + schema_failed.stderr
+        assert schema_failed.returncode != 0, schema_failed_output
+        assert "reconciliation" in schema_failed_output.lower()
+        assert (
+            _psql(
+                port,
+                "ALTER ROLE utop14_schema_owner RESET session_preload_libraries",
+            ).returncode
+            == 0
+        )
+        assert _verify(port).returncode == 0
+        provisioned = _psql_file(port, "scripts/security_event_retention_roles.sql")
+        assert provisioned.returncode == 0, provisioned.stdout + provisioned.stderr
+
+        # Database-specific managed-role GUCs are rejected and reset.
+        for statement, role in (
+            (
+                "ALTER ROLE utop14_app IN DATABASE {db} SET session_preload_libraries = ''",
+                "utop14_app",
+            ),
+            (
+                "ALTER ROLE utop14_retention_runner IN DATABASE {db} SET work_mem = '64MB'",
+                "utop14_retention_runner",
+            ),
+            (
+                "ALTER ROLE utop14_app IN DATABASE {db} SET search_path = public, pg_catalog",
+                "utop14_app",
+            ),
+        ):
+            result = _psql(port, statement.format(db=DB))
+            assert result.returncode == 0, result.stderr
+            _assert_verify_fails(port, "database-specific", role)
+            provisioned = _psql_file(port, "scripts/security_event_retention_roles.sql")
+            assert provisioned.returncode == 0, provisioned.stdout + provisioned.stderr
+            with admin.connect() as conn:
+                assert (
+                    conn.execute(
+                        text(
+                            "SELECT count(*) FROM pg_db_role_setting s "
+                            "WHERE pg_get_userbyid(s.setrole)=:r "
+                            "AND s.setdatabase=("
+                            "SELECT oid FROM pg_database "
+                            "WHERE datname=current_database()) "
+                            "AND s.setconfig IS NOT NULL "
+                            "AND array_length(s.setconfig,1) > 0"
+                        ),
+                        {"r": role},
+                    ).scalar_one()
+                    == 0
+                )
+            assert _verify(port).returncode == 0
+
+        # Database-wide settings are DBA-reconciled, never silently changed.
+        for setting in (
+            "log_statement = 'all'",
+            "work_mem = '64MB'",
+            "search_path = public, pg_catalog",
+        ):
+            result = _psql(port, f"ALTER DATABASE {DB} SET {setting}")
+            assert result.returncode == 0, result.stderr
+            _assert_verify_fails(port, "database-wide")
+            failed_provision = _psql_file(port, "scripts/security_event_retention_roles.sql")
+            failed_output = failed_provision.stdout + failed_provision.stderr
+            assert failed_provision.returncode != 0, failed_output
+            assert "database-wide" in failed_output, failed_output
+            parameter = setting.split(" = ")[0]
+            assert _psql(port, f"ALTER DATABASE {DB} RESET {parameter}").returncode == 0
+            assert _verify(port).returncode == 0
+            provisioned = _psql_file(port, "scripts/security_event_retention_roles.sql")
+            assert provisioned.returncode == 0, provisioned.stdout + provisioned.stderr
+
+        # Ownership template also reconciles parameter grants and GUCs.
+        result = _psql(
+            port,
+            "GRANT SET ON PARAMETER session_preload_libraries TO utop14_app",
+        )
+        assert result.returncode == 0, result.stderr
+        result = _psql(
+            port,
+            "ALTER ROLE utop14_app SET work_mem = '64MB'",
+        )
+        assert result.returncode == 0, result.stderr
+        template_run = _psql_stdin(port, ownership_sql)
+        assert template_run.returncode == 0, template_run.stdout + template_run.stderr
+        assert _verify(port).returncode == 0
+
+        # The ownership template also fails closed on database-wide and
+        # schema-owner GUCs rather than silently changing unrelated settings.
+        result = _psql(port, f"ALTER DATABASE {DB} SET work_mem = '64MB'")
+        assert result.returncode == 0, result.stderr
+        template_db_wide = _psql_stdin(port, ownership_sql)
+        template_db_output = template_db_wide.stdout + template_db_wide.stderr
+        assert template_db_wide.returncode != 0, template_db_output
+        assert "database-wide" in template_db_output, template_db_output
+        assert _psql(port, f"ALTER DATABASE {DB} RESET work_mem").returncode == 0
+        result = _psql(
+            port,
+            "ALTER ROLE utop14_schema_owner SET session_preload_libraries = ''",
+        )
+        assert result.returncode == 0, result.stderr
+        template_schema = _psql_stdin(port, ownership_sql)
+        template_schema_output = template_schema.stdout + template_schema.stderr
+        assert template_schema.returncode != 0, template_schema_output
+        assert "reconciliation" in template_schema_output.lower(), template_schema_output
+        assert (
+            _psql(
+                port,
+                "ALTER ROLE utop14_schema_owner RESET session_preload_libraries",
+            ).returncode
+            == 0
+        )
+        template_recovered = _psql_stdin(port, ownership_sql)
+        assert template_recovered.returncode == 0, (
+            template_recovered.stdout + template_recovered.stderr
+        )
+        assert _verify(port).returncode == 0
+
+        with admin.connect() as conn:
+            app_config = conn.execute(
+                text("SELECT rolconfig FROM pg_roles WHERE rolname='utop14_app'")
+            ).scalar_one()
+            parameter_grants = conn.execute(
+                text(
+                    "SELECT count(*) FROM pg_parameter_acl pa "
+                    "CROSS JOIN LATERAL aclexplode(pa.paracl) a "
+                    "WHERE a.grantee=0 OR pg_get_userbyid(a.grantee) IN "
+                    "('utop14_app','utop14_retention_owner',"
+                    "'utop14_retention_runner')"
+                )
+            ).scalar_one()
+            db_specific = conn.execute(
+                text(
+                    "SELECT count(*) FROM pg_db_role_setting s "
+                    "WHERE pg_get_userbyid(s.setrole) IN "
+                    "('utop14_app','utop14_retention_owner',"
+                    "'utop14_retention_runner') "
+                    "AND s.setdatabase=("
+                    "SELECT oid FROM pg_database "
+                    "WHERE datname=current_database()) "
+                    "AND s.setconfig IS NOT NULL "
+                    "AND array_length(s.setconfig,1) > 0"
+                )
+            ).scalar_one()
+            db_wide = conn.execute(
+                text(
+                    "SELECT count(*) FROM pg_db_role_setting s "
+                    "WHERE s.setrole=0 "
+                    "AND s.setdatabase IN (0, ("
+                    "SELECT oid FROM pg_database "
+                    "WHERE datname=current_database())) "
+                    "AND s.setconfig IS NOT NULL "
+                    "AND array_length(s.setconfig,1) > 0"
+                )
+            ).scalar_one()
+        assert app_config == ["search_path=public, pg_catalog"], app_config
+        assert parameter_grants == 0, parameter_grants
+        assert db_specific == 0, db_specific
+        assert db_wide == 0, db_wide
+        assert _verify(port).returncode == 0
+        second_provision = _psql_file(port, "scripts/security_event_retention_roles.sql")
+        assert second_provision.returncode == 0, second_provision.stdout + second_provision.stderr
+        assert _verify(port).returncode == 0
+        search_engine = create_engine(_role_dsn(port, "utop14_app"))
+        with search_engine.connect() as conn:
+            assert conn.execute(text("SHOW search_path")).scalar_one() == "public, pg_catalog"
+        search_engine.dispose()
 
         # --- M14313-05: hostile schema / caller search_path ----------------
         for statement in (

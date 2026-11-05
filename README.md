@@ -839,6 +839,39 @@ M14.3.14 closes the remaining direct-ACL verification gaps:
 - Existing application connections and connection pools keep their old session
   `search_path` until they reconnect; recycle pools after provisioning.
 
+M14.3.16 closes the parameter-ACL and persistent-GUC gaps:
+
+- Verification inspects `pg_parameter_acl` and `has_parameter_privilege` for
+  every parameter `SET` and `ALTER SYSTEM` grant. Managed roles and PUBLIC must
+  have no such grant and no GRANT OPTION. Effective privileges through PUBLIC or
+  a custom-role membership path are rejected; unrelated DBA/custom-role grants
+  are not treated as application privileges.
+- The project supports PostgreSQL 16+; if `pg_parameter_acl` or
+  `has_parameter_privilege` is unavailable, verification and provisioning fail
+  closed instead of silently skipping the check.
+- Persistent GUCs are checked catalog-wide, not by a short dangerous-name list:
+  - `utop14_app` role-level settings must be exactly
+    `search_path=public, pg_catalog` (one entry, no extras).
+  - Retention owner/runner must have no role-level or database-specific settings.
+  - `utop14_schema_owner` may have `search_path` only; any other persistent GUC
+    requires explicit DBA reconciliation.
+  - Database-specific settings for managed roles are rejected; provisioning
+    resets them with `ALTER ROLE ... IN DATABASE ... RESET ALL`.
+  - Database-wide/global settings that affect application sessions are rejected
+    with a DBA-reconciliation error; verification and provisioning never
+    silently modify unrelated roles.
+- Provisioning resets all persistent role-level and database-specific GUCs for
+  the managed roles, applies the approved app search_path, and revokes parameter
+  `SET`/`ALTER SYSTEM` grants for managed roles and PUBLIC (including dependent
+  grants via `CASCADE`). Postconditions cover parameter ACLs, role-level GUCs,
+  database-specific GUCs, database-wide GUCs, and the app search_path.
+- The disposable test includes direct, PUBLIC, GRANT OPTION, ALTER SYSTEM,
+  custom-role, role-level, database-specific, database-wide, hostile-schema, and
+  second-run provisioning cases.
+- PostgreSQL 16 parameter/GUC runtime behavior was not available for testing in
+  this environment; the catalog/function/syntax compatibility is inspected, but
+  only PostgreSQL 18.6 was runtime-tested.
+
 ### Production ownership model (OPS-01)
 
 The append-only and retention boundary depends on ownership separation. The
@@ -853,12 +886,14 @@ PostgreSQL cluster with a separate DDL role:
   schema owner, table owner, sequence owner, or function owner, and it has no
   `CREATE` on the application schema or the application database. It has no
   role memberships, no function `EXECUTE` (including trigger/helper functions),
-  no explicit column-level grants, no `GRANT OPTION`, and its configured
-  `search_path` is `public, pg_catalog` (not the default `"$user", public`).
+  no explicit column-level grants, no `GRANT OPTION`, no parameter `SET` or
+  `ALTER SYSTEM`, and no persistent GUC other than
+  `search_path=public, pg_catalog`.
 - `utop14_retention_owner` remains NOLOGIN and owns only
   `public.prune_security_events`. `utop14_retention_runner` remains separate and
   has only function `EXECUTE` plus run-log append. Neither retention role has
-  database `CREATE`, explicit column grants, or `GRANT OPTION`.
+  database `CREATE`, explicit column grants, `GRANT OPTION`, parameter
+  `SET`/`ALTER SYSTEM`, or persistent GUC settings.
 - The app grant matrix is least-privilege and complete:
   - `SELECT, INSERT` on `security_events`, `audit_logs`, and `order_items`
     (append-only/immutable writes; no UPDATE/DELETE).
@@ -889,20 +924,26 @@ inventories every schema, type, extension, table, sequence, function, trigger
 and view, enforces default-deny memberships, checks ownership and the complete
 app/owner/runner table, column, sequence and function ACL/EXECUTE matrices
 (including `GRANT OPTION`), checks database-level `CREATE` and PostgreSQL 17+
-`MAINTAIN`, checks every non-system schema for app/retention `CREATE` and
-`USAGE`, and probes append-only boundaries. The ownership model is only
-considered verified when the disposable ownership/privilege test passes the
-rate-limit, audit, security-event, trigger-disable, ALTER, DELETE, TRUNCATE,
-membership, schema, type, column-ACL, database-CREATE, MAINTAIN,
-function-EXECUTE, provisioning-idempotency and negative-grant probes.
+`MAINTAIN`, checks `pg_parameter_acl` for `SET`/`ALTER SYSTEM` grants and
+GRANT OPTION, checks all role-level and database-specific GUCs against the
+approved allowlist, checks database-wide settings for DBA reconciliation,
+checks every non-system schema for app/retention `CREATE` and `USAGE`, and
+probes append-only boundaries. The ownership model is only considered verified
+when the disposable ownership/privilege test passes the rate-limit, audit,
+security-event, trigger-disable, ALTER, DELETE, TRUNCATE, membership, schema,
+type, column-ACL, database-CREATE, MAINTAIN, parameter-ACL, role-GUC,
+database-GUC, function-EXECUTE, provisioning-idempotency and negative-grant
+probes.
 
-Provisioning requires PostgreSQL 16 or newer for per-membership
-`INHERIT`/`SET`/`ADMIN` options; the verification and provisioning scripts read
-those options through `to_jsonb` and treat a missing option as `TRUE` on older
-catalogs, so they do not falsely pass an unverifiable membership. The scripts
-assume the role names `utop14_schema_owner`, `utop14_app`,
-`utop14_retention_owner`, and `utop14_retention_runner`; replace them
-consistently if the deployment uses different names.
+Provisioning requires PostgreSQL 16 or newer. Parameter ACLs use
+`pg_parameter_acl` and `has_parameter_privilege` (PostgreSQL 15+); if those are
+unavailable, provisioning and verification fail closed. The membership option
+columns `INHERIT`/`SET`/`ADMIN` are read through `to_jsonb` and a missing option
+is treated as `TRUE` on older catalogs, so they do not falsely pass an
+unverifiable membership. The scripts assume the role names
+`utop14_schema_owner`, `utop14_app`, `utop14_retention_owner`, and
+`utop14_retention_runner`; replace them consistently if the deployment uses
+different names.
 
 Provisioning and recovery:
 
@@ -911,9 +952,11 @@ Provisioning and recovery:
    PostgreSQL superuser.
 2. The roles script is repeatable: a second run succeeds and produces the same
    non-owner ACL and ownership state. It creates missing retention roles,
-   reconciles their `LOGIN`/`INHERIT`/privilege attributes, sets the app
-   `search_path` to `public, pg_catalog`, revokes database-level `CREATE`, and
-   never reads or changes passwords.
+   reconciles their `LOGIN`/`INHERIT`/privilege attributes, resets all
+   persistent role-level and database-specific GUCs, sets the app `search_path`
+   to `public, pg_catalog`, revokes database-level `CREATE`, and revokes
+   parameter `SET`/`ALTER SYSTEM` grants for managed roles and PUBLIC. It never
+   reads or changes passwords.
 3. A forward membership of `utop14_app`, `utop14_retention_owner`, or
    `utop14_retention_runner` is removed by provisioning and reported with
    `REVOKED forbidden membership`. A reverse membership (another role can
@@ -923,11 +966,15 @@ Provisioning and recovery:
    fails preflight; correct it with `ALTER ROLE ... NOSUPERUSER NOCREATEDB
    NOCREATEROLE NOREPLICATION NOBYPASSRLS` and rerun. Preflight failure is
    transactional: no partial grants remain.
-5. A pre-existing column-level grant, database `CREATE`, or `MAINTAIN` is
-   removed by the roles script. Verification fails if a forbidden grant is
-   reintroduced after provisioning. Recycle existing application connections
-   and pools after provisioning so they pick up the new `search_path`.
-6. Any new schema, extension, type/domain, table, sequence, function, trigger
+5. Database-wide GUCs and non-`search_path` schema-owner GUCs are not modified
+   automatically. Verification and provisioning fail with a DBA-reconciliation
+   message; the DBA must review and reset the setting, then rerun.
+6. A pre-existing column-level grant, database `CREATE`, `MAINTAIN`, or
+   parameter privilege is removed by the roles script. Verification fails if a
+   forbidden grant or GUC is reintroduced after provisioning. Recycle existing
+   application connections and pools after provisioning so they pick up the new
+   `search_path`.
+7. Any new schema, extension, type/domain, table, sequence, function, trigger
    or view must be reviewed and added to the ownership/provisioning inventory
    before provisioning or verification will pass. Only `public` and `plpgsql`
    are approved today.
@@ -1112,18 +1159,20 @@ are not part of M14.1 or M14.3.2. M14.3.3 provides manual/bounded retention for
     schema, every application table and sequence, and trigger/helper functions;
     `utop14_app` is DML-only, owns nothing, has no role memberships, no function
     `EXECUTE`, no column-level grants, no `GRANT OPTION`, no database `CREATE`,
-    and its `search_path` is `public, pg_catalog`; `prune_security_events` stays
-    owned by `utop14_retention_owner`. The app must have the complete
-    least-privilege matrix, including `SELECT, INSERT` on `audit_logs` /
-    `security_events`, `SELECT, INSERT, UPDATE, DELETE` on `auth_rate_limits`,
-    and `USAGE, SELECT` on all application sequences it inserts into, but never
+    no parameter `SET`/`ALTER SYSTEM`, and no persistent GUC other than
+    `search_path=public, pg_catalog`; `prune_security_events` stays owned by
+    `utop14_retention_owner`. The app must have the complete least-privilege
+    matrix, including `SELECT, INSERT` on `audit_logs` / `security_events`,
+    `SELECT, INSERT, UPDATE, DELETE` on `auth_rate_limits`, and `USAGE, SELECT`
+    on all application sequences it inserts into, but never
     `TRUNCATE`/`TRIGGER`/`REFERENCES`/`MAINTAIN`, sequence UPDATE, schema or
-    database CREATE outside `public`, column-level grants, or ownership. Apply
-    `scripts/security_event_retention_ownership_template.sql` only after DBA
-    review, then run the provisioning and verification scripts. Do not proceed
-    to production if `security_event_retention_verify.sql` exits non-zero or if
-    the app can disable an append-only trigger, assume a role, create objects
-    in a non-application schema, create a schema, or hold a column privilege.
+    database CREATE outside `public`, column-level grants, parameter ACLs, or
+    ownership. Apply `scripts/security_event_retention_ownership_template.sql`
+    only after DBA review, then run the provisioning and verification scripts.
+    Do not proceed to production if `security_event_retention_verify.sql` exits
+    non-zero or if the app can disable an append-only trigger, assume a role,
+    create objects in a non-application schema, create a schema, hold a column
+    privilege, set a parameter, or retain an unapproved role/database GUC.
 
 ## Milestone 7 scope
 

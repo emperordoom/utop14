@@ -15,6 +15,8 @@
 --
 -- Supported PostgreSQL: 16 or newer.  MAINTAIN is checked only on PostgreSQL
 -- 17+; on older servers that specific check is skipped with an INFO notice.
+-- Parameter ACL checks use pg_parameter_acl and has_parameter_privilege
+-- (PostgreSQL 15+); if those are unavailable the verification fails closed.
 -- Membership option columns (inherit_option/set_option) are read through
 -- to_jsonb and a missing option is treated as TRUE, so older catalogs are
 -- handled conservatively.
@@ -30,6 +32,9 @@
 --   * complete table ACL, column ACL, and effective column privilege matrix;
 --     no explicit column-level grants for managed roles or PUBLIC;
 --   * no GRANT OPTION for managed roles or PUBLIC;
+--   * no parameter SET/ALTER SYSTEM grants for managed roles or PUBLIC;
+--   * persistent GUC allowlist for managed roles, the schema owner, and the
+--     current database; database-wide settings require DBA reconciliation;
 --   * complete EXECUTE matrix for every function and PUBLIC;
 --   * no custom default privileges for managed roles or PUBLIC;
 --   * deterministic search_path for verification itself.
@@ -183,6 +188,208 @@ BEGIN
     END IF;
 
     RAISE NOTICE 'PASS: database CREATE denied; app search_path locked';
+END $$;
+
+-- ---------------------------------------------------------------------------
+-- 1c. Parameter ACLs: no SET or ALTER SYSTEM for managed roles/PUBLIC
+--
+-- PostgreSQL 15+ catalog.  The project supports PostgreSQL 16+, so absence
+-- of the catalog/function is a hard verification failure, not a skip.
+-- ---------------------------------------------------------------------------
+DO $$
+DECLARE
+    r record;
+    p record;
+    priv text;
+BEGIN
+    IF to_regclass('pg_catalog.pg_parameter_acl') IS NULL
+       OR to_regprocedure(
+           'pg_catalog.has_parameter_privilege(name,text,text)'
+       ) IS NULL THEN
+        RAISE EXCEPTION
+            'FAIL: parameter ACL catalog/function support is unavailable; cannot verify parameter privileges';
+    END IF;
+
+    -- Direct grants to managed roles or PUBLIC, and GRANT OPTION.
+    FOR r IN
+        SELECT pa.parname,
+               CASE WHEN a.grantee = 0 THEN 'PUBLIC'
+                    ELSE pg_get_userbyid(a.grantee) END AS grantee,
+               a.privilege_type,
+               a.is_grantable
+        FROM pg_parameter_acl pa
+        CROSS JOIN LATERAL aclexplode(pa.paracl) a
+        WHERE a.grantee = 0
+           OR a.grantee IN ('utop14_app'::regrole,
+                            'utop14_retention_owner'::regrole,
+                            'utop14_retention_runner'::regrole)
+    LOOP
+        IF r.is_grantable THEN
+            RAISE EXCEPTION
+                'FAIL: parameter privilege % on % to % has GRANT OPTION',
+                r.privilege_type, r.parname, r.grantee;
+        END IF;
+        RAISE EXCEPTION
+            'FAIL: parameter privilege % on % granted to %; SET/ALTER SYSTEM are not approved for managed roles or PUBLIC',
+            r.privilege_type, r.parname, r.grantee;
+    END LOOP;
+
+    -- Effective privileges through membership/PUBLIC/custom-role paths.
+    FOR p IN SELECT parname FROM pg_parameter_acl LOOP
+        FOREACH priv IN ARRAY ARRAY['SET', 'ALTER SYSTEM'] LOOP
+            IF has_parameter_privilege(
+                'utop14_app', p.parname, priv
+            ) THEN
+                RAISE EXCEPTION
+                    'FAIL: utop14_app has effective parameter % on %',
+                    priv, p.parname;
+            END IF;
+            IF has_parameter_privilege(
+                'utop14_retention_owner', p.parname, priv
+            ) THEN
+                RAISE EXCEPTION
+                    'FAIL: utop14_retention_owner has effective parameter % on %',
+                    priv, p.parname;
+            END IF;
+            IF has_parameter_privilege(
+                'utop14_retention_runner', p.parname, priv
+            ) THEN
+                RAISE EXCEPTION
+                    'FAIL: utop14_retention_runner has effective parameter % on %',
+                    priv, p.parname;
+            END IF;
+        END LOOP;
+    END LOOP;
+
+    RAISE NOTICE 'PASS: no managed-role/PUBLIC parameter SET or ALTER SYSTEM privileges';
+END $$;
+
+-- ---------------------------------------------------------------------------
+-- 1d. Persistent GUC allowlist for managed roles and the current database
+--
+-- Approved:
+--   utop14_app role-level: exactly search_path=public, pg_catalog
+--   retention roles: no role-level or database-specific settings
+--   schema owner: search_path only (DBA operational need); anything else
+--                 requires explicit DBA reconciliation
+--   database-wide (setrole=0, current DB or all DBs): no settings
+--
+-- Database-wide settings are never modified by verification; the DBA must
+-- reconcile them.
+-- ---------------------------------------------------------------------------
+DO $$
+DECLARE
+    r record;
+    v_entry text;
+    v_app_entries integer;
+    v_app_oid oid := 'utop14_app'::regrole;
+    v_owner_oid oid := 'utop14_retention_owner'::regrole;
+    v_runner_oid oid := 'utop14_retention_runner'::regrole;
+    v_schema_oid oid := 'utop14_schema_owner'::regrole;
+    v_db_oid oid := (
+        SELECT oid FROM pg_database WHERE datname = current_database()
+    );
+BEGIN
+    -- App role-level settings must be exactly one approved search_path.
+    SELECT coalesce(array_length(rolconfig, 1), 0)
+      INTO v_app_entries
+      FROM pg_roles
+     WHERE rolname = 'utop14_app';
+    IF v_app_entries IS NULL OR v_app_entries <> 1
+       OR NOT EXISTS (
+           SELECT 1
+           FROM pg_roles, unnest(rolconfig) c
+           WHERE rolname = 'utop14_app'
+             AND replace(replace(c, ' ', ''), '"', '')
+                   = 'search_path=public,pg_catalog'
+       ) THEN
+        RAISE EXCEPTION
+            'FAIL: utop14_app role-level settings must be exactly search_path=public, pg_catalog; current=%',
+            (SELECT rolconfig FROM pg_roles WHERE rolname = 'utop14_app');
+    END IF;
+
+    -- Retention roles must have no role-level settings.
+    FOR r IN
+        SELECT rolname, rolconfig
+        FROM pg_roles
+        WHERE rolname IN ('utop14_retention_owner',
+                          'utop14_retention_runner')
+    LOOP
+        IF r.rolconfig IS NOT NULL
+           AND array_length(r.rolconfig, 1) > 0 THEN
+            RAISE EXCEPTION
+                'FAIL: % has unexpected role-level GUC %',
+                r.rolname, r.rolconfig;
+        END IF;
+    END LOOP;
+
+    -- Schema owner: search_path only; other persistent GUCs need DBA approval.
+    FOR r IN
+        SELECT rolconfig FROM pg_roles WHERE rolname = 'utop14_schema_owner'
+    LOOP
+        IF r.rolconfig IS NOT NULL THEN
+            FOREACH v_entry IN ARRAY r.rolconfig LOOP
+                IF replace(replace(v_entry, ' ', ''), '"', '')
+                   NOT LIKE 'search_path=%' THEN
+                    RAISE EXCEPTION
+                        'FAIL: utop14_schema_owner has unapproved role-level GUC %; DBA reconciliation required',
+                        v_entry;
+                END IF;
+            END LOOP;
+        END IF;
+    END LOOP;
+
+    -- Managed role-in-database settings must be empty.
+    FOR r IN
+        SELECT pg_get_userbyid(s.setrole) AS role_name, s.setconfig
+        FROM pg_db_role_setting s
+        WHERE s.setrole IN (v_app_oid, v_owner_oid, v_runner_oid)
+          AND s.setdatabase = v_db_oid
+    LOOP
+        IF r.setconfig IS NOT NULL
+           AND array_length(r.setconfig, 1) > 0 THEN
+            RAISE EXCEPTION
+                'FAIL: % has database-specific GUC %; provisioning must reset it',
+                r.role_name, r.setconfig;
+        END IF;
+    END LOOP;
+
+    -- Schema owner database-specific settings: search_path only.
+    FOR r IN
+        SELECT s.setconfig
+        FROM pg_db_role_setting s
+        WHERE s.setrole = v_schema_oid
+          AND s.setdatabase = v_db_oid
+    LOOP
+        IF r.setconfig IS NOT NULL THEN
+            FOREACH v_entry IN ARRAY r.setconfig LOOP
+                IF replace(replace(v_entry, ' ', ''), '"', '')
+                   NOT LIKE 'search_path=%' THEN
+                    RAISE EXCEPTION
+                        'FAIL: utop14_schema_owner has unapproved database-specific GUC %; DBA reconciliation required',
+                        v_entry;
+                END IF;
+            END LOOP;
+        END IF;
+    END LOOP;
+
+    -- Database-wide/global settings affect application sessions.  Fail closed
+    -- and leave reconciliation to the DBA; never silently modify unrelated roles.
+    FOR r IN
+        SELECT s.setrole, s.setdatabase, s.setconfig
+        FROM pg_db_role_setting s
+        WHERE s.setrole = 0
+          AND s.setdatabase IN (0, v_db_oid)
+    LOOP
+        IF r.setconfig IS NOT NULL
+           AND array_length(r.setconfig, 1) > 0 THEN
+            RAISE EXCEPTION
+                'FAIL: database-wide GUC % (setdatabase=%) requires DBA reconciliation; verification will not modify unrelated roles',
+                r.setconfig, r.setdatabase;
+        END IF;
+    END LOOP;
+
+    RAISE NOTICE 'PASS: persistent role/database GUC allowlist';
 END $$;
 
 -- ---------------------------------------------------------------------------

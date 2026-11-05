@@ -257,6 +257,76 @@ BEGIN
     END LOOP;
 END $$;
 
+-- ---------------------------------------------------------------------------
+-- Preflight: parameter ACL support and database-wide/schema-owner GUCs.
+-- These are DBA-reconciled, never silently reset by this template.
+-- ---------------------------------------------------------------------------
+DO $$
+DECLARE
+    r record;
+    v_entry text;
+    v_db_oid oid := (
+        SELECT oid FROM pg_database WHERE datname = current_database()
+    );
+BEGIN
+    IF to_regclass('pg_catalog.pg_parameter_acl') IS NULL
+       OR to_regprocedure(
+           'pg_catalog.has_parameter_privilege(name,text,text)'
+       ) IS NULL THEN
+        RAISE EXCEPTION
+            'FAIL: parameter ACL catalog/function support is unavailable; cannot apply this template safely';
+    END IF;
+
+    FOR r IN
+        SELECT s.setrole, s.setdatabase, s.setconfig
+        FROM pg_db_role_setting s
+        WHERE s.setrole = 0
+          AND s.setdatabase IN (0, v_db_oid)
+    LOOP
+        IF r.setconfig IS NOT NULL
+           AND array_length(r.setconfig, 1) > 0 THEN
+            RAISE EXCEPTION
+                'FAIL: database-wide GUC % (setdatabase=%) requires DBA reconciliation before applying this template',
+                r.setconfig, r.setdatabase;
+        END IF;
+    END LOOP;
+
+    FOR r IN
+        SELECT rolconfig
+        FROM pg_roles
+        WHERE rolname = '<schema_owner>'
+    LOOP
+        IF r.rolconfig IS NOT NULL THEN
+            FOREACH v_entry IN ARRAY r.rolconfig LOOP
+                IF replace(replace(v_entry, ' ', ''), '"', '')
+                   NOT LIKE 'search_path=%' THEN
+                    RAISE EXCEPTION
+                        'FAIL: schema owner has unapproved role-level GUC %; DBA reconciliation required',
+                        v_entry;
+                END IF;
+            END LOOP;
+        END IF;
+    END LOOP;
+
+    FOR r IN
+        SELECT s.setconfig
+        FROM pg_db_role_setting s
+        WHERE s.setrole = '<schema_owner>'::regrole
+          AND s.setdatabase = v_db_oid
+    LOOP
+        IF r.setconfig IS NOT NULL THEN
+            FOREACH v_entry IN ARRAY r.setconfig LOOP
+                IF replace(replace(v_entry, ' ', ''), '"', '')
+                   NOT LIKE 'search_path=%' THEN
+                    RAISE EXCEPTION
+                        'FAIL: schema owner has unapproved database-specific GUC %; DBA reconciliation required',
+                        v_entry;
+                END IF;
+            END LOOP;
+        END IF;
+    END LOOP;
+END $$;
+
 -- 1. Database and schema ownership.
 ALTER DATABASE <database_name> OWNER TO <schema_owner>;
 ALTER SCHEMA public OWNER TO <schema_owner>;
@@ -338,6 +408,65 @@ BEGIN
         'REVOKE CREATE ON DATABASE %I FROM PUBLIC',
         current_database()
     );
+END $$;
+
+-- 6c. Reset persistent GUCs for the managed roles, then apply the approved app
+--     search_path.  Database-wide and schema-owner GUCs are DBA-reconciled by
+--     the preflight above and are not modified here.
+DO $$
+DECLARE
+    r text;
+BEGIN
+    FOREACH r IN ARRAY ARRAY['utop14_app',
+                             'utop14_retention_owner',
+                             'utop14_retention_runner'] LOOP
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+            EXECUTE format('ALTER ROLE %I RESET ALL', r);
+            EXECUTE format(
+                'ALTER ROLE %I IN DATABASE %I RESET ALL',
+                r, current_database()
+            );
+        END IF;
+    END LOOP;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'utop14_app') THEN
+        EXECUTE 'ALTER ROLE utop14_app SET search_path = public, pg_catalog';
+    END IF;
+END $$;
+
+-- 6d. Reconcile parameter SET/ALTER SYSTEM grants for managed roles and PUBLIC.
+DO $$
+DECLARE
+    r record;
+BEGIN
+    FOR r IN
+        SELECT p.parname,
+               a.grantee,
+               CASE WHEN a.grantee = 0 THEN 'PUBLIC'
+                    ELSE pg_get_userbyid(a.grantee) END AS grantee_name,
+               a.privilege_type
+        FROM pg_parameter_acl p
+        CROSS JOIN LATERAL aclexplode(p.paracl) a
+        WHERE a.grantee = 0
+           OR pg_get_userbyid(a.grantee) IN (
+               'utop14_app',
+               'utop14_retention_owner',
+               'utop14_retention_runner'
+           )
+    LOOP
+        IF r.grantee = 0 THEN
+            EXECUTE format(
+                'REVOKE %s ON PARAMETER %I FROM PUBLIC CASCADE',
+                r.privilege_type, r.parname
+            );
+        ELSE
+            EXECUTE format(
+                'REVOKE %s ON PARAMETER %I FROM %I CASCADE',
+                r.privilege_type, r.parname, r.grantee_name
+            );
+        END IF;
+        RAISE NOTICE 'REVOKED parameter privilege % on % from %',
+            r.privilege_type, r.parname, r.grantee_name;
+    END LOOP;
 END $$;
 
 -- ---------------------------------------------------------------------------
@@ -430,6 +559,164 @@ BEGIN
         ELSIF r.owner IS DISTINCT FROM '<schema_owner>' THEN
             RAISE EXCEPTION 'FAIL: postcondition helper function % owner=%',
                 r.proname, r.owner;
+        END IF;
+    END LOOP;
+END $$;
+
+-- ---------------------------------------------------------------------------
+-- 7b. Postconditions: persistent GUCs and parameter ACLs
+-- ---------------------------------------------------------------------------
+DO $$
+DECLARE
+    r record;
+    v_entry text;
+    v_app_entries integer;
+    v_db_oid oid := (
+        SELECT oid FROM pg_database WHERE datname = current_database()
+    );
+BEGIN
+    SELECT coalesce(array_length(rolconfig, 1), 0)
+      INTO v_app_entries
+      FROM pg_roles
+     WHERE rolname = 'utop14_app';
+    IF v_app_entries IS NULL OR v_app_entries <> 1
+       OR NOT EXISTS (
+           SELECT 1
+           FROM pg_roles, unnest(rolconfig) c
+           WHERE rolname = 'utop14_app'
+             AND replace(replace(c, ' ', ''), '"', '')
+                   = 'search_path=public,pg_catalog'
+       ) THEN
+        RAISE EXCEPTION
+            'FAIL: postcondition app role-level settings are not exactly search_path=public, pg_catalog';
+    END IF;
+
+    FOR r IN
+        SELECT rolname, rolconfig
+        FROM pg_roles
+        WHERE rolname IN ('utop14_retention_owner',
+                          'utop14_retention_runner')
+    LOOP
+        IF r.rolconfig IS NOT NULL
+           AND array_length(r.rolconfig, 1) > 0 THEN
+            RAISE EXCEPTION
+                'FAIL: postcondition % still has role-level GUC %',
+                r.rolname, r.rolconfig;
+        END IF;
+    END LOOP;
+
+    FOR r IN
+        SELECT rolconfig
+        FROM pg_roles
+        WHERE rolname = '<schema_owner>'
+    LOOP
+        IF r.rolconfig IS NOT NULL THEN
+            FOREACH v_entry IN ARRAY r.rolconfig LOOP
+                IF replace(replace(v_entry, ' ', ''), '"', '')
+                   NOT LIKE 'search_path=%' THEN
+                    RAISE EXCEPTION
+                        'FAIL: postcondition schema owner unapproved role-level GUC %',
+                        v_entry;
+                END IF;
+            END LOOP;
+        END IF;
+    END LOOP;
+
+    FOR r IN
+        SELECT pg_get_userbyid(s.setrole) AS role_name, s.setconfig
+        FROM pg_db_role_setting s
+        WHERE pg_get_userbyid(s.setrole) IN (
+                  'utop14_app',
+                  'utop14_retention_owner',
+                  'utop14_retention_runner'
+              )
+          AND s.setdatabase = v_db_oid
+    LOOP
+        IF r.setconfig IS NOT NULL
+           AND array_length(r.setconfig, 1) > 0 THEN
+            RAISE EXCEPTION
+                'FAIL: postcondition % has database-specific GUC %',
+                r.role_name, r.setconfig;
+        END IF;
+    END LOOP;
+
+    FOR r IN
+        SELECT s.setconfig
+        FROM pg_db_role_setting s
+        WHERE s.setrole = '<schema_owner>'::regrole
+          AND s.setdatabase = v_db_oid
+    LOOP
+        IF r.setconfig IS NOT NULL THEN
+            FOREACH v_entry IN ARRAY r.setconfig LOOP
+                IF replace(replace(v_entry, ' ', ''), '"', '')
+                   NOT LIKE 'search_path=%' THEN
+                    RAISE EXCEPTION
+                        'FAIL: postcondition schema owner unapproved database-specific GUC %',
+                        v_entry;
+                END IF;
+            END LOOP;
+        END IF;
+    END LOOP;
+
+    FOR r IN
+        SELECT s.setrole, s.setdatabase, s.setconfig
+        FROM pg_db_role_setting s
+        WHERE s.setrole = 0
+          AND s.setdatabase IN (0, v_db_oid)
+    LOOP
+        IF r.setconfig IS NOT NULL
+           AND array_length(r.setconfig, 1) > 0 THEN
+            RAISE EXCEPTION
+                'FAIL: postcondition database-wide GUC % (setdatabase=%) remains',
+                r.setconfig, r.setdatabase;
+        END IF;
+    END LOOP;
+
+    IF EXISTS (
+        SELECT 1
+        FROM pg_parameter_acl p
+        CROSS JOIN LATERAL aclexplode(p.paracl) a
+        WHERE a.grantee = 0
+           OR pg_get_userbyid(a.grantee) IN (
+                  'utop14_app',
+                  'utop14_retention_owner',
+                  'utop14_retention_runner'
+              )
+    ) THEN
+        RAISE EXCEPTION
+            'FAIL: postcondition managed-role/PUBLIC parameter privilege remains';
+    END IF;
+
+    FOR r IN SELECT parname FROM pg_parameter_acl LOOP
+        IF has_parameter_privilege('utop14_app', r.parname, 'SET')
+           OR has_parameter_privilege(
+               'utop14_app', r.parname, 'ALTER SYSTEM'
+           ) THEN
+            RAISE EXCEPTION
+                'FAIL: postcondition app parameter privilege remains on %',
+                r.parname;
+        END IF;
+        IF to_regrole('utop14_retention_owner') IS NOT NULL THEN
+            IF has_parameter_privilege(
+                'utop14_retention_owner', r.parname, 'SET'
+            ) OR has_parameter_privilege(
+                'utop14_retention_owner', r.parname, 'ALTER SYSTEM'
+            ) THEN
+                RAISE EXCEPTION
+                    'FAIL: postcondition retention-owner parameter privilege remains on %',
+                    r.parname;
+            END IF;
+        END IF;
+        IF to_regrole('utop14_retention_runner') IS NOT NULL THEN
+            IF has_parameter_privilege(
+                'utop14_retention_runner', r.parname, 'SET'
+            ) OR has_parameter_privilege(
+                'utop14_retention_runner', r.parname, 'ALTER SYSTEM'
+            ) THEN
+                RAISE EXCEPTION
+                    'FAIL: postcondition retention-runner parameter privilege remains on %',
+                    r.parname;
+            END IF;
         END IF;
     END LOOP;
 END $$;
