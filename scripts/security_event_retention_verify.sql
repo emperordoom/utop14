@@ -7,6 +7,21 @@
 --
 -- Replace utop14_app / utop14_schema_owner / public with deployment values if
 -- they differ.  Every assertion names its role explicitly.
+--
+-- Supported PostgreSQL: 16 or newer for membership option columns
+-- (inherit_option/set_option).  The membership query reads those options
+-- through to_jsonb and treats a missing option as TRUE, so the script also
+-- runs on older catalogs without falsely reporting a clean membership.
+--
+-- Security model enforced here:
+--   * default-deny role memberships for utop14_app, utop14_retention_owner
+--     and utop14_retention_runner (direct, transitive, INHERIT/SET/ADMIN,
+--     predefined, custom and nested paths);
+--   * only the allowlisted application schema (public) may exist;
+--   * no app/retention CREATE or USAGE outside public;
+--   * complete table/sequence/function/trigger/type/extension inventory;
+--   * complete EXECUTE matrix for every function and PUBLIC;
+--   * no custom default privileges for managed roles or PUBLIC.
 
 \set ON_ERROR_STOP on
 \pset pager off
@@ -55,20 +70,23 @@ BEGIN
     END IF;
     IF EXISTS (
         SELECT 1 FROM pg_roles
-        WHERE rolname IN ('utop14_retention_owner',
+        WHERE rolname IN ('utop14_app',
+                          'utop14_retention_owner',
                           'utop14_retention_runner')
           AND rolinherit
     ) THEN
-        RAISE EXCEPTION 'FAIL: retention roles must be NOINHERIT';
+        RAISE EXCEPTION 'FAIL: app/retention roles must be NOINHERIT';
     END IF;
     RAISE NOTICE 'PASS: role attributes and LOGIN/NOLOGIN';
 END $$;
 
 -- ---------------------------------------------------------------------------
--- 2. Complete object inventory (fail on missing or uninventoried objects)
+-- 2. Extension, schema, type and object inventory (fail closed)
 -- ---------------------------------------------------------------------------
 DO $$
 DECLARE
+    expected_schemas text[] := ARRAY['public'];
+    expected_extensions text[] := ARRAY['plpgsql'];
     expected_tables text[] := ARRAY[
         'alembic_version', 'audit_logs', 'auth_rate_limits', 'cart_items',
         'carts', 'categories', 'order_items', 'orders', 'payment_proofs',
@@ -96,49 +114,164 @@ DECLARE
     missing text[];
     extra text[];
     fn text;
+    v_count integer;
 BEGIN
-    SELECT array_agg(t) INTO missing
+    -- Extensions: plpgsql is the only approved extension.  A new extension
+    -- must be reviewed and added to this allowlist (and to the provisioning
+    -- preflight) before it can pass verification.
+    IF NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'plpgsql') THEN
+        RAISE EXCEPTION 'FAIL: required extension plpgsql is missing';
+    END IF;
+    SELECT array_agg(extname ORDER BY extname) INTO extra
+    FROM pg_extension
+    WHERE NOT (extname = ANY (expected_extensions));
+    IF extra IS NOT NULL THEN
+        RAISE EXCEPTION
+            'FAIL: uninventoried extensions %; review them and add to the allowlist',
+            extra;
+    END IF;
+
+    -- Non-system schemas.  Extension-owned schemas are not application
+    -- objects and are excluded; every other schema must be the allowlisted
+    -- application schema.
+    SELECT array_agg(n.nspname ORDER BY n.nspname) INTO extra
+    FROM pg_namespace n
+    WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+      AND n.nspname NOT LIKE 'pg\_%' ESCAPE '\'
+      AND NOT EXISTS (
+          SELECT 1 FROM pg_depend d
+          WHERE d.classid = 'pg_namespace'::regclass
+            AND d.objid = n.oid
+            AND d.deptype = 'e'
+      )
+      AND NOT (n.nspname = ANY (expected_schemas));
+    IF extra IS NOT NULL THEN
+        RAISE EXCEPTION
+            'FAIL: uninventoried non-system schemas %; review them and add to the allowlist',
+            extra;
+    END IF;
+    SELECT array_agg(s ORDER BY s) INTO missing
+    FROM unnest(expected_schemas) s
+    WHERE NOT EXISTS (SELECT 1 FROM pg_namespace n WHERE n.nspname = s);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'FAIL: missing expected schemas %', missing;
+    END IF;
+
+    -- User-defined types/domains/enums/composites.  Table row types and
+    -- implicit array types are not user-created objects; extension-owned
+    -- types are excluded so an approved extension is not misclassified.
+    SELECT array_agg(format('%I.%I', n.nspname, t.typname) ORDER BY 1) INTO extra
+    FROM pg_type t
+    JOIN pg_namespace n ON n.oid = t.typnamespace
+    WHERE n.nspname = ANY (expected_schemas)
+      AND t.typtype IN ('b', 'c', 'd', 'e', 'r', 'm')
+      AND NOT (t.typtype = 'b' AND t.typelem <> 0 AND t.typlen = -1)
+      AND NOT (
+          t.typtype = 'c'
+          AND EXISTS (
+              SELECT 1 FROM pg_class c
+              WHERE c.oid = t.typrelid AND c.relkind IN ('r', 'p', 'f')
+          )
+      )
+      AND NOT EXISTS (
+          SELECT 1 FROM pg_depend d
+          WHERE d.classid = 'pg_type'::regclass
+            AND d.objid = t.oid
+            AND d.deptype = 'e'
+      );
+    IF extra IS NOT NULL THEN
+        RAISE EXCEPTION
+            'FAIL: uninventoried user-defined types/domains %; add them to the inventory and privilege model',
+            extra;
+    END IF;
+
+    SELECT array_agg(t ORDER BY t) INTO missing
     FROM unnest(expected_tables) t
-    WHERE to_regclass(format('public.%I', t)) IS NULL;
+    WHERE NOT EXISTS (
+        SELECT 1 FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public'
+          AND c.relname = t
+          AND c.relkind IN ('r', 'p', 'f')
+    );
     IF missing IS NOT NULL THEN
         RAISE EXCEPTION 'FAIL: missing expected tables %', missing;
     END IF;
-    SELECT array_agg(tablename) INTO extra
-    FROM pg_tables
-    WHERE schemaname = 'public'
-      AND NOT (tablename = ANY (expected_tables));
+    SELECT array_agg(c.relname ORDER BY c.relname) INTO extra
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relkind IN ('r', 'p', 'f')
+      AND NOT (c.relname = ANY (expected_tables))
+      AND NOT EXISTS (
+          SELECT 1 FROM pg_depend d
+          WHERE d.classid = 'pg_class'::regclass
+            AND d.objid = c.oid
+            AND d.deptype = 'e'
+      );
     IF extra IS NOT NULL THEN
         RAISE EXCEPTION 'FAIL: uninventoried tables %', extra;
     END IF;
 
-    SELECT array_agg(s) INTO missing
+    SELECT array_agg(s ORDER BY s) INTO missing
     FROM unnest(expected_sequences) s
-    WHERE to_regclass(format('public.%I', s)) IS NULL;
+    WHERE NOT EXISTS (
+        SELECT 1 FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND c.relname = s AND c.relkind = 'S'
+    );
     IF missing IS NOT NULL THEN
         RAISE EXCEPTION 'FAIL: missing expected sequences %', missing;
     END IF;
-    SELECT array_agg(sequencename) INTO extra
-    FROM pg_sequences
-    WHERE schemaname = 'public'
-      AND NOT (sequencename = ANY (expected_sequences));
+    SELECT array_agg(c.relname ORDER BY c.relname) INTO extra
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relkind = 'S'
+      AND NOT (c.relname = ANY (expected_sequences))
+      AND NOT EXISTS (
+          SELECT 1 FROM pg_depend d
+          WHERE d.classid = 'pg_class'::regclass
+            AND d.objid = c.oid
+            AND d.deptype = 'e'
+      );
     IF extra IS NOT NULL THEN
         RAISE EXCEPTION 'FAIL: uninventoried sequences %', extra;
     END IF;
 
     FOREACH fn IN ARRAY expected_functions LOOP
-        IF (SELECT count(*) FROM pg_proc p
+        IF fn = 'prune_security_events' THEN
+            SELECT count(*) INTO v_count
+            FROM pg_proc p
             JOIN pg_namespace n ON n.oid = p.pronamespace
-            WHERE n.nspname = 'public' AND p.proname = fn) <> 1 THEN
-            RAISE EXCEPTION 'FAIL: expected exactly one function named %', fn;
+            WHERE n.nspname = 'public' AND p.proname = fn
+              AND p.pronargs = 5 AND p.prokind = 'f';
+        ELSE
+            SELECT count(*) INTO v_count
+            FROM pg_proc p
+            JOIN pg_namespace n ON n.oid = p.pronamespace
+            WHERE n.nspname = 'public' AND p.proname = fn
+              AND p.pronargs = 0 AND p.prokind = 'f';
+        END IF;
+        IF v_count <> 1 THEN
+            RAISE EXCEPTION
+                'FAIL: expected exactly one function signature for %, found %',
+                fn, v_count;
         END IF;
     END LOOP;
-    SELECT array_agg(p.proname) INTO extra
+    SELECT array_agg(p.proname ORDER BY p.proname) INTO extra
     FROM pg_proc p
     JOIN pg_namespace n ON n.oid = p.pronamespace
     WHERE n.nspname = 'public'
-      AND NOT (p.proname = ANY (expected_functions));
+      AND NOT (p.proname = ANY (expected_functions))
+      AND NOT EXISTS (
+          SELECT 1 FROM pg_depend d
+          WHERE d.classid = 'pg_proc'::regclass
+            AND d.objid = p.oid
+            AND d.deptype = 'e'
+      );
     IF extra IS NOT NULL THEN
-        RAISE EXCEPTION 'FAIL: uninventoried functions %', extra;
+        RAISE EXCEPTION 'FAIL: uninventoried functions/procedures %', extra;
     END IF;
 
     SELECT array_agg(t) INTO missing
@@ -152,23 +285,36 @@ BEGIN
     IF missing IS NOT NULL THEN
         RAISE EXCEPTION 'FAIL: missing expected triggers %', missing;
     END IF;
-    SELECT array_agg(tr.tgname) INTO extra
+    SELECT array_agg(tr.tgname ORDER BY tr.tgname) INTO extra
     FROM pg_trigger tr
     JOIN pg_class c ON c.oid = tr.tgrelid
     JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE n.nspname = 'public'
+      AND c.relname = ANY (expected_tables)
       AND NOT tr.tgisinternal
       AND NOT (tr.tgname = ANY (expected_triggers));
     IF extra IS NOT NULL THEN
         RAISE EXCEPTION 'FAIL: uninventoried triggers %', extra;
     END IF;
 
-    IF EXISTS (SELECT 1 FROM pg_views WHERE schemaname = 'public')
-       OR EXISTS (SELECT 1 FROM pg_matviews WHERE schemaname = 'public') THEN
-        RAISE EXCEPTION 'FAIL: unexpected view/materialized view; update inventory';
+    -- No application views or materialized views.  Extension-owned views are
+    -- excluded so an approved extension is not misclassified.
+    SELECT array_agg(format('%I.%I', n.nspname, c.relname) ORDER BY 1) INTO extra
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = ANY (expected_schemas)
+      AND c.relkind IN ('v', 'm')
+      AND NOT EXISTS (
+          SELECT 1 FROM pg_depend d
+          WHERE d.classid = 'pg_class'::regclass
+            AND d.objid = c.oid
+            AND d.deptype = 'e'
+      );
+    IF extra IS NOT NULL THEN
+        RAISE EXCEPTION 'FAIL: uninventoried views/materialized views %', extra;
     END IF;
 
-    RAISE NOTICE 'PASS: complete object inventory';
+    RAISE NOTICE 'PASS: extension/schema/type/object inventory';
 END $$;
 
 -- ---------------------------------------------------------------------------
@@ -192,7 +338,16 @@ BEGIN
     END IF;
 
     FOR r IN
-        SELECT tablename, tableowner FROM pg_tables WHERE schemaname = 'public'
+        SELECT c.relname AS tablename, pg_get_userbyid(c.relowner) AS tableowner
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'f')
+          AND NOT EXISTS (
+              SELECT 1 FROM pg_depend d
+              WHERE d.classid = 'pg_class'::regclass
+                AND d.objid = c.oid
+                AND d.deptype = 'e'
+          )
     LOOP
         IF r.tableowner IS DISTINCT FROM 'utop14_schema_owner' THEN
             RAISE EXCEPTION 'FAIL: table % owner=%', r.tablename, r.tableowner;
@@ -204,6 +359,12 @@ BEGIN
         FROM pg_class c
         JOIN pg_namespace n ON n.oid = c.relnamespace
         WHERE n.nspname = 'public' AND c.relkind = 'S'
+          AND NOT EXISTS (
+              SELECT 1 FROM pg_depend d
+              WHERE d.classid = 'pg_class'::regclass
+                AND d.objid = c.oid
+                AND d.deptype = 'e'
+          )
     LOOP
         IF r.owner IS DISTINCT FROM 'utop14_schema_owner' THEN
             RAISE EXCEPTION 'FAIL: sequence % owner=%', r.relname, r.owner;
@@ -215,6 +376,12 @@ BEGIN
         FROM pg_proc p
         JOIN pg_namespace n ON n.oid = p.pronamespace
         WHERE n.nspname = 'public'
+          AND NOT EXISTS (
+              SELECT 1 FROM pg_depend d
+              WHERE d.classid = 'pg_proc'::regclass
+                AND d.objid = p.oid
+                AND d.deptype = 'e'
+          )
     LOOP
         IF r.proname = 'prune_security_events' THEN
             IF r.owner IS DISTINCT FROM 'utop14_retention_owner' THEN
@@ -226,132 +393,190 @@ BEGIN
     END LOOP;
 
     IF EXISTS (
-        SELECT 1 FROM pg_tables
-        WHERE schemaname = 'public'
-          AND tableowner IN ('utop14_app',
-                             'utop14_retention_owner',
-                             'utop14_retention_runner')
-    ) THEN
-        RAISE EXCEPTION 'FAIL: app/retention role owns an application table';
-    END IF;
-    IF EXISTS (
-        SELECT 1
-        FROM pg_class c
+        SELECT 1 FROM pg_class c
         JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = 'public' AND c.relkind = 'S'
+        WHERE n.nspname = 'public'
+          AND c.relkind IN ('r', 'p', 'f', 'S')
           AND pg_get_userbyid(c.relowner) IN ('utop14_app',
                                               'utop14_retention_owner',
                                               'utop14_retention_runner')
     ) THEN
-        RAISE EXCEPTION 'FAIL: app/retention role owns a sequence';
+        RAISE EXCEPTION 'FAIL: app/retention role owns an application table or sequence';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM pg_proc p
+        JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public'
+          AND pg_get_userbyid(p.proowner) IN ('utop14_app',
+                                              'utop14_retention_runner')
+    ) THEN
+        RAISE EXCEPTION 'FAIL: app/runner role owns an application function';
     END IF;
 
     RAISE NOTICE 'PASS: ownership inventory';
 END $$;
 
 -- ---------------------------------------------------------------------------
--- 4. Membership / SET ROLE escalation paths
+-- 4. Default-deny membership / SET ROLE escalation paths
+--
+-- Explicit membership allowlist.  It is intentionally empty: the current
+-- model requires no role memberships for the app or either retention role.
+-- Add "member:granted_role" entries here ONLY after a documented review and
+-- a matching allowlist change in the provisioning script.
+-- ---------------------------------------------------------------------------
+DO $$
+DECLARE
+    v_allowed text[] := ARRAY[]::text[];
+    v_member text;
+    v_role text;
+    v_path text;
+    v_inherit text;
+    v_set text;
+    v_admin text;
+    v_reverse_member text;
+    v_reverse_role text;
+BEGIN
+    WITH RECURSIVE edges AS (
+        SELECT m.member AS member_oid,
+               m.roleid AS role_oid,
+               r.rolname AS member_name,
+               g.rolname AS role_name,
+               COALESCE((to_jsonb(m) ->> 'inherit_option')::boolean, TRUE)
+                   AS inherit_opt,
+               COALESCE((to_jsonb(m) ->> 'set_option')::boolean, TRUE)
+                   AS set_opt,
+               COALESCE((to_jsonb(m) ->> 'admin_option')::boolean, FALSE)
+                   AS admin_opt
+        FROM pg_auth_members m
+        JOIN pg_roles r ON r.oid = m.member
+        JOIN pg_roles g ON g.oid = m.roleid
+    ),
+    managed(rolname) AS (
+        VALUES ('utop14_app'),
+               ('utop14_retention_owner'),
+               ('utop14_retention_runner')
+    ),
+    walk AS (
+        SELECT e.member_name,
+               e.role_name,
+               ARRAY[e.member_name, e.role_name] AS path,
+               1 AS depth,
+               e.inherit_opt,
+               e.set_opt,
+               e.admin_opt
+        FROM edges e
+        JOIN managed md ON md.rolname = e.member_name
+        UNION ALL
+        SELECT w.member_name,
+               e.role_name,
+               w.path || e.role_name,
+               w.depth + 1,
+               w.inherit_opt OR e.inherit_opt,
+               w.set_opt OR e.set_opt,
+               w.admin_opt OR e.admin_opt
+        FROM walk w
+        JOIN edges e ON e.member_name = w.role_name
+        WHERE NOT (e.role_name = ANY (w.path))
+    )
+    SELECT member_name,
+           role_name,
+           array_to_string(path, ' -> '),
+           CASE WHEN inherit_opt THEN 'true' ELSE 'false' END,
+           CASE WHEN set_opt THEN 'true' ELSE 'false' END,
+           CASE WHEN admin_opt THEN 'true' ELSE 'false' END
+      INTO v_member, v_role, v_path, v_inherit, v_set, v_admin
+      FROM walk
+     WHERE NOT (member_name || ':' || role_name = ANY (v_allowed))
+     ORDER BY depth DESC, member_name, role_name
+     LIMIT 1;
+
+    IF v_member IS NOT NULL THEN
+        RAISE EXCEPTION
+            'FAIL: forbidden role membership path % (inherit=%, set=%, admin=%); default-deny: run REVOKE % FROM % and add to the documented allowlist only if operationally required',
+            v_path, v_inherit, v_set, v_admin,
+            quote_ident(v_role), quote_ident(v_member);
+    END IF;
+
+    -- Reverse direction: another role must not be able to assume a managed
+    -- role.  Managed-to-managed edges are already covered above.
+    SELECT r.rolname, g.rolname INTO v_reverse_member, v_reverse_role
+    FROM pg_auth_members m
+    JOIN pg_roles r ON r.oid = m.member
+    JOIN pg_roles g ON g.oid = m.roleid
+    WHERE g.rolname IN ('utop14_app',
+                        'utop14_retention_owner',
+                        'utop14_retention_runner')
+      AND r.rolname NOT IN ('utop14_app',
+                            'utop14_retention_owner',
+                            'utop14_retention_runner')
+    LIMIT 1;
+    IF v_reverse_member IS NOT NULL THEN
+        RAISE EXCEPTION
+            'FAIL: forbidden reverse membership % -> %; another role can assume a managed role. Run REVOKE % FROM % manually and document the dependency',
+            v_reverse_member, v_reverse_role,
+            quote_ident(v_reverse_role), quote_ident(v_reverse_member);
+    END IF;
+
+    RAISE NOTICE 'PASS: default-deny role memberships';
+END $$;
+
+-- ---------------------------------------------------------------------------
+-- 5. Schema privileges for every non-system schema
 -- ---------------------------------------------------------------------------
 DO $$
 DECLARE
     r record;
+    v_public_create integer;
 BEGIN
-    IF EXISTS (
-        SELECT 1 FROM pg_auth_members
-        WHERE roleid IN ('utop14_retention_owner'::regrole,
-                         'utop14_retention_runner'::regrole)
-    ) THEN
-        RAISE EXCEPTION 'FAIL: a role is a member of a retention role';
-    END IF;
-    IF EXISTS (
-        SELECT 1 FROM pg_auth_members
-        WHERE member IN ('utop14_retention_owner'::regrole,
-                         'utop14_retention_runner'::regrole)
-    ) THEN
-        RAISE EXCEPTION 'FAIL: a retention role is a member of another role';
-    END IF;
-    IF pg_has_role('utop14_app', 'utop14_retention_owner', 'member')
-       OR pg_has_role('utop14_app', 'utop14_retention_runner', 'member')
-       OR pg_has_role('utop14_retention_runner', 'utop14_retention_owner', 'member') THEN
-        RAISE EXCEPTION 'FAIL: forbidden direct/transitive retention membership';
-    END IF;
-
-    -- Collect every database/schema/table/sequence/function owner plus the
-    -- retention roles, then prove the app cannot SET/USAGE any of them.
     FOR r IN
-        SELECT DISTINCT owner::text AS owner_role
-        FROM (
-            SELECT pg_get_userbyid(datdba)::text AS owner
-            FROM pg_database WHERE datname = current_database()
-            UNION
-            SELECT nspowner::regrole::text
-            FROM pg_namespace WHERE nspname = 'public'
-            UNION
-            SELECT tableowner::text
-            FROM pg_tables WHERE schemaname = 'public'
-            UNION
-            SELECT pg_get_userbyid(c.relowner)::text
-            FROM pg_class c
-            JOIN pg_namespace n ON n.oid = c.relnamespace
-            WHERE n.nspname = 'public' AND c.relkind = 'S'
-            UNION
-            SELECT pg_get_userbyid(p.proowner)::text
-            FROM pg_proc p
-            JOIN pg_namespace n ON n.oid = p.pronamespace
-            WHERE n.nspname = 'public'
-            UNION
-            SELECT 'utop14_retention_runner'
-        ) owners
+        SELECT n.nspname
+        FROM pg_namespace n
+        WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+          AND n.nspname NOT LIKE 'pg\_%' ESCAPE '\'
     LOOP
-        CONTINUE WHEN r.owner_role IS NULL OR r.owner_role = 'utop14_app';
-        IF pg_has_role('utop14_app'::name, r.owner_role::name, 'SET'::text)
-           OR pg_has_role('utop14_app'::name, r.owner_role::name, 'USAGE'::text) THEN
-            RAISE EXCEPTION
-                'FAIL: utop14_app can assume owner role % (SET/USAGE membership)',
-                r.owner_role;
+        IF has_schema_privilege('utop14_app', r.nspname, 'CREATE') THEN
+            RAISE EXCEPTION 'FAIL: utop14_app has CREATE on schema %', r.nspname;
         END IF;
-        IF EXISTS (
-            SELECT 1 FROM pg_auth_members m
-            WHERE m.member = 'utop14_app'::regrole
-              AND m.roleid = r.owner_role::regrole
+        IF has_schema_privilege('utop14_retention_owner', r.nspname, 'CREATE')
+           OR has_schema_privilege('utop14_retention_runner', r.nspname, 'CREATE') THEN
+            RAISE EXCEPTION 'FAIL: retention role has CREATE on schema %', r.nspname;
+        END IF;
+        IF r.nspname <> 'public' AND (
+            has_schema_privilege('utop14_app', r.nspname, 'USAGE')
+            OR has_schema_privilege('utop14_retention_owner', r.nspname, 'USAGE')
+            OR has_schema_privilege('utop14_retention_runner', r.nspname, 'USAGE')
         ) THEN
             RAISE EXCEPTION
-                'FAIL: utop14_app has direct membership in owner role %',
-                r.owner_role;
+                'FAIL: app/retention role has USAGE on non-application schema %',
+                r.nspname;
+        END IF;
+
+        SELECT count(*) INTO v_public_create
+        FROM aclexplode(
+            COALESCE(
+                (SELECT nspacl FROM pg_namespace WHERE nspname = r.nspname),
+                acldefault(
+                    'n',
+                    (SELECT nspowner FROM pg_namespace WHERE nspname = r.nspname)
+                )
+            )
+        ) a
+        WHERE a.grantee = 0 AND a.privilege_type = 'CREATE';
+        IF v_public_create > 0 THEN
+            RAISE EXCEPTION 'FAIL: PUBLIC has CREATE on schema %', r.nspname;
         END IF;
     END LOOP;
 
-    FOR r IN
-        SELECT roleid::regrole::text AS granted_role
-        FROM pg_auth_members
-        WHERE member = 'utop14_app'::regrole
-    LOOP
-        RAISE NOTICE 'INFO: utop14_app is a member of %; review whether required',
-            r.granted_role;
-    END LOOP;
-    RAISE NOTICE 'PASS: membership and SET ROLE paths';
-END $$;
-
--- ---------------------------------------------------------------------------
--- 5. Schema privileges
--- ---------------------------------------------------------------------------
-DO $$
-BEGIN
     IF NOT has_schema_privilege('utop14_app', 'public', 'USAGE')
        OR NOT has_schema_privilege('utop14_retention_owner', 'public', 'USAGE')
        OR NOT has_schema_privilege('utop14_retention_runner', 'public', 'USAGE')
        OR NOT has_schema_privilege('utop14_schema_owner', 'public', 'USAGE') THEN
         RAISE EXCEPTION 'FAIL: application/retention role lacks schema USAGE';
     END IF;
-    IF has_schema_privilege('utop14_app', 'public', 'CREATE')
-       OR has_schema_privilege('utop14_retention_owner', 'public', 'CREATE')
-       OR has_schema_privilege('utop14_retention_runner', 'public', 'CREATE') THEN
-        RAISE EXCEPTION 'FAIL: app/retention role has schema CREATE';
-    END IF;
     IF NOT has_schema_privilege('utop14_schema_owner', 'public', 'CREATE') THEN
         RAISE EXCEPTION 'FAIL: schema owner lacks schema CREATE';
     END IF;
-    RAISE NOTICE 'PASS: schema USAGE/CREATE';
+    RAISE NOTICE 'PASS: schema USAGE/CREATE for all non-system schemas';
 END $$;
 
 -- ---------------------------------------------------------------------------
@@ -540,98 +765,135 @@ BEGIN
 END $$;
 
 -- ---------------------------------------------------------------------------
--- 10. Function ownership, SECURITY DEFINER, search_path, EXECUTE
+-- 10. Function ownership, SECURITY DEFINER, search_path and EXECUTE matrix
+--
+-- Expected EXECUTE grantees:
+--   prune_security_events            -> utop14_retention_runner (and owner)
+--   every trigger/helper function    -> owning utop14_schema_owner only
+-- utop14_app and PUBLIC never receive EXECUTE.  The hold-lock trigger function
+-- needs no app EXECUTE: PostgreSQL checks EXECUTE when the trigger is created,
+-- and ordinary INSERT/UPDATE firing needs no direct function privilege.
 -- ---------------------------------------------------------------------------
 DO $$
 DECLARE
-    v_owner text;
-    v_secdef boolean;
-    v_config text[];
+    r record;
+    a record;
+    v_expected text[];
 BEGIN
-    SELECT pg_get_userbyid(p.proowner), p.prosecdef, p.proconfig
-      INTO v_owner, v_secdef, v_config
-      FROM pg_proc p
-      JOIN pg_namespace n ON n.oid = p.pronamespace
-     WHERE n.nspname = 'public'
-       AND p.proname = 'prune_security_events'
-       AND p.pronargs = 5;
-    IF v_owner IS DISTINCT FROM 'utop14_retention_owner' THEN
-        RAISE EXCEPTION 'FAIL: prune_security_events owner=%', v_owner;
-    END IF;
-    IF v_secdef IS NOT TRUE THEN
-        RAISE EXCEPTION 'FAIL: prune_security_events is not SECURITY DEFINER';
-    END IF;
-    IF v_config IS NULL
-       OR NOT EXISTS (SELECT 1 FROM unnest(v_config) c WHERE c LIKE 'search_path=%') THEN
-        RAISE EXCEPTION 'FAIL: prune_security_events search_path is not locked';
-    END IF;
-    IF NOT has_function_privilege(
-        'utop14_retention_runner',
-        'public.prune_security_events(text, timestamptz, integer, uuid, integer)',
-        'EXECUTE'
-    ) THEN
-        RAISE EXCEPTION 'FAIL: runner lacks prune_security_events EXECUTE';
-    END IF;
-    IF has_function_privilege(
-        'utop14_app',
-        'public.prune_security_events(text, timestamptz, integer, uuid, integer)',
-        'EXECUTE'
-    ) THEN
-        RAISE EXCEPTION 'FAIL: app has prune_security_events EXECUTE';
-    END IF;
-    IF EXISTS (
-        SELECT 1
-        FROM pg_proc p,
-             aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
-        WHERE p.oid = 'public.prune_security_events(text, timestamptz, integer, uuid, integer)'::regprocedure
-          AND a.grantee = 0
-          AND a.privilege_type = 'EXECUTE'
-    ) THEN
-        RAISE EXCEPTION 'FAIL: PUBLIC has prune_security_events EXECUTE';
-    END IF;
+    FOR r IN
+        SELECT p.oid,
+               p.proname,
+               p.pronargs,
+               p.prokind,
+               p.prosecdef,
+               p.proconfig,
+               p.proowner,
+               p.proacl,
+               pg_get_userbyid(p.proowner) AS owner
+        FROM pg_proc p
+        JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public'
+          AND NOT EXISTS (
+              SELECT 1 FROM pg_depend d
+              WHERE d.classid = 'pg_proc'::regclass
+                AND d.objid = p.oid
+                AND d.deptype = 'e'
+          )
+    LOOP
+        IF r.proname = 'prune_security_events' THEN
+            IF r.pronargs <> 5 OR r.prokind <> 'f' THEN
+                RAISE EXCEPTION 'FAIL: prune_security_events signature is invalid';
+            END IF;            IF r.owner IS DISTINCT FROM 'utop14_retention_owner' THEN
+                RAISE EXCEPTION 'FAIL: prune_security_events owner=%', r.owner;
+            END IF;
+            IF r.prosecdef IS NOT TRUE THEN
+                RAISE EXCEPTION 'FAIL: prune_security_events is not SECURITY DEFINER';
+            END IF;
+            IF r.proconfig IS NULL
+               OR NOT EXISTS (
+                   SELECT 1 FROM unnest(r.proconfig) c
+                   WHERE c LIKE 'search_path=pg_catalog%'
+               ) THEN
+                RAISE EXCEPTION 'FAIL: prune_security_events search_path is not locked to pg_catalog';
+            END IF;
+            v_expected := ARRAY['utop14_retention_owner',
+                                'utop14_retention_runner'];
+        ELSIF r.proname IN (
+            'audit_logs_reject_mutation',
+            'security_events_reject_mutation',
+            'security_event_retention_holds_lock'
+        ) THEN
+            IF r.pronargs <> 0 OR r.prokind <> 'f' THEN
+                RAISE EXCEPTION 'FAIL: trigger function % signature is invalid', r.proname;
+            END IF;
+            IF r.owner IS DISTINCT FROM 'utop14_schema_owner' THEN
+                RAISE EXCEPTION 'FAIL: trigger/helper function % owner=%', r.proname, r.owner;
+            END IF;
+            IF r.prosecdef IS TRUE THEN
+                RAISE EXCEPTION 'FAIL: trigger/helper function % must not be SECURITY DEFINER', r.proname;
+            END IF;
+            IF r.proname = 'security_event_retention_holds_lock'
+               AND (
+                   r.proconfig IS NULL
+                   OR NOT EXISTS (
+                       SELECT 1 FROM unnest(r.proconfig) c
+                       WHERE c LIKE 'search_path=pg_catalog%'
+                   )
+               ) THEN
+                RAISE EXCEPTION 'FAIL: hold-lock trigger search_path is not locked to pg_catalog';
+            END IF;
+            v_expected := ARRAY['utop14_schema_owner'];
+        ELSE
+            RAISE EXCEPTION 'FAIL: uninventoried function %', r.proname;
+        END IF;
 
-    IF NOT has_function_privilege(
-        'utop14_app',
-        'public.security_event_retention_holds_lock()',
-        'EXECUTE'
-    ) THEN
-        RAISE EXCEPTION 'FAIL: app lacks hold-lock trigger EXECUTE';
-    END IF;
-    IF has_function_privilege(
-        'utop14_retention_owner',
-        'public.security_event_retention_holds_lock()',
-        'EXECUTE'
-    ) OR has_function_privilege(
-        'utop14_retention_runner',
-        'public.security_event_retention_holds_lock()',
-        'EXECUTE'
-    ) THEN
-        RAISE EXCEPTION 'FAIL: retention role has hold-lock trigger EXECUTE';
-    END IF;
-    IF EXISTS (
-        SELECT 1
-        FROM pg_proc p,
-             aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
-        WHERE p.oid = 'public.security_event_retention_holds_lock()'::regprocedure
-          AND a.grantee = 0
-          AND a.privilege_type = 'EXECUTE'
-    ) THEN
-        RAISE EXCEPTION 'FAIL: PUBLIC has hold-lock trigger EXECUTE';
-    END IF;
+        FOR a IN
+            SELECT CASE WHEN x.grantee = 0 THEN 'PUBLIC'
+                        ELSE pg_get_userbyid(x.grantee) END AS grantee,
+                   x.privilege_type
+            FROM aclexplode(
+                COALESCE(r.proacl, acldefault('f', r.proowner))
+            ) x
+        LOOP
+            IF a.grantee = 'PUBLIC' THEN
+                RAISE EXCEPTION
+                    'FAIL: PUBLIC has % on function %',
+                    a.privilege_type, r.proname;
+            END IF;
+            IF a.grantee <> ALL (v_expected) THEN
+                RAISE EXCEPTION
+                    'FAIL: unexpected % grant on function % to %',
+                    a.privilege_type, r.proname, a.grantee;
+            END IF;
+        END LOOP;
 
-    IF has_function_privilege(
-        'utop14_app',
-        'public.audit_logs_reject_mutation()',
-        'EXECUTE'
-    ) OR has_function_privilege(
-        'utop14_app',
-        'public.security_events_reject_mutation()',
-        'EXECUTE'
-    ) THEN
-        RAISE EXCEPTION 'FAIL: app has append-only trigger function EXECUTE';
-    END IF;
-
-    RAISE NOTICE 'PASS: function ownership, SECURITY DEFINER, EXECUTE';
+        IF has_function_privilege('utop14_app'::name, r.oid, 'EXECUTE') THEN
+            RAISE EXCEPTION 'FAIL: utop14_app has EXECUTE on function %', r.proname;
+        END IF;
+        IF r.proname = 'prune_security_events' THEN
+            IF NOT has_function_privilege(
+                'utop14_retention_runner'::name, r.oid, 'EXECUTE'
+            ) THEN
+                RAISE EXCEPTION 'FAIL: runner lacks prune_security_events EXECUTE';
+            END IF;
+        ELSE
+            IF has_function_privilege(
+                'utop14_retention_owner'::name, r.oid, 'EXECUTE'
+            ) THEN
+                RAISE EXCEPTION
+                    'FAIL: retention owner has EXECUTE on unrelated function %',
+                    r.proname;
+            END IF;
+            IF has_function_privilege(
+                'utop14_retention_runner'::name, r.oid, 'EXECUTE'
+            ) THEN
+                RAISE EXCEPTION
+                    'FAIL: retention runner has EXECUTE on unrelated function %',
+                    r.proname;
+            END IF;
+        END IF;
+    END LOOP;
+    RAISE NOTICE 'PASS: function ownership, SECURITY DEFINER, search_path, EXECUTE matrix';
 END $$;
 
 -- ---------------------------------------------------------------------------
@@ -663,7 +925,19 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'FAIL: security_events append-only trigger is missing/disabled';
     END IF;
-    RAISE NOTICE 'PASS: append-only triggers enabled';
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger t
+        JOIN pg_class c ON c.oid = t.tgrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public'
+          AND c.relname = 'security_event_retention_holds'
+          AND t.tgname = 'security_event_retention_holds_lock'
+          AND t.tgenabled = 'O'
+          AND NOT t.tgisinternal
+    ) THEN
+        RAISE EXCEPTION 'FAIL: hold-lock trigger is missing/disabled';
+    END IF;
+    RAISE NOTICE 'PASS: append-only and hold-lock triggers enabled';
 END $$;
 
 DO $$
@@ -754,12 +1028,12 @@ BEGIN
                a.privilege_type
         FROM pg_default_acl d,
              aclexplode(d.defaclacl) a
-        WHERE d.defaclrole IN ('utop14_app'::regrole,
-                               'utop14_retention_owner'::regrole,
-                               'utop14_retention_runner'::regrole)
-           OR a.grantee IN ('utop14_app'::regrole,
-                            'utop14_retention_owner'::regrole,
-                            'utop14_retention_runner'::regrole)
+        WHERE d.defaclrole IN (to_regrole('utop14_app'),
+                               to_regrole('utop14_retention_owner'),
+                               to_regrole('utop14_retention_runner'))
+           OR a.grantee IN (to_regrole('utop14_app'),
+                            to_regrole('utop14_retention_owner'),
+                            to_regrole('utop14_retention_runner'))
            OR a.grantee = 0
     LOOP
         RAISE EXCEPTION

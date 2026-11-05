@@ -150,6 +150,133 @@ def _verify(port: int) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _psql_file(port: int, path: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "psql",
+            "-h",
+            "127.0.0.1",
+            "-p",
+            str(port),
+            "-U",
+            "postgres",
+            "-d",
+            DB,
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-f",
+            path,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _psql_stdin(port: int, sql: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "psql",
+            "-h",
+            "127.0.0.1",
+            "-p",
+            str(port),
+            "-U",
+            "postgres",
+            "-d",
+            DB,
+            "-v",
+            "ON_ERROR_STOP=1",
+        ],
+        input=sql,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _acl_snapshot(engine) -> list[tuple[str, str, str, str]]:
+    """Canonical ACL snapshot (grantees/privileges, not grantor OIDs)."""
+
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT 'table' AS kind,
+                       c.relname AS object_name,
+                       CASE WHEN a.grantee = 0 THEN 'PUBLIC'
+                            ELSE pg_get_userbyid(a.grantee) END AS grantee,
+                       a.privilege_type
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                CROSS JOIN LATERAL aclexplode(
+                    COALESCE(
+                        c.relacl,
+                        acldefault(
+                            CASE WHEN c.relkind = 'S' THEN 's'::"char"
+                                 ELSE 'r'::"char" END,
+                            c.relowner
+                        )
+                    )
+                ) a
+                WHERE n.nspname = 'public'
+                  AND c.relkind IN ('r', 'p', 'f', 'S')
+                  AND a.grantee <> c.relowner
+                UNION ALL
+                SELECT 'function',
+                       p.proname || '(' ||
+                       pg_get_function_identity_arguments(p.oid) || ')',
+                       CASE WHEN a.grantee = 0 THEN 'PUBLIC'
+                            ELSE pg_get_userbyid(a.grantee) END,
+                       a.privilege_type
+                FROM pg_proc p
+                JOIN pg_namespace n ON n.oid = p.pronamespace
+                CROSS JOIN LATERAL aclexplode(
+                    COALESCE(p.proacl, acldefault('f'::"char", p.proowner))
+                ) a
+                WHERE n.nspname = 'public'
+                  AND a.grantee <> p.proowner
+                ORDER BY 1, 2, 3, 4
+                """
+            )
+        ).all()
+    return [tuple(row) for row in rows]
+
+
+def _owner_snapshot(engine) -> list[tuple[str, str, str]]:
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT 'relation', c.relname, pg_get_userbyid(c.relowner)
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'public'
+                  AND c.relkind IN ('r', 'p', 'f', 'S')
+                UNION ALL
+                SELECT 'function',
+                       p.proname || '(' ||
+                       pg_get_function_identity_arguments(p.oid) || ')',
+                       pg_get_userbyid(p.proowner)
+                FROM pg_proc p
+                JOIN pg_namespace n ON n.oid = p.pronamespace
+                WHERE n.nspname = 'public'
+                ORDER BY 1, 2, 3
+                """
+            )
+        ).all()
+    return [tuple(row) for row in rows]
+
+
+def _assert_verify_fails(port: int, *needles: str) -> str:
+    result = _verify(port)
+    output = result.stdout + result.stderr
+    assert result.returncode != 0, output
+    for needle in needles:
+        assert needle in output, output
+    return output
+
+
 def _insert_event(
     engine, *, event_type: str, outcome: str, reason: str, created_at: datetime
 ) -> int:
@@ -319,6 +446,88 @@ def test_disposable_ownership_and_hold_concurrency() -> None:
         schema_owner = create_engine(schema_owner_dsn)
         app_engine = create_engine(_role_dsn(port, "utop14_app"))
         runner = create_engine(_role_dsn(port, "utop14_retention_runner"))
+
+        # --- M14312-03: repeatable provisioning and identical state --------
+        acl_before = _acl_snapshot(admin)
+        owners_before = _owner_snapshot(admin)
+        second_ownership = _psql_stdin(port, ownership_sql)
+        assert second_ownership.returncode == 0, second_ownership.stdout + second_ownership.stderr
+        second_provisioning = _psql_file(port, "scripts/security_event_retention_roles.sql")
+        assert second_provisioning.returncode == 0, (
+            second_provisioning.stdout + second_provisioning.stderr
+        )
+        assert "ROLE PROVISIONING COMMITTED SUCCESSFULLY" in (
+            second_provisioning.stdout + second_provisioning.stderr
+        )
+        assert _acl_snapshot(admin) == acl_before, "provisioning changed ACL state"
+        assert _owner_snapshot(admin) == owners_before, "provisioning changed owners"
+        assert _verify(port).returncode == 0
+
+        # --- M14311-04: hold-lock trigger EXECUTE is unnecessary ------------
+        with admin.connect() as conn:
+            app_hold_exec = conn.execute(
+                text(
+                    "SELECT has_function_privilege('utop14_app', "
+                    "'public.security_event_retention_holds_lock()', 'EXECUTE')"
+                )
+            ).scalar_one()
+            app_prune_exec = conn.execute(
+                text(
+                    "SELECT has_function_privilege('utop14_app', "
+                    "'public.prune_security_events(text, timestamptz, integer, uuid, integer)', "
+                    "'EXECUTE')"
+                )
+            ).scalar_one()
+            public_hold_exec = conn.execute(
+                text(
+                    "SELECT count(*) FROM pg_proc p, "
+                    "aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a "
+                    "WHERE p.oid = "
+                    "'public.security_event_retention_holds_lock()'::regprocedure "
+                    "AND a.grantee = 0 AND a.privilege_type = 'EXECUTE'"
+                )
+            ).scalar_one()
+        assert app_hold_exec is False, "app still has hold-lock EXECUTE"
+        assert app_prune_exec is False, "app has retention function EXECUTE"
+        assert public_hold_exec == 0, "PUBLIC has hold-lock EXECUTE"
+
+        hold_event = _insert_event(
+            schema_owner,
+            event_type="auth.login_failed",
+            outcome="failure",
+            reason="invalid_password",
+            created_at=datetime.now(UTC) - timedelta(days=120),
+        )
+        # INSERT and UPDATE must still fire the trigger without app EXECUTE.
+        with app_engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO security_event_retention_holds "
+                    "(security_event_id, reason, created_by, expires_at) "
+                    "VALUES (:id, 'no-exec-insert', 'op', now() + interval '1 day')"
+                ),
+                {"id": hold_event},
+            )
+        with app_engine.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE security_event_retention_holds SET reason='no-exec-update' "
+                    "WHERE security_event_id=:id"
+                ),
+                {"id": hold_event},
+            )
+        # Direct invocation of a trigger function must fail for the app.
+        try:
+            with app_engine.begin() as conn:
+                conn.execute(text("SELECT public.security_event_retention_holds_lock()"))
+            raise AssertionError("app directly invoked the hold-lock trigger function")
+        except SQLAlchemyError:
+            pass
+        with schema_owner.begin() as conn:
+            conn.execute(
+                text("DELETE FROM security_event_retention_holds WHERE security_event_id=:id"),
+                {"id": hold_event},
+            )
         app_role = create_app(
             "testing",
             {
@@ -514,6 +723,190 @@ def test_disposable_ownership_and_hold_concurrency() -> None:
             "REVOKE utop14_membership_bridge FROM utop14_app",
             "REVOKE utop14_schema_owner FROM utop14_membership_bridge",
             "DROP ROLE utop14_membership_bridge",
+        ):
+            result = _psql(port, statement)
+            assert result.returncode == 0, result.stderr
+        assert _verify(port).returncode == 0
+
+        # --- M14311-01: default-deny predefined/custom/nested memberships ---
+        # Direct predefined role with SET-only membership.
+        result = _psql(
+            port,
+            "GRANT pg_write_all_data TO utop14_app WITH SET TRUE, INHERIT FALSE",
+        )
+        assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "pg_write_all_data", "membership")
+        with app_engine.begin() as conn:
+            conn.execute(text("SET LOCAL ROLE pg_write_all_data"))
+            conn.execute(text("DELETE FROM security_event_retention_holds WHERE false"))
+            conn.execute(text("DELETE FROM auth_rate_limits WHERE false"))
+        assert _psql(port, "REVOKE pg_write_all_data FROM utop14_app").returncode == 0
+        assert _verify(port).returncode == 0
+
+        # Direct pg_read_all_data SET-only membership grants the run log.
+        result = _psql(
+            port,
+            "GRANT pg_read_all_data TO utop14_app WITH SET TRUE, INHERIT FALSE",
+        )
+        assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "pg_read_all_data", "membership")
+        with app_engine.begin() as conn:
+            conn.execute(text("SET LOCAL ROLE pg_read_all_data"))
+            conn.execute(text("SELECT count(*) FROM security_event_retention_runs")).scalar_one()
+        assert _psql(port, "REVOKE pg_read_all_data FROM utop14_app").returncode == 0
+        assert _verify(port).returncode == 0
+
+        # Custom SET-only role with SELECT on the retention run log.
+        for statement in (
+            "CREATE ROLE m14312_reader NOLOGIN",
+            "GRANT SELECT ON public.security_event_retention_runs TO m14312_reader",
+            "GRANT m14312_reader TO utop14_app WITH SET TRUE, INHERIT FALSE",
+        ):
+            result = _psql(port, statement)
+            assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "m14312_reader", "membership")
+        with app_engine.begin() as conn:
+            conn.execute(text("SET LOCAL ROLE m14312_reader"))
+            conn.execute(text("SELECT count(*) FROM security_event_retention_runs")).scalar_one()
+        for statement in (
+            "REVOKE m14312_reader FROM utop14_app",
+            "REVOKE SELECT ON public.security_event_retention_runs FROM m14312_reader",
+            "DROP ROLE m14312_reader",
+        ):
+            result = _psql(port, statement)
+            assert result.returncode == 0, result.stderr
+        assert _verify(port).returncode == 0
+
+        # Custom SET-only role with DELETE on retention holds.
+        for statement in (
+            "CREATE ROLE m14312_hold_deleter NOLOGIN",
+            "GRANT DELETE ON public.security_event_retention_holds TO m14312_hold_deleter",
+            "GRANT m14312_hold_deleter TO utop14_app WITH SET TRUE, INHERIT FALSE",
+        ):
+            result = _psql(port, statement)
+            assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "m14312_hold_deleter", "membership")
+        with app_engine.begin() as conn:
+            conn.execute(text("SET LOCAL ROLE m14312_hold_deleter"))
+            conn.execute(text("DELETE FROM security_event_retention_holds WHERE false"))
+        for statement in (
+            "REVOKE m14312_hold_deleter FROM utop14_app",
+            "REVOKE DELETE ON public.security_event_retention_holds FROM m14312_hold_deleter",
+            "DROP ROLE m14312_hold_deleter",
+        ):
+            result = _psql(port, statement)
+            assert result.returncode == 0, result.stderr
+        assert _verify(port).returncode == 0
+
+        # Nested/transitive membership: app -> bridge -> nested -> predefined.
+        for statement in (
+            "CREATE ROLE m14312_bridge NOLOGIN",
+            "CREATE ROLE m14312_nested NOLOGIN",
+            "GRANT pg_write_all_data TO m14312_nested WITH SET TRUE, INHERIT FALSE",
+            "GRANT m14312_nested TO m14312_bridge WITH SET TRUE, INHERIT FALSE",
+            "GRANT m14312_bridge TO utop14_app WITH SET TRUE, INHERIT FALSE",
+        ):
+            result = _psql(port, statement)
+            assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "m14312_bridge", "m14312_nested", "pg_write_all_data")
+        with app_engine.begin() as conn:
+            conn.execute(text("SET LOCAL ROLE m14312_bridge"))
+            conn.execute(text("SET LOCAL ROLE m14312_nested"))
+            conn.execute(text("SET LOCAL ROLE pg_write_all_data"))
+            conn.execute(text("DELETE FROM security_event_retention_holds WHERE false"))
+        for statement in (
+            "REVOKE m14312_bridge FROM utop14_app",
+            "REVOKE m14312_nested FROM m14312_bridge",
+            "REVOKE pg_write_all_data FROM m14312_nested",
+            "DROP ROLE m14312_bridge",
+            "DROP ROLE m14312_nested",
+        ):
+            result = _psql(port, statement)
+            assert result.returncode == 0, result.stderr
+        assert _verify(port).returncode == 0
+
+        # INHERIT-only membership is forbidden even when SET is disabled.
+        for statement in (
+            "CREATE ROLE m14312_inherit_reader NOLOGIN",
+            "GRANT SELECT ON public.security_event_retention_runs TO m14312_inherit_reader",
+            "GRANT m14312_inherit_reader TO utop14_app WITH INHERIT TRUE, SET FALSE",
+        ):
+            result = _psql(port, statement)
+            assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "m14312_inherit_reader", "inherit=true")
+        try:
+            with app_engine.begin() as conn:
+                conn.execute(text("SET LOCAL ROLE m14312_inherit_reader"))
+            raise AssertionError("app SET ROLE to an INHERIT-only membership")
+        except SQLAlchemyError:
+            pass
+        for statement in (
+            "REVOKE m14312_inherit_reader FROM utop14_app",
+            "REVOKE SELECT ON public.security_event_retention_runs FROM m14312_inherit_reader",
+            "DROP ROLE m14312_inherit_reader",
+        ):
+            result = _psql(port, statement)
+            assert result.returncode == 0, result.stderr
+        assert _verify(port).returncode == 0
+
+        # ADMIN option is forbidden even when the membership is not used.
+        for statement in (
+            "CREATE ROLE m14312_admin_role NOLOGIN",
+            "GRANT m14312_admin_role TO utop14_app WITH ADMIN TRUE, INHERIT FALSE, SET TRUE",
+        ):
+            result = _psql(port, statement)
+            assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "m14312_admin_role", "admin=true")
+        for statement in (
+            "REVOKE m14312_admin_role FROM utop14_app",
+            "DROP ROLE m14312_admin_role",
+        ):
+            result = _psql(port, statement)
+            assert result.returncode == 0, result.stderr
+        assert _verify(port).returncode == 0
+
+        # The retention roles are subject to the same default-deny rule.
+        result = _psql(
+            port,
+            "GRANT pg_read_all_data TO utop14_retention_owner WITH SET TRUE, INHERIT FALSE",
+        )
+        assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "utop14_retention_owner", "pg_read_all_data")
+        assert (
+            _psql(
+                port,
+                "REVOKE pg_read_all_data FROM utop14_retention_owner",
+            ).returncode
+            == 0
+        )
+        assert _verify(port).returncode == 0
+
+        result = _psql(
+            port,
+            "GRANT pg_write_all_data TO utop14_retention_runner WITH SET TRUE, INHERIT FALSE",
+        )
+        assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "utop14_retention_runner", "pg_write_all_data")
+        assert (
+            _psql(
+                port,
+                "REVOKE pg_write_all_data FROM utop14_retention_runner",
+            ).returncode
+            == 0
+        )
+        assert _verify(port).returncode == 0
+
+        # Reverse membership: another role can assume utop14_app.
+        for statement in (
+            "CREATE ROLE m14312_reverse NOLOGIN",
+            "GRANT utop14_app TO m14312_reverse",
+        ):
+            result = _psql(port, statement)
+            assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "reverse membership", "m14312_reverse")
+        for statement in (
+            "REVOKE utop14_app FROM m14312_reverse",
+            "DROP ROLE m14312_reverse",
         ):
             result = _psql(port, statement)
             assert result.returncode == 0, result.stderr
@@ -814,6 +1207,125 @@ def test_disposable_ownership_and_hold_concurrency() -> None:
         assert regranted_sequence.returncode == 0, regranted_sequence.stderr
         assert _verify(port).returncode == 0
 
+        # --- M14311-02: schema-wide privilege and object inventory ----------
+        # An unexpected non-system schema must fail even without grants.
+        result = _psql(port, "CREATE SCHEMA m14312_unexpected_schema")
+        assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "m14312_unexpected_schema", "schemas")
+        assert _psql(port, "DROP SCHEMA m14312_unexpected_schema").returncode == 0
+        assert _verify(port).returncode == 0
+
+        # App USAGE/CREATE on a non-public schema must fail and is exploitable.
+        for statement in (
+            "CREATE SCHEMA m14312_app_schema",
+            "GRANT USAGE, CREATE ON SCHEMA m14312_app_schema TO utop14_app",
+        ):
+            result = _psql(port, statement)
+            assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "m14312_app_schema")
+        with app_engine.begin() as conn:
+            conn.execute(text("CREATE TABLE m14312_app_schema.m14312_probe (id integer)"))
+        assert _psql(port, "DROP SCHEMA m14312_app_schema CASCADE").returncode == 0
+        assert _verify(port).returncode == 0
+
+        # CREATE through PUBLIC is an effective app privilege and must fail.
+        result = _psql(port, "GRANT CREATE ON SCHEMA public TO PUBLIC")
+        assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "CREATE on schema public")
+        assert _psql(port, "REVOKE CREATE ON SCHEMA public FROM PUBLIC").returncode == 0
+        assert _verify(port).returncode == 0
+
+        # CREATE through a custom role is a forbidden membership path.
+        for statement in (
+            "CREATE ROLE m14312_schema_creator NOLOGIN",
+            "GRANT CREATE ON SCHEMA public TO m14312_schema_creator",
+            "GRANT m14312_schema_creator TO utop14_app WITH SET TRUE, INHERIT FALSE",
+        ):
+            result = _psql(port, statement)
+            assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "m14312_schema_creator", "membership")
+        for statement in (
+            "REVOKE m14312_schema_creator FROM utop14_app",
+            "REVOKE CREATE ON SCHEMA public FROM m14312_schema_creator",
+            "DROP ROLE m14312_schema_creator",
+        ):
+            result = _psql(port, statement)
+            assert result.returncode == 0, result.stderr
+        assert _verify(port).returncode == 0
+
+        # An unexpected user-defined domain/type must fail closed.
+        result = _psql(port, "CREATE DOMAIN public.m14312_review_domain AS text")
+        assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "m14312_review_domain")
+        assert _psql(port, "DROP DOMAIN public.m14312_review_domain").returncode == 0
+        assert _verify(port).returncode == 0
+
+        result = _psql(port, "CREATE TYPE public.m14312_review_enum AS ENUM ('a', 'b')")
+        assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "m14312_review_enum")
+        assert _psql(port, "DROP TYPE public.m14312_review_enum").returncode == 0
+        assert _verify(port).returncode == 0
+
+        # --- M14311-05: complete function EXECUTE matrix --------------------
+        function_cases = (
+            (
+                "GRANT EXECUTE ON FUNCTION public.audit_logs_reject_mutation() "
+                "TO utop14_retention_runner",
+                "REVOKE EXECUTE ON FUNCTION public.audit_logs_reject_mutation() "
+                "FROM utop14_retention_runner",
+                "audit_logs_reject_mutation",
+            ),
+            (
+                "GRANT EXECUTE ON FUNCTION public.security_events_reject_mutation() "
+                "TO utop14_retention_owner",
+                "REVOKE EXECUTE ON FUNCTION public.security_events_reject_mutation() "
+                "FROM utop14_retention_owner",
+                "security_events_reject_mutation",
+            ),
+            (
+                "GRANT EXECUTE ON FUNCTION "
+                "public.security_event_retention_holds_lock() TO utop14_app",
+                "REVOKE EXECUTE ON FUNCTION "
+                "public.security_event_retention_holds_lock() FROM utop14_app",
+                "security_event_retention_holds_lock",
+            ),
+            (
+                "GRANT EXECUTE ON FUNCTION public.audit_logs_reject_mutation() TO utop14_app",
+                "REVOKE EXECUTE ON FUNCTION public.audit_logs_reject_mutation() FROM utop14_app",
+                "audit_logs_reject_mutation",
+            ),
+            (
+                "GRANT EXECUTE ON FUNCTION public.prune_security_events("
+                "text, timestamptz, integer, uuid, integer) TO PUBLIC",
+                "REVOKE EXECUTE ON FUNCTION public.prune_security_events("
+                "text, timestamptz, integer, uuid, integer) FROM PUBLIC",
+                "prune_security_events",
+            ),
+            (
+                "GRANT EXECUTE ON FUNCTION public.prune_security_events("
+                "text, timestamptz, integer, uuid, integer) TO utop14_app",
+                "REVOKE EXECUTE ON FUNCTION public.prune_security_events("
+                "text, timestamptz, integer, uuid, integer) FROM utop14_app",
+                "prune_security_events",
+            ),
+            (
+                "GRANT EXECUTE ON FUNCTION public.prune_security_events("
+                "text, timestamptz, integer, uuid, integer) "
+                "TO utop14_schema_owner",
+                "REVOKE EXECUTE ON FUNCTION public.prune_security_events("
+                "text, timestamptz, integer, uuid, integer) "
+                "FROM utop14_schema_owner",
+                "prune_security_events",
+            ),
+        )
+        for grant_sql, revoke_sql, needle in function_cases:
+            result = _psql(port, grant_sql)
+            assert result.returncode == 0, result.stderr
+            _assert_verify_fails(port, needle)
+            result = _psql(port, revoke_sql)
+            assert result.returncode == 0, result.stderr
+            assert _verify(port).returncode == 0
+
         # A privileged non-owner role proves the M13/M14.1 append-only triggers
         # deny row mutation even when table privileges are present.
         for statement in (
@@ -821,10 +1333,6 @@ def test_disposable_ownership_and_hold_concurrency() -> None:
             "GRANT USAGE ON SCHEMA public TO utop14_trigger_tester",
             "GRANT SELECT, UPDATE, DELETE ON public.audit_logs, "
             "public.security_events TO utop14_trigger_tester",
-            "GRANT EXECUTE ON FUNCTION public.audit_logs_reject_mutation() "
-            "TO utop14_trigger_tester",
-            "GRANT EXECUTE ON FUNCTION public.security_events_reject_mutation() "
-            "TO utop14_trigger_tester",
         ):
             result = _psql(port, statement)
             assert result.returncode == 0, result.stderr
@@ -1375,6 +1883,93 @@ def test_disposable_ownership_and_hold_concurrency() -> None:
                 == 0
             )
         assert cleanup_first_hold_ok.get("ok") is False
+
+        # --- M14311-03: provisioning reconciles a forbidden membership ------
+        result = _psql(
+            port,
+            "GRANT pg_write_all_data TO utop14_app WITH SET TRUE, INHERIT FALSE",
+        )
+        assert result.returncode == 0, result.stderr
+        healed = _psql_file(port, "scripts/security_event_retention_roles.sql")
+        healed_output = healed.stdout + healed.stderr
+        assert healed.returncode == 0, healed_output
+        assert "REVOKED forbidden membership" in healed_output
+        with admin.connect() as conn:
+            remaining_memberships = conn.execute(
+                text(
+                    "SELECT count(*) FROM pg_auth_members m "
+                    "JOIN pg_roles u ON u.oid = m.member "
+                    "WHERE u.rolname IN ('utop14_app', "
+                    "'utop14_retention_owner', 'utop14_retention_runner')"
+                )
+            ).scalar_one()
+        assert remaining_memberships == 0, remaining_memberships
+        assert _verify(port).returncode == 0
+
+        # --- M14311-03: failure injection and recoverable rerun -------------
+        acl_before_failure = _acl_snapshot(admin)
+        owners_before_failure = _owner_snapshot(admin)
+        result = _psql(port, "ALTER ROLE utop14_retention_owner SUPERUSER")
+        assert result.returncode == 0, result.stderr
+        failed = _psql_file(port, "scripts/security_event_retention_roles.sql")
+        failed_output = failed.stdout + failed.stderr
+        assert failed.returncode != 0, failed_output
+        assert "incompatible privileged attributes" in failed_output, failed_output
+        # Preflight failure must leave no partial grants/ownership changes.
+        assert _acl_snapshot(admin) == acl_before_failure
+        assert _owner_snapshot(admin) == owners_before_failure
+        assert _psql(port, "ALTER ROLE utop14_retention_owner NOSUPERUSER").returncode == 0
+        recovered = _psql_file(port, "scripts/security_event_retention_roles.sql")
+        assert recovered.returncode == 0, recovered.stdout + recovered.stderr
+        assert _verify(port).returncode == 0
+
+        # A reverse membership fails provisioning preflight without changes.
+        for statement in (
+            "CREATE ROLE m14312_reverse_provision NOLOGIN",
+            "GRANT utop14_app TO m14312_reverse_provision",
+        ):
+            result = _psql(port, statement)
+            assert result.returncode == 0, result.stderr
+        reverse_failed = _psql_file(port, "scripts/security_event_retention_roles.sql")
+        reverse_output = reverse_failed.stdout + reverse_failed.stderr
+        assert reverse_failed.returncode != 0, reverse_output
+        assert "reverse membership" in reverse_output, reverse_output
+        assert _acl_snapshot(admin) == acl_before_failure
+        assert _owner_snapshot(admin) == owners_before_failure
+        for statement in (
+            "REVOKE utop14_app FROM m14312_reverse_provision",
+            "DROP ROLE m14312_reverse_provision",
+        ):
+            result = _psql(port, statement)
+            assert result.returncode == 0, result.stderr
+        assert _verify(port).returncode == 0
+
+        # Unexpected schema and dangerous default ACL fail provisioning
+        # preflight before any change; cleanup restores a passing state.
+        result = _psql(port, "CREATE SCHEMA m14312_provision_schema")
+        assert result.returncode == 0, result.stderr
+        schema_failed = _psql_file(port, "scripts/security_event_retention_roles.sql")
+        schema_output = schema_failed.stdout + schema_failed.stderr
+        assert schema_failed.returncode != 0, schema_output
+        assert "uninventoried non-system schemas" in schema_output, schema_output
+        assert _psql(port, "DROP SCHEMA m14312_provision_schema").returncode == 0
+        assert _verify(port).returncode == 0
+
+        result = _psql(
+            port,
+            "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO utop14_app",
+        )
+        assert result.returncode == 0, result.stderr
+        acl_failed = _psql_file(port, "scripts/security_event_retention_roles.sql")
+        acl_output = acl_failed.stdout + acl_failed.stderr
+        assert acl_failed.returncode != 0, acl_output
+        assert "dangerous custom default privilege" in acl_output, acl_output
+        result = _psql(
+            port,
+            "ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE SELECT ON TABLES FROM utop14_app",
+        )
+        assert result.returncode == 0, result.stderr
+        assert _verify(port).returncode == 0
     finally:
         try:
             if (data_dir / "postmaster.pid").exists():

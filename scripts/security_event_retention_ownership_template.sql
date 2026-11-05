@@ -13,6 +13,12 @@
 --   <schema_owner>   dedicated DDL/schema-owner role (not utop14_app)
 --   <database_name>  the application database
 --
+-- Prerequisites:
+--   * utop14_app already exists (it is not created here);
+--   * all Alembic migrations have run and the current head is the reviewed
+--     head documented in README.md;
+--   * the expected object inventory below matches the migrations.
+--
 -- Safe execution order for a new or existing installation:
 --   1. Run all Alembic migrations as <schema_owner>/DBA.
 --   2. Run this ownership template as a superuser (review first).
@@ -20,7 +26,236 @@
 --   4. Run scripts/security_event_retention_verify.sql as the DBA; it must
 --      exit 0.
 --
+-- The template is repeatable: it fails closed before changing anything if the
+-- object inventory has drifted, and it is wrapped in a single transaction.
+-- Supported PostgreSQL: 16 or newer (membership checks live in the provisioning
+-- and verification scripts; this template only needs transactional DDL).
+--
 -- Do not run this against production without change approval and a backup.
+
+\set ON_ERROR_STOP on
+\pset pager off
+
+BEGIN;
+
+-- ---------------------------------------------------------------------------
+-- Preflight: exact object inventory, no unexpected schemas/types/extensions.
+-- This prevents a newly added migration object from being silently ignored by
+-- a stale ownership list.
+-- ---------------------------------------------------------------------------
+DO $$
+DECLARE
+    expected_schemas text[] := ARRAY['public'];
+    expected_extensions text[] := ARRAY['plpgsql'];
+    expected_tables text[] := ARRAY[
+        'alembic_version', 'audit_logs', 'auth_rate_limits', 'cart_items',
+        'carts', 'categories', 'order_items', 'orders', 'payment_proofs',
+        'payments', 'product_images', 'product_reviews', 'product_variants',
+        'products', 'security_event_retention_holds',
+        'security_event_retention_runs', 'security_events', 'users'
+    ];
+    expected_sequences text[] := ARRAY[
+        'audit_logs_id_seq', 'cart_items_id_seq', 'carts_id_seq',
+        'categories_id_seq', 'order_items_id_seq', 'orders_id_seq',
+        'payment_proofs_id_seq', 'payments_id_seq', 'product_images_id_seq',
+        'product_reviews_id_seq', 'product_variants_id_seq', 'products_id_seq',
+        'security_event_retention_holds_id_seq',
+        'security_event_retention_runs_id_seq', 'security_events_id_seq',
+        'users_id_seq'
+    ];
+    expected_functions text[] := ARRAY[
+        'public.audit_logs_reject_mutation()',
+        'public.security_events_reject_mutation()',
+        'public.security_event_retention_holds_lock()',
+        'public.prune_security_events(text, timestamptz, integer, uuid, integer)'
+    ];
+    expected_triggers text[] := ARRAY[
+        'audit_logs_append_only', 'security_event_retention_holds_lock',
+        'security_events_append_only'
+    ];
+    r record;
+    fn text;
+    v_extra text[];
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '<schema_owner>') THEN
+        RAISE EXCEPTION 'FAIL: schema owner <schema_owner> does not exist';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'utop14_app') THEN
+        RAISE EXCEPTION 'FAIL: utop14_app does not exist; create the application login role first';
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'plpgsql') THEN
+        RAISE EXCEPTION 'FAIL: required extension plpgsql is missing';
+    END IF;
+    SELECT array_agg(extname ORDER BY extname) INTO v_extra
+    FROM pg_extension WHERE NOT (extname = ANY (expected_extensions));
+    IF v_extra IS NOT NULL THEN
+        RAISE EXCEPTION
+            'FAIL: uninventoried extensions %; review them and update this template',
+            v_extra;
+    END IF;
+
+    SELECT array_agg(n.nspname ORDER BY n.nspname) INTO v_extra
+    FROM pg_namespace n
+    WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+      AND n.nspname NOT LIKE 'pg\_%' ESCAPE '\'
+      AND NOT EXISTS (
+          SELECT 1 FROM pg_depend d
+          WHERE d.classid = 'pg_namespace'::regclass
+            AND d.objid = n.oid
+            AND d.deptype = 'e'
+      )
+      AND NOT (n.nspname = ANY (expected_schemas));
+    IF v_extra IS NOT NULL THEN
+        RAISE EXCEPTION
+            'FAIL: uninventoried non-system schemas %; review them and update this template',
+            v_extra;
+    END IF;
+
+    SELECT array_agg(format('%I.%I', n.nspname, t.typname) ORDER BY 1) INTO v_extra
+    FROM pg_type t
+    JOIN pg_namespace n ON n.oid = t.typnamespace
+    WHERE n.nspname = ANY (expected_schemas)
+      AND t.typtype IN ('b', 'c', 'd', 'e', 'r', 'm')
+      AND NOT (t.typtype = 'b' AND t.typelem <> 0 AND t.typlen = -1)
+      AND NOT (
+          t.typtype = 'c'
+          AND EXISTS (
+              SELECT 1 FROM pg_class c
+              WHERE c.oid = t.typrelid AND c.relkind IN ('r', 'p', 'f')
+          )
+      )
+      AND NOT EXISTS (
+          SELECT 1 FROM pg_depend d
+          WHERE d.classid = 'pg_type'::regclass
+            AND d.objid = t.oid
+            AND d.deptype = 'e'
+      );
+    IF v_extra IS NOT NULL THEN
+        RAISE EXCEPTION
+            'FAIL: uninventoried user-defined types/domains %; update this template',
+            v_extra;
+    END IF;
+
+    SELECT array_agg(t) INTO v_extra
+    FROM unnest(expected_tables) t
+    WHERE to_regclass(format('public.%I', t)) IS NULL;
+    IF v_extra IS NOT NULL THEN
+        RAISE EXCEPTION 'FAIL: missing expected tables %', v_extra;
+    END IF;
+    SELECT array_agg(c.relname ORDER BY c.relname) INTO v_extra
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relkind IN ('r', 'p', 'f')
+      AND NOT (c.relname = ANY (expected_tables))
+      AND NOT EXISTS (
+          SELECT 1 FROM pg_depend d
+          WHERE d.classid = 'pg_class'::regclass
+            AND d.objid = c.oid
+            AND d.deptype = 'e'
+      );
+    IF v_extra IS NOT NULL THEN
+        RAISE EXCEPTION 'FAIL: uninventoried tables %', v_extra;
+    END IF;
+
+    SELECT array_agg(s) INTO v_extra
+    FROM unnest(expected_sequences) s
+    WHERE to_regclass(format('public.%I', s)) IS NULL;
+    IF v_extra IS NOT NULL THEN
+        RAISE EXCEPTION 'FAIL: missing expected sequences %', v_extra;
+    END IF;
+    SELECT array_agg(c.relname ORDER BY c.relname) INTO v_extra
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relkind = 'S'
+      AND NOT (c.relname = ANY (expected_sequences))
+      AND NOT EXISTS (
+          SELECT 1 FROM pg_depend d
+          WHERE d.classid = 'pg_class'::regclass
+            AND d.objid = c.oid
+            AND d.deptype = 'e'
+      );
+    IF v_extra IS NOT NULL THEN
+        RAISE EXCEPTION 'FAIL: uninventoried sequences %', v_extra;
+    END IF;
+
+    FOREACH fn IN ARRAY expected_functions LOOP
+        IF to_regprocedure(fn) IS NULL THEN
+            RAISE EXCEPTION 'FAIL: required function % is missing', fn;
+        END IF;
+    END LOOP;
+    SELECT array_agg(p.proname ORDER BY p.proname) INTO v_extra
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public'
+      AND NOT (p.proname = ANY (ARRAY[
+          'audit_logs_reject_mutation', 'prune_security_events',
+          'security_event_retention_holds_lock', 'security_events_reject_mutation'
+      ]))
+      AND NOT EXISTS (
+          SELECT 1 FROM pg_depend d
+          WHERE d.classid = 'pg_proc'::regclass
+            AND d.objid = p.oid
+            AND d.deptype = 'e'
+      );
+    IF v_extra IS NOT NULL THEN
+        RAISE EXCEPTION 'FAIL: uninventoried functions/procedures %', v_extra;
+    END IF;
+
+    SELECT array_agg(t) INTO v_extra
+    FROM unnest(expected_triggers) t
+    WHERE NOT EXISTS (
+        SELECT 1 FROM pg_trigger tr
+        JOIN pg_class c ON c.oid = tr.tgrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND tr.tgname = t AND NOT tr.tgisinternal
+    );
+    IF v_extra IS NOT NULL THEN
+        RAISE EXCEPTION 'FAIL: missing expected triggers %', v_extra;
+    END IF;
+    SELECT array_agg(tr.tgname ORDER BY tr.tgname) INTO v_extra
+    FROM pg_trigger tr
+    JOIN pg_class c ON c.oid = tr.tgrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relname = ANY (expected_tables)
+      AND NOT tr.tgisinternal
+      AND NOT (tr.tgname = ANY (expected_triggers));
+    IF v_extra IS NOT NULL THEN
+        RAISE EXCEPTION 'FAIL: uninventoried triggers %', v_extra;
+    END IF;
+
+    IF EXISTS (
+        SELECT 1 FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public'
+          AND c.relkind IN ('v', 'm')
+          AND NOT EXISTS (
+              SELECT 1 FROM pg_depend d
+              WHERE d.classid = 'pg_class'::regclass
+                AND d.objid = c.oid
+                AND d.deptype = 'e'
+          )
+    ) THEN
+        RAISE EXCEPTION 'FAIL: unexpected view/materialized view; update this template';
+    END IF;
+
+    -- The app must never already own an application object.
+    FOR r IN
+        SELECT c.relname, pg_get_userbyid(c.relowner) AS owner
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'f', 'S')
+    LOOP
+        IF r.owner = 'utop14_app' THEN
+            RAISE EXCEPTION
+                'FAIL: utop14_app already owns %; investigate before transferring ownership',
+                r.relname;
+        END IF;
+    END LOOP;
+END $$;
 
 -- 1. Database and schema ownership.
 ALTER DATABASE <database_name> OWNER TO <schema_owner>;
@@ -28,44 +263,44 @@ ALTER SCHEMA public OWNER TO <schema_owner>;
 
 -- 2. Complete application table ownership inventory.
 --    Alembic metadata is included so the app cannot own it either.
-ALTER TABLE IF EXISTS public.alembic_version OWNER TO <schema_owner>;
-ALTER TABLE IF EXISTS public.users OWNER TO <schema_owner>;
-ALTER TABLE IF EXISTS public.audit_logs OWNER TO <schema_owner>;
-ALTER TABLE IF EXISTS public.security_events OWNER TO <schema_owner>;
-ALTER TABLE IF EXISTS public.auth_rate_limits OWNER TO <schema_owner>;
-ALTER TABLE IF EXISTS public.security_event_retention_holds OWNER TO <schema_owner>;
-ALTER TABLE IF EXISTS public.security_event_retention_runs OWNER TO <schema_owner>;
-ALTER TABLE IF EXISTS public.categories OWNER TO <schema_owner>;
-ALTER TABLE IF EXISTS public.products OWNER TO <schema_owner>;
-ALTER TABLE IF EXISTS public.product_variants OWNER TO <schema_owner>;
-ALTER TABLE IF EXISTS public.product_images OWNER TO <schema_owner>;
-ALTER TABLE IF EXISTS public.carts OWNER TO <schema_owner>;
-ALTER TABLE IF EXISTS public.cart_items OWNER TO <schema_owner>;
-ALTER TABLE IF EXISTS public.orders OWNER TO <schema_owner>;
-ALTER TABLE IF EXISTS public.order_items OWNER TO <schema_owner>;
-ALTER TABLE IF EXISTS public.payments OWNER TO <schema_owner>;
-ALTER TABLE IF EXISTS public.payment_proofs OWNER TO <schema_owner>;
-ALTER TABLE IF EXISTS public.product_reviews OWNER TO <schema_owner>;
+ALTER TABLE public.alembic_version OWNER TO <schema_owner>;
+ALTER TABLE public.users OWNER TO <schema_owner>;
+ALTER TABLE public.audit_logs OWNER TO <schema_owner>;
+ALTER TABLE public.security_events OWNER TO <schema_owner>;
+ALTER TABLE public.auth_rate_limits OWNER TO <schema_owner>;
+ALTER TABLE public.security_event_retention_holds OWNER TO <schema_owner>;
+ALTER TABLE public.security_event_retention_runs OWNER TO <schema_owner>;
+ALTER TABLE public.categories OWNER TO <schema_owner>;
+ALTER TABLE public.products OWNER TO <schema_owner>;
+ALTER TABLE public.product_variants OWNER TO <schema_owner>;
+ALTER TABLE public.product_images OWNER TO <schema_owner>;
+ALTER TABLE public.carts OWNER TO <schema_owner>;
+ALTER TABLE public.cart_items OWNER TO <schema_owner>;
+ALTER TABLE public.orders OWNER TO <schema_owner>;
+ALTER TABLE public.order_items OWNER TO <schema_owner>;
+ALTER TABLE public.payments OWNER TO <schema_owner>;
+ALTER TABLE public.payment_proofs OWNER TO <schema_owner>;
+ALTER TABLE public.product_reviews OWNER TO <schema_owner>;
 
 -- 3. Complete sequence ownership inventory.  These are the SERIAL sequences
 --    for every application table that has one.  auth_rate_limits uses a
 --    composite primary key and has no sequence.
-ALTER SEQUENCE IF EXISTS public.users_id_seq OWNER TO <schema_owner>;
-ALTER SEQUENCE IF EXISTS public.audit_logs_id_seq OWNER TO <schema_owner>;
-ALTER SEQUENCE IF EXISTS public.security_events_id_seq OWNER TO <schema_owner>;
-ALTER SEQUENCE IF EXISTS public.security_event_retention_holds_id_seq OWNER TO <schema_owner>;
-ALTER SEQUENCE IF EXISTS public.security_event_retention_runs_id_seq OWNER TO <schema_owner>;
-ALTER SEQUENCE IF EXISTS public.categories_id_seq OWNER TO <schema_owner>;
-ALTER SEQUENCE IF EXISTS public.products_id_seq OWNER TO <schema_owner>;
-ALTER SEQUENCE IF EXISTS public.product_variants_id_seq OWNER TO <schema_owner>;
-ALTER SEQUENCE IF EXISTS public.product_images_id_seq OWNER TO <schema_owner>;
-ALTER SEQUENCE IF EXISTS public.carts_id_seq OWNER TO <schema_owner>;
-ALTER SEQUENCE IF EXISTS public.cart_items_id_seq OWNER TO <schema_owner>;
-ALTER SEQUENCE IF EXISTS public.orders_id_seq OWNER TO <schema_owner>;
-ALTER SEQUENCE IF EXISTS public.order_items_id_seq OWNER TO <schema_owner>;
-ALTER SEQUENCE IF EXISTS public.payments_id_seq OWNER TO <schema_owner>;
-ALTER SEQUENCE IF EXISTS public.payment_proofs_id_seq OWNER TO <schema_owner>;
-ALTER SEQUENCE IF EXISTS public.product_reviews_id_seq OWNER TO <schema_owner>;
+ALTER SEQUENCE public.users_id_seq OWNER TO <schema_owner>;
+ALTER SEQUENCE public.audit_logs_id_seq OWNER TO <schema_owner>;
+ALTER SEQUENCE public.security_events_id_seq OWNER TO <schema_owner>;
+ALTER SEQUENCE public.security_event_retention_holds_id_seq OWNER TO <schema_owner>;
+ALTER SEQUENCE public.security_event_retention_runs_id_seq OWNER TO <schema_owner>;
+ALTER SEQUENCE public.categories_id_seq OWNER TO <schema_owner>;
+ALTER SEQUENCE public.products_id_seq OWNER TO <schema_owner>;
+ALTER SEQUENCE public.product_variants_id_seq OWNER TO <schema_owner>;
+ALTER SEQUENCE public.product_images_id_seq OWNER TO <schema_owner>;
+ALTER SEQUENCE public.carts_id_seq OWNER TO <schema_owner>;
+ALTER SEQUENCE public.cart_items_id_seq OWNER TO <schema_owner>;
+ALTER SEQUENCE public.orders_id_seq OWNER TO <schema_owner>;
+ALTER SEQUENCE public.order_items_id_seq OWNER TO <schema_owner>;
+ALTER SEQUENCE public.payments_id_seq OWNER TO <schema_owner>;
+ALTER SEQUENCE public.payment_proofs_id_seq OWNER TO <schema_owner>;
+ALTER SEQUENCE public.product_reviews_id_seq OWNER TO <schema_owner>;
 
 -- 4. Trigger/helper functions belong to the DDL/schema owner.  They are not
 --    SECURITY DEFINER and hold no elevated privileges.
@@ -81,5 +316,69 @@ ALTER FUNCTION public.security_event_retention_holds_lock() OWNER TO <schema_own
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 REVOKE CREATE ON SCHEMA public FROM utop14_app;
 
--- 7. Verify the intended model.  This script must exit 0.
+-- ---------------------------------------------------------------------------
+-- 7. Postconditions: every application object must be owned by the schema
+-- owner; the app/retention roles must not own anything.  The retention
+-- function may still be owned by the schema owner before first provisioning,
+-- or by utop14_retention_owner afterwards.
+-- ---------------------------------------------------------------------------
+DO $$
+DECLARE
+    r record;
+    v_owner text;
+BEGIN
+    SELECT pg_get_userbyid(datdba) INTO v_owner
+    FROM pg_database WHERE datname = current_database();
+    IF v_owner IS DISTINCT FROM '<schema_owner>' THEN
+        RAISE EXCEPTION 'FAIL: postcondition database owner=%', v_owner;
+    END IF;
+    SELECT nspowner::regrole::text INTO v_owner
+    FROM pg_namespace WHERE nspname = 'public';
+    IF v_owner IS DISTINCT FROM '<schema_owner>' THEN
+        RAISE EXCEPTION 'FAIL: postcondition schema public owner=%', v_owner;
+    END IF;
+
+    FOR r IN
+        SELECT c.relname, pg_get_userbyid(c.relowner) AS owner
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'f', 'S')
+          AND NOT EXISTS (
+              SELECT 1 FROM pg_depend d
+              WHERE d.classid = 'pg_class'::regclass
+                AND d.objid = c.oid
+                AND d.deptype = 'e'
+          )
+    LOOP
+        IF r.owner IS DISTINCT FROM '<schema_owner>' THEN
+            RAISE EXCEPTION 'FAIL: postcondition % owner=%', r.relname, r.owner;
+        END IF;
+    END LOOP;
+
+    FOR r IN
+        SELECT p.proname, pg_get_userbyid(p.proowner) AS owner
+        FROM pg_proc p
+        JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public'
+          AND NOT EXISTS (
+              SELECT 1 FROM pg_depend d
+              WHERE d.classid = 'pg_proc'::regclass
+                AND d.objid = p.oid
+                AND d.deptype = 'e'
+          )
+    LOOP
+        IF r.proname = 'prune_security_events' THEN
+            IF r.owner NOT IN ('<schema_owner>', 'utop14_retention_owner') THEN
+                RAISE EXCEPTION 'FAIL: postcondition prune owner=%', r.owner;
+            END IF;
+        ELSIF r.owner IS DISTINCT FROM '<schema_owner>' THEN
+            RAISE EXCEPTION 'FAIL: postcondition helper function % owner=%',
+                r.proname, r.owner;
+        END IF;
+    END LOOP;
+END $$;
+
+COMMIT;
+
+-- 8. Verify the intended model.  This script must exit 0.
 --    \i scripts/security_event_retention_verify.sql

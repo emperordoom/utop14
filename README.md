@@ -784,6 +784,33 @@ with `scripts/security_event_retention_verify.sql`. The verify script uses
 `ON_ERROR_STOP` and raises on the first failed required assertion, so it exits
 non-zero; run it as the DBA/schema owner, not as `utop14_app`.
 
+M14.3.12 hardens the provisioning and verification gates:
+
+- Role memberships are **default-deny** for `utop14_app`,
+  `utop14_retention_owner`, and `utop14_retention_runner`. Verification fails on
+  any direct or transitive membership, regardless of `INHERIT`, `SET`, `ADMIN`,
+  predefined role, custom role, or nested path. The explicit allowlist is
+  empty; a membership may only be added after a documented review in both the
+  provisioning and verification scripts.
+- Provisioning removes every forward membership of a managed role and fails
+  closed on a reverse membership (another role can assume a managed role).
+- Verification inventories every non-system schema, user-defined
+  type/domain/enum/composite, extension, table, sequence, function, trigger,
+  and view. Only `public` and `plpgsql` are approved today; any other object
+  fails verification until the inventory is reviewed and updated.
+- The app has no `CREATE` or `USAGE` outside `public`, and no `CREATE` through
+  `PUBLIC` or a custom role.
+- The app has **no function `EXECUTE` at all**, including the
+  `security_event_retention_holds_lock` trigger helper. PostgreSQL checks
+  trigger-function `EXECUTE` when the trigger is created, not when it fires, so
+  app hold INSERT/UPDATE still works. `prune_security_events` remains
+  executable only by `utop14_retention_runner` (and its owner).
+- Provisioning is transactional, preflighted, and repeatable: guarded role
+  creation, explicit attribute reconciliation, migration-head check, object and
+  ownership inventory, dangerous-default-ACL check, and membership
+  reconciliation. A second run succeeds with identical non-owner ACLs and
+  ownership; a preflight failure rolls back and can be corrected and rerun.
+
 ### Production ownership model (OPS-01)
 
 The append-only and retention boundary depends on ownership separation. The
@@ -796,7 +823,8 @@ PostgreSQL cluster with a separate DDL role:
   cart, order, payment and review tables), and the trigger/helper functions.
 - The application login role is DML-only. It is **not** the database owner,
   schema owner, table owner, sequence owner, or function owner, and it has no
-  `CREATE` on the application schema.
+  `CREATE` on the application schema. It has no role memberships and no function
+  `EXECUTE` (including trigger/helper functions).
 - `utop14_retention_owner` remains NOLOGIN and owns only
   `public.prune_security_events`. `utop14_retention_runner` remains separate and
   has only function `EXECUTE` plus run-log append.
@@ -812,20 +840,56 @@ PostgreSQL cluster with a separate DDL role:
   - `USAGE, SELECT` on every application sequence the app inserts into, and no
     `UPDATE` on any sequence; the retention run sequence is owner/runner only.
   - No `TRUNCATE`, `TRIGGER`, or `REFERENCES` on any application table; no
-    ownership; no retention-function EXECUTE.
-- `PUBLIC` has no function `EXECUTE` and no `CREATE` on the application schema.
+    ownership; no function `EXECUTE`.
+- `PUBLIC` has no function `EXECUTE` and no `CREATE` on any non-system schema.
 
 `scripts/security_event_retention_ownership_template.sql` is a review-and-adapt
 DBA template that transfers all 18 application tables, all 16 sequences, and
 the trigger/helper functions to the schema owner; it is not run by migrations.
-After the DBA applies it and runs the provisioning script,
-`scripts/security_event_retention_verify.sql` must exit 0. The verification
-script inventories every table/sequence/function/trigger, fails on missing or
-uninventoried objects, checks ownership and the complete app/owner/runner
-privilege matrices, and probes append-only boundaries. The ownership model is
-only considered verified when the disposable ownership/privilege test passes
-the rate-limit, audit, security-event, trigger-disable, ALTER, DELETE,
-TRUNCATE, and negative-grant probes.
+It preflights the exact object inventory (including schemas, types, extensions,
+functions and triggers), runs in one transaction, and fails closed if a new
+migration object has not been added to the inventory. After the DBA applies it
+and runs the provisioning script, `scripts/security_event_retention_verify.sql`
+must exit 0. The verification script inventories every schema, type, extension,
+table, sequence, function, trigger and view, enforces default-deny memberships,
+checks ownership and the complete app/owner/runner privilege and function
+EXECUTE matrices, checks every non-system schema for app/retention `CREATE` and
+`USAGE`, and probes append-only boundaries. The ownership model is only
+considered verified when the disposable ownership/privilege test passes the
+rate-limit, audit, security-event, trigger-disable, ALTER, DELETE, TRUNCATE,
+membership, schema, type, function-EXECUTE, provisioning-idempotency and
+negative-grant probes.
+
+Provisioning requires PostgreSQL 16 or newer for per-membership
+`INHERIT`/`SET`/`ADMIN` options; the verification and provisioning scripts read
+those options through `to_jsonb` and treat a missing option as `TRUE` on older
+catalogs, so they do not falsely pass an unverifiable membership. The scripts
+assume the role names `utop14_schema_owner`, `utop14_app`,
+`utop14_retention_owner`, and `utop14_retention_runner`; replace them
+consistently if the deployment uses different names.
+
+Provisioning and recovery:
+
+1. Run migrations as the schema/DDL owner, then the ownership template, then
+   `scripts/security_event_retention_roles.sql`, then the verify script.
+2. The roles script is repeatable: a second run succeeds and produces the same
+   non-owner ACL and ownership state. It creates missing retention roles,
+   reconciles their `LOGIN`/`INHERIT`/privilege attributes, and never reads or
+   changes passwords.
+3. A forward membership of `utop14_app`, `utop14_retention_owner`, or
+   `utop14_retention_runner` is removed by provisioning and reported with
+   `REVOKED forbidden membership`. A reverse membership (another role can
+   assume a managed role) fails preflight; review it, run
+   `REVOKE <managed_role> FROM <other_role>`, then rerun.
+4. A role with `SUPERUSER`/`CREATEDB`/`CREATEROLE`/`REPLICATION`/`BYPASSRLS`
+   fails preflight; correct it with `ALTER ROLE ... NOSUPERUSER NOCREATEDB
+   NOCREATEROLE NOREPLICATION NOBYPASSRLS` and rerun. Preflight failure is
+   transactional: no partial grants remain.
+5. Any new schema, extension, type/domain, table, sequence, function, trigger
+   or view must be reviewed and added to the ownership/provisioning inventory
+   before provisioning or verification will pass. Only `public` and `plpgsql`
+   are approved today.
+
 
 The hardening migration `e3b9f1c7a2d4` replaces the retention function. On a
 fresh install it runs before provisioning, while the function is still owned by
@@ -1004,16 +1068,19 @@ are not part of M14.1 or M14.3.2. M14.3.3 provides manual/bounded retention for
    provisioning from the application or a production migration.
 10. Enforce the OPS-01 ownership model: the DDL/schema owner owns the database,
     schema, every application table and sequence, and trigger/helper functions;
-    `utop14_app` is DML-only and owns nothing; `prune_security_events` stays
-    owned by `utop14_retention_owner`. The app must have the complete
-    least-privilege matrix, including `SELECT, INSERT` on `audit_logs` /
-    `security_events`, `SELECT, INSERT, UPDATE, DELETE` on `auth_rate_limits`,
-    and `USAGE, SELECT` on all application sequences it inserts into, but never
-    `TRUNCATE`/`TRIGGER`/`REFERENCES`, sequence UPDATE, or ownership. Apply
+    `utop14_app` is DML-only, owns nothing, has no role memberships, and has no
+    function `EXECUTE`; `prune_security_events` stays owned by
+    `utop14_retention_owner`. The app must have the complete least-privilege
+    matrix, including `SELECT, INSERT` on `audit_logs` / `security_events`,
+    `SELECT, INSERT, UPDATE, DELETE` on `auth_rate_limits`, and `USAGE, SELECT`
+    on all application sequences it inserts into, but never
+    `TRUNCATE`/`TRIGGER`/`REFERENCES`, sequence UPDATE, schema CREATE outside
+    `public`, or ownership. Apply
     `scripts/security_event_retention_ownership_template.sql` only after DBA
     review, then run the provisioning and verification scripts. Do not proceed
     to production if `security_event_retention_verify.sql` exits non-zero or if
-    the app can disable an append-only trigger.
+    the app can disable an append-only trigger, assume a role, or create objects
+    in a non-application schema.
 
 ## Milestone 7 scope
 
