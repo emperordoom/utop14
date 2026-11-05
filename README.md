@@ -591,8 +591,10 @@ an arbitrary client-supplied identifier.
   stored as `0.0.0.0`; this is a sentinel, not a guaranteed real client address.
 - **F-06 — database privilege boundary:** the trigger blocks ordinary row-level
   UPDATE/DELETE, but table owners, superusers, `TRUNCATE`, and a compromised
-  privileged account remain outside its protection. Runtime DB roles are not
-  separated by this application.
+  privileged account remain outside its protection. M14.3.3/OPS-01 provides a
+  separate DDL/schema-owner, app, retention-owner, and runner role model with
+  ownership/verification scripts; the residual privileged-account boundary
+  remains.
 - **F-08 — JSONB validation:** PostgreSQL enforces JSON object type; flatness and
   sensitive-key exclusion are application-level controls. Direct privileged DB
   inserts are outside that allowlist.
@@ -789,28 +791,41 @@ following model is mandatory in production and must be verified on a disposable
 PostgreSQL cluster with a separate DDL role:
 
 - A dedicated DDL/schema owner (or DBA) runs every migration and owns the
-  database, application schema, `security_events`, retention tables and their
-  sequences, and the trigger/helper functions.
+  database, application schema, every application table and sequence
+  (including `audit_logs`, `auth_rate_limits`, `security_events`, all catalog,
+  cart, order, payment and review tables), and the trigger/helper functions.
 - The application login role is DML-only. It is **not** the database owner,
   schema owner, table owner, sequence owner, or function owner, and it has no
   `CREATE` on the application schema.
 - `utop14_retention_owner` remains NOLOGIN and owns only
   `public.prune_security_events`. `utop14_retention_runner` remains separate and
   has only function `EXECUTE` plus run-log append.
-- The app has `SELECT, INSERT` on `security_events` and `USAGE, SELECT` on
-  `security_events_id_seq` for the M14.1 writer, and `SELECT, INSERT, UPDATE`
-  on holds; it has no `DELETE`, `UPDATE`, or `TRUNCATE` on events, no `DELETE`
-  on holds, no `UPDATE` on the event sequence, and no `TRIGGER`/`REFERENCES`
-  on events. The sequence stays owned by the schema/DDL owner; the app never
-  owns it.
+- The app grant matrix is least-privilege and complete:
+  - `SELECT, INSERT` on `security_events`, `audit_logs`, and `order_items`
+    (append-only/immutable writes; no UPDATE/DELETE).
+  - `SELECT, INSERT, UPDATE` on `users`, catalog tables, carts, orders,
+    payments, payment proofs, product reviews, and retention holds.
+  - `SELECT, INSERT, UPDATE, DELETE` on `auth_rate_limits` (successful-login
+    reset and TTL cleanup), `cart_items`, and `product_images`.
+  - No app privileges on `security_event_retention_runs` (owner/runner only) or
+    `alembic_version` (migration metadata).
+  - `USAGE, SELECT` on every application sequence the app inserts into, and no
+    `UPDATE` on any sequence; the retention run sequence is owner/runner only.
+  - No `TRUNCATE`, `TRIGGER`, or `REFERENCES` on any application table; no
+    ownership; no retention-function EXECUTE.
 - `PUBLIC` has no function `EXECUTE` and no `CREATE` on the application schema.
 
 `scripts/security_event_retention_ownership_template.sql` is a review-and-adapt
-DBA template for transferring ownership; it is not run by migrations. After the
-DBA applies it and re-runs the provisioning script,
-`scripts/security_event_retention_verify.sql` must exit 0. The ownership model
-is only considered verified when the disposable ownership test passes the
-trigger-disable, ALTER, DELETE, and TRUNCATE probes.
+DBA template that transfers all 18 application tables, all 16 sequences, and
+the trigger/helper functions to the schema owner; it is not run by migrations.
+After the DBA applies it and runs the provisioning script,
+`scripts/security_event_retention_verify.sql` must exit 0. The verification
+script inventories every table/sequence/function/trigger, fails on missing or
+uninventoried objects, checks ownership and the complete app/owner/runner
+privilege matrices, and probes append-only boundaries. The ownership model is
+only considered verified when the disposable ownership/privilege test passes
+the rate-limit, audit, security-event, trigger-disable, ALTER, DELETE,
+TRUNCATE, and negative-grant probes.
 
 The hardening migration `e3b9f1c7a2d4` replaces the retention function. On a
 fresh install it runs before provisioning, while the function is still owned by
@@ -839,12 +854,26 @@ are intentionally not expanded here.
   a secret manager and restrict the OS job account. Treat the run log as
   operational telemetry, not a tamper-evident security audit trail.
 
-The sequence privilege for `security_events_id_seq` is applied by
-`scripts/security_event_retention_roles.sql`, not by an Alembic migration.
-Grants are role provisioning, not schema DDL; keeping them outside migrations
-avoids coupling schema versioning to role existence and preserves the existing
-single Alembic head `e3b9f1c7a2d4`. The sequence remains owned by the
-schema/DDL owner.
+The application sequence privileges (including `security_events_id_seq`,
+`audit_logs_id_seq`, and all catalog/cart/order/payment/review sequences) are
+applied by `scripts/security_event_retention_roles.sql`, not by an Alembic
+migration. Grants are role provisioning, not schema DDL; keeping them outside
+migrations avoids coupling schema versioning to role existence and preserves
+the existing single Alembic head `e3b9f1c7a2d4`. All sequences remain owned by
+the schema/DDL owner.
+
+Deferred operational risks (documented, not silently fixed here):
+- Identifier-bucket throttling can be used for targeted login denial of
+  service; thresholds/cooldowns are configurable and should be monitored.
+- Rate-limit windows/cooldowns use application time; production requires
+  accurate synchronized clocks (NTP) or a future database-time change.
+- M14.2 F-02 (viewer query-string/access-log exposure) remains a production
+  blocker until M14.2.4 infrastructure review and remediation are complete.
+- Retention scheduler, rate-limit TTL cleanup, run-log cleanup, runner
+  credentials, monitoring, backup/restore, and the operational runbook are
+  deployment prerequisites.
+- Security-event IP/UA and identity snapshots are audit data and require an
+  explicit data-classification/privacy sign-off.
 
 The runner DSN is supplied through
 `SECURITY_EVENT_RETENTION_DATABASE_URL`, ideally from a secret manager. The
@@ -974,14 +1003,17 @@ are not part of M14.1 or M14.3.2. M14.3.3 provides manual/bounded retention for
    `security-event-retention run` using a protected runner DSN. Never run role
    provisioning from the application or a production migration.
 10. Enforce the OPS-01 ownership model: the DDL/schema owner owns the database,
-    schema, tables and sequences; `utop14_app` is DML-only and owns nothing;
-    `prune_security_events` stays owned by `utop14_retention_owner`. The app
-    must have `USAGE, SELECT` on `security_events_id_seq` (and the hold
-    sequence) but never sequence ownership or UPDATE. Apply
+    schema, every application table and sequence, and trigger/helper functions;
+    `utop14_app` is DML-only and owns nothing; `prune_security_events` stays
+    owned by `utop14_retention_owner`. The app must have the complete
+    least-privilege matrix, including `SELECT, INSERT` on `audit_logs` /
+    `security_events`, `SELECT, INSERT, UPDATE, DELETE` on `auth_rate_limits`,
+    and `USAGE, SELECT` on all application sequences it inserts into, but never
+    `TRUNCATE`/`TRIGGER`/`REFERENCES`, sequence UPDATE, or ownership. Apply
     `scripts/security_event_retention_ownership_template.sql` only after DBA
-    review, then re-run the provisioning and verification scripts. Do not
-    proceed to production if `security_event_retention_verify.sql` exits
-    non-zero or if the app can disable the append-only trigger.
+    review, then run the provisioning and verification scripts. Do not proceed
+    to production if `security_event_retention_verify.sql` exits non-zero or if
+    the app can disable an append-only trigger.
 
 ## Milestone 7 scope
 

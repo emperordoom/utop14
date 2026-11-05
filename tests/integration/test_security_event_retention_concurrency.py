@@ -19,15 +19,46 @@ import threading
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from app import create_app
+from app.extensions import db
+from app.models import (
+    Cart,
+    CartItem,
+    Category,
+    Order,
+    OrderItem,
+    Payment,
+    PaymentProof,
+    Product,
+    ProductImage,
+    ProductReview,
+    ProductVariant,
+    SecurityEvent,
+    User,
+)
+from app.models.security_event import SECURITY_EVENT_LOGIN_THROTTLED
+from app.services.audit import (
+    AdminAuditFilters,
+    AuditContext,
+    get_audit_log,
+    list_audit_logs,
+    record_audit_event,
+)
+from app.services.auth_rate_limit import (
+    get_bucket,
+    identifier_bucket_key,
+    record_failure,
+    reset_identifier_bucket,
+)
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("UTOP14_DISPOSABLE_PG") != "1",
@@ -206,6 +237,34 @@ def test_disposable_ownership_and_hold_concurrency() -> None:
         alembic_config.set_main_option("script_location", "migrations")
         with app.app_context():
             command.upgrade(alembic_config, "head")
+            db.engine.dispose()
+
+        ownership_sql = (
+            Path("scripts/security_event_retention_ownership_template.sql")
+            .read_text()
+            .replace("<schema_owner>", "utop14_schema_owner")
+            .replace("<database_name>", DB)
+        )
+        ownership = subprocess.run(
+            [
+                "psql",
+                "-h",
+                "127.0.0.1",
+                "-p",
+                str(port),
+                "-U",
+                "postgres",
+                "-d",
+                DB,
+                "-v",
+                "ON_ERROR_STOP=1",
+            ],
+            input=ownership_sql,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert ownership.returncode == 0, ownership.stderr
 
         provisioning = subprocess.run(
             [
@@ -251,12 +310,34 @@ def test_disposable_ownership_and_hold_concurrency() -> None:
         )
         assert verification.returncode == 0, verification.stdout + verification.stderr
         combined_verification = verification.stdout + verification.stderr
-        assert "ALL REQUIRED RETENTION PRIVILEGE CHECKS PASSED" in combined_verification
+        assert (
+            "ALL REQUIRED APPLICATION AND RETENTION PRIVILEGE CHECKS PASSED"
+            in combined_verification
+        )
 
         admin = create_engine(f"postgresql+psycopg://postgres@127.0.0.1:{port}/{DB}")
         schema_owner = create_engine(schema_owner_dsn)
         app_engine = create_engine(_role_dsn(port, "utop14_app"))
         runner = create_engine(_role_dsn(port, "utop14_retention_runner"))
+        app_role = create_app(
+            "testing",
+            {
+                "SQLALCHEMY_DATABASE_URI": _role_dsn(port, "utop14_app"),
+                "SECURITY_EVENT_HASH_KEY": ("app-role-key-0123456789abcdef0123456789"),
+                "AUTH_RATE_LIMIT_ENABLED": True,
+                "AUTH_RATE_LIMIT_WINDOW_SECONDS": 900,
+                "AUTH_RATE_LIMIT_IDENTIFIER_MAX_FAILURES": 5,
+                "AUTH_RATE_LIMIT_IDENTIFIER_THRESHOLDS": (5,),
+                "AUTH_RATE_LIMIT_IDENTIFIER_COOLDOWNS": (60,),
+                "AUTH_RATE_LIMIT_IP_MAX_FAILURES": 30,
+                "AUTH_RATE_LIMIT_IP_THRESHOLDS": (30,),
+                "AUTH_RATE_LIMIT_IP_COOLDOWNS": (60,),
+                "AUTH_RATE_LIMIT_COMBINED_MAX_FAILURES": 10,
+                "AUTH_RATE_LIMIT_COMBINED_THRESHOLDS": (10,),
+                "AUTH_RATE_LIMIT_COMBINED_COOLDOWNS": (60,),
+            },
+        )
+        app_role.config["WTF_CSRF_ENABLED"] = False
         now = datetime.now(UTC)
 
         # --- OPS-01 ownership and direct privilege probes -----------------
@@ -437,6 +518,354 @@ def test_disposable_ownership_and_hold_concurrency() -> None:
             result = _psql(port, statement)
             assert result.returncode == 0, result.stderr
         assert _verify(port).returncode == 0
+
+        # --- Actual app-role rate limiting, audit, and application writes ---
+        with app_role.app_context():
+            rate_key = identifier_bucket_key("ratelimit@example.com")
+            state = record_failure("identifier", rate_key)
+            assert state.failure_count == 1
+            fetched = get_bucket("identifier", rate_key)
+            assert fetched is not None and fetched.failure_count == 1
+            assert reset_identifier_bucket("ratelimit@example.com") == 1
+            assert get_bucket("identifier", rate_key) is None
+
+            throttle_user = User(
+                email="throttle@example.com",
+                full_name="Throttle",
+                role="customer",
+                is_active=True,
+            )
+            throttle_user.set_password("CorrectPass123")
+            db.session.add(throttle_user)
+            db.session.commit()
+
+            client = app_role.test_client()
+            for _ in range(5):
+                response = client.post(
+                    "/auth/login",
+                    data={
+                        "email": "throttle@example.com",
+                        "password": "WrongPass123",
+                    },
+                )
+                assert response.status_code == 200, response.status_code
+            throttled = client.post(
+                "/auth/login",
+                data={
+                    "email": "throttle@example.com",
+                    "password": "WrongPass123",
+                },
+            )
+            assert throttled.status_code == 429, throttled.status_code
+            assert throttled.headers.get("Retry-After")
+            throttle_events = db.session.scalars(
+                select(SecurityEvent).where(
+                    SecurityEvent.event_type == SECURITY_EVENT_LOGIN_THROTTLED
+                )
+            ).all()
+            assert throttle_events
+            throttle_event_id = throttle_events[0].id
+
+            actor = User(
+                email="audit-actor@example.com",
+                full_name="Audit Actor",
+                role="admin",
+                is_active=True,
+            )
+            actor.set_password("CorrectPass123")
+            target = User(
+                email="audit-target@example.com",
+                full_name="Audit Target",
+                role="customer",
+                is_active=True,
+            )
+            target.set_password("CorrectPass123")
+            db.session.add_all([actor, target])
+            db.session.commit()
+            audit_context = AuditContext(
+                actor_id=actor.id,
+                actor_email=actor.email,
+                ip_address="127.0.0.1",
+                user_agent="",
+                request_id=None,
+            )
+            audit = record_audit_event(
+                db.session,
+                context=audit_context,
+                target=target,
+                action="user.activated",
+                before_data={"is_active": False},
+                after_data={"is_active": True},
+            )
+            db.session.commit()
+            assert audit.id is not None
+            audit_id = audit.id
+            audit_page = list_audit_logs(AdminAuditFilters())
+            assert audit_page.total >= 1
+            assert get_audit_log(audit.id) is not None
+
+            category = Category(
+                name="Review Category",
+                slug="review-category",
+                description="",
+                icon="images/review-icon.png",
+                position=0,
+                is_active=True,
+            )
+            db.session.add(category)
+            db.session.commit()
+            product = Product(
+                category_id=category.id,
+                name="Review Product",
+                slug="review-product",
+                description="",
+                price=Decimal("10.00"),
+                image_path="images/review-product.png",
+                image_alt="",
+                is_active=True,
+            )
+            db.session.add(product)
+            db.session.commit()
+            variant = ProductVariant(
+                product_id=product.id,
+                size="M",
+                color="Black",
+                sku="REVIEW-M-BLACK",
+                stock=10,
+                is_active=True,
+            )
+            db.session.add(variant)
+            db.session.commit()
+            image = ProductImage(
+                product_id=product.id,
+                image_path="images/review-product-2.png",
+                alt_text="",
+                position=1,
+            )
+            db.session.add(image)
+            db.session.commit()
+            image.alt_text = "Updated"
+            db.session.commit()
+            db.session.delete(image)
+            db.session.commit()
+
+            cart = Cart(user_id=throttle_user.id)
+            db.session.add(cart)
+            db.session.commit()
+            cart_item = CartItem(cart_id=cart.id, variant_id=variant.id, quantity=1)
+            db.session.add(cart_item)
+            db.session.commit()
+            cart_item.quantity = 2
+            db.session.commit()
+            db.session.delete(cart_item)
+            db.session.commit()
+
+            order = Order(
+                order_number="REVIEW-ORDER-1",
+                user_id=throttle_user.id,
+                status="pending",
+                payment_status="unpaid",
+                recipient_name="Review",
+                recipient_phone="1",
+                shipping_address="Address",
+                shipping_city="City",
+                shipping_postal_code="1",
+                subtotal=Decimal("10.00"),
+                shipping_cost=Decimal("0.00"),
+                total=Decimal("10.00"),
+            )
+            db.session.add(order)
+            db.session.commit()
+            order.status = "processing"
+            db.session.commit()
+            order_item = OrderItem(
+                order_id=order.id,
+                product_id=product.id,
+                variant_id=variant.id,
+                product_name=product.name,
+                sku=variant.sku,
+                size=variant.size,
+                color=variant.color,
+                unit_price=Decimal("10.00"),
+                quantity=1,
+                line_total=Decimal("10.00"),
+            )
+            db.session.add(order_item)
+            db.session.commit()
+            payment = Payment(
+                payment_reference="REVIEW-PAY-1",
+                order_id=order.id,
+                provider="manual_transfer",
+                payment_method="bank_transfer",
+                amount=Decimal("10.00"),
+                currency="IDR",
+                status="pending",
+                idempotency_key="review-pay-1",
+                expires_at=now + timedelta(hours=1),
+            )
+            db.session.add(payment)
+            db.session.commit()
+            payment.status = "failed"
+            db.session.commit()
+            proof = PaymentProof(
+                payment_id=payment.id,
+                proof_filename="review-proof.jpg",
+                mime_type="image/jpeg",
+                file_size=1,
+                status="pending_review",
+                submitted_at=now,
+            )
+            db.session.add(proof)
+            db.session.commit()
+            proof.status = "approved"
+            db.session.commit()
+            review = ProductReview(
+                product_id=product.id,
+                user_id=throttle_user.id,
+                order_item_id=order_item.id,
+                rating=5,
+                comment="Review comment",
+                status="published",
+            )
+            db.session.add(review)
+            db.session.commit()
+            review.status = "hidden"
+            review.moderation_reason = "test"
+            db.session.commit()
+
+        # Denied app mutations on protected/append-only tables.
+        for statement in (
+            "UPDATE audit_logs SET actor_email='changed@example.com' WHERE false",
+            "DELETE FROM audit_logs WHERE false",
+            "TRUNCATE audit_logs",
+            "ALTER TABLE audit_logs DISABLE TRIGGER audit_logs_append_only",
+            "UPDATE security_events SET user_agent='changed' WHERE false",
+            "DELETE FROM security_events WHERE false",
+            "TRUNCATE security_events",
+            "ALTER TABLE security_events DISABLE TRIGGER security_events_append_only",
+            "DELETE FROM users WHERE false",
+        ):
+            try:
+                with app_engine.begin() as conn:
+                    conn.execute(text(statement))
+                raise AssertionError(f"app unexpectedly executed: {statement}")
+            except SQLAlchemyError:
+                pass
+
+        # Negative verification: revoke required app privileges one at a time.
+        negative_grants = (
+            (
+                "REVOKE INSERT ON auth_rate_limits FROM utop14_app",
+                "GRANT INSERT ON auth_rate_limits TO utop14_app",
+                "auth_rate_limits",
+            ),
+            (
+                "REVOKE DELETE ON auth_rate_limits FROM utop14_app",
+                "GRANT DELETE ON auth_rate_limits TO utop14_app",
+                "auth_rate_limits",
+            ),
+            (
+                "REVOKE INSERT ON audit_logs FROM utop14_app",
+                "GRANT INSERT ON audit_logs TO utop14_app",
+                "audit_logs",
+            ),
+            (
+                "REVOKE SELECT ON audit_logs FROM utop14_app",
+                "GRANT SELECT ON audit_logs TO utop14_app",
+                "audit_logs",
+            ),
+            (
+                "REVOKE USAGE ON SEQUENCE audit_logs_id_seq FROM utop14_app",
+                "GRANT USAGE, SELECT ON SEQUENCE audit_logs_id_seq TO utop14_app",
+                "audit_logs_id_seq",
+            ),
+        )
+        for revoke_sql, restore_sql, needle in negative_grants:
+            revoked = _psql(port, revoke_sql)
+            assert revoked.returncode == 0, revoked.stderr
+            failed = _verify(port)
+            failed_output = failed.stdout + failed.stderr
+            assert failed.returncode != 0, failed_output
+            assert needle in failed_output, failed_output
+            restored = _psql(port, restore_sql)
+            assert restored.returncode == 0, restored.stderr
+            assert _verify(port).returncode == 0
+
+        transferred = _psql(port, "ALTER TABLE public.audit_logs OWNER TO utop14_app")
+        assert transferred.returncode == 0, transferred.stderr
+        ownership_failed = _verify(port)
+        ownership_output = ownership_failed.stdout + ownership_failed.stderr
+        assert ownership_failed.returncode != 0, ownership_output
+        assert "audit_logs" in ownership_output or "owner" in ownership_output
+        restored_owner = _psql(
+            port,
+            "ALTER TABLE public.audit_logs OWNER TO utop14_schema_owner",
+        )
+        assert restored_owner.returncode == 0, restored_owner.stderr
+        regranted_table = _psql(
+            port,
+            "GRANT SELECT, INSERT ON public.audit_logs TO utop14_app",
+        )
+        assert regranted_table.returncode == 0, regranted_table.stderr
+        regranted_sequence = _psql(
+            port,
+            "GRANT USAGE, SELECT ON SEQUENCE public.audit_logs_id_seq TO utop14_app",
+        )
+        assert regranted_sequence.returncode == 0, regranted_sequence.stderr
+        assert _verify(port).returncode == 0
+
+        # A privileged non-owner role proves the M13/M14.1 append-only triggers
+        # deny row mutation even when table privileges are present.
+        for statement in (
+            "CREATE ROLE utop14_trigger_tester LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT",
+            "GRANT USAGE ON SCHEMA public TO utop14_trigger_tester",
+            "GRANT SELECT, UPDATE, DELETE ON public.audit_logs, "
+            "public.security_events TO utop14_trigger_tester",
+            "GRANT EXECUTE ON FUNCTION public.audit_logs_reject_mutation() "
+            "TO utop14_trigger_tester",
+            "GRANT EXECUTE ON FUNCTION public.security_events_reject_mutation() "
+            "TO utop14_trigger_tester",
+        ):
+            result = _psql(port, statement)
+            assert result.returncode == 0, result.stderr
+
+        trigger_engine = create_engine(_role_dsn(port, "utop14_trigger_tester"))
+        for statement, params in (
+            (
+                "UPDATE public.audit_logs SET actor_email='changed@example.com' WHERE id=:id",
+                {"id": audit_id},
+            ),
+            ("DELETE FROM public.audit_logs WHERE id=:id", {"id": audit_id}),
+            (
+                "UPDATE public.security_events SET user_agent='changed' WHERE id=:id",
+                {"id": throttle_event_id},
+            ),
+            (
+                "DELETE FROM public.security_events WHERE id=:id",
+                {"id": throttle_event_id},
+            ),
+        ):
+            try:
+                with trigger_engine.begin() as conn:
+                    conn.execute(text(statement), params)
+                raise AssertionError(f"trigger tester unexpectedly executed: {statement}")
+            except SQLAlchemyError as exc:
+                assert "append-only" in str(exc), str(exc)
+        for table in ("audit_logs", "security_events"):
+            try:
+                with trigger_engine.begin() as conn:
+                    conn.execute(text(f"TRUNCATE {table}"))
+                raise AssertionError(f"trigger tester unexpectedly truncated {table}")
+            except SQLAlchemyError as exc:
+                assert "permission denied" in str(exc).lower(), str(exc)
+        try:
+            with trigger_engine.begin() as conn:
+                conn.execute(
+                    text("ALTER TABLE public.audit_logs DISABLE TRIGGER audit_logs_append_only")
+                )
+            raise AssertionError("trigger tester disabled audit_logs trigger")
+        except SQLAlchemyError as exc:
+            assert "must be owner" in str(exc).lower(), str(exc)
 
         # --- Function validation ------------------------------------------
         for statement, needle in (
