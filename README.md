@@ -658,6 +658,29 @@ The `security_events` table is indexed by request ID for incident correlation.
 A reason-code index is deferred until the M14.2 viewer defines its filters and
 the query pattern is measured.
 
+### M14.2 admin security-event viewer
+
+The admin viewer is read-only and restricted to the `admin` role. The list page
+does not display identifier hashes; the full `identifier_hash` is displayed
+exclusively on an authorized event detail page. Detail pages use an explicit
+per-event metadata display allowlist, render the User-Agent as escaped text, and
+never traverse actor/subject relationships or join `users` or `audit_logs`.
+
+List and detail responses set `Cache-Control: private, no-store`; detail
+responses also set `Referrer-Policy: no-referrer`. Related-event navigation uses
+exact `request_id`, `identifier_hash`, `actor_user_id` or `subject_user_id`
+query parameters on the existing list endpoint, where the normal fail-closed
+filter validation still applies.
+
+These response headers do not erase values from browser history, proxy logs or
+server access logs. Treat request IDs and identifier hashes in GET query strings
+as sensitive pseudonymous values: do not log query strings in application debug
+or error output, and do not add analytics or client telemetry for these URLs.
+Before production rollout, review the Nginx and Gunicorn access-log formats so
+that `/admin/security-events` requests do not record sensitive query strings.
+That infrastructure review is deferred to M14.2.4; no production configuration
+is changed by this repository milestone.
+
 ### M14.1 deployment checklist
 
 1. Set `APP_ENV=production`.
@@ -705,6 +728,9 @@ approved archival policy exists.
    to Gunicorn on the loopback interface.
 6. Keep `.env`, database credentials and secret keys out of source control,
    logs and error responses.
+7. Review Nginx and Gunicorn access-log configuration so admin security-event
+   query strings (`request_id`, `identifier_hash`, actor/subject IDs) are not
+   recorded in production logs. See the M14.2 viewer privacy note above.
 
 ## Milestone 7 scope
 

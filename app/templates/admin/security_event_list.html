@@ -1,0 +1,292 @@
+{% extends "base.html" %}
+
+{% from "components/security_event_badges.html" import
+  security_event_type_badge,
+  security_outcome_badge,
+  security_reason_badge
+%}
+{% from "components/pagination.html" import render_pagination %}
+
+{% block title %}Security events — Admin — UTOP14{% endblock %}
+
+{% block meta_description %}Admin-only read-only authentication security event timeline for UTOP14.{% endblock %}
+
+{% block styles %}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/auth.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/admin.css') }}">
+{% endblock %}
+
+{% block body_class %}page-admin-security-events{% endblock %}
+
+{% block content %}
+  {% include "components/admin_nav.html" %}
+
+  <section class="staff-hero" aria-labelledby="security-event-list-title">
+    <div class="container">
+      <p class="section-kicker">Accounts / Security events</p>
+      <h1 class="staff-hero__title" id="security-event-list-title">
+        Authentication <em>signal.</em>
+      </h1>
+      <p class="staff-hero__copy">
+        Read-only authentication security events, newest first. Review successful
+        sign-ins, failed credential attempts and sign-outs without exposing
+        passwords, tokens, session values or raw unknown-account identifiers.
+      </p>
+      <div class="staff-hero__actions">
+        <a class="button button--ghost" href="{{ url_for('admin.dashboard') }}">Admin dashboard</a>
+        <a class="button button--ghost" href="{{ url_for('admin.audit_log_list') }}">Audit log</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="section staff-section" aria-labelledby="security-event-directory-title">
+    <div class="container">
+      <div class="section-heading">
+        <p class="section-kicker">01 / Timeline</p>
+        <h2 class="section-title" id="security-event-directory-title">Recent <em>events.</em></h2>
+      </div>
+
+      <form
+        class="admin-filters admin-filters--security-events"
+        method="get"
+        action="{{ url_for('admin.security_event_list') }}"
+      >
+        {% if filters.errors %}
+          <div class="admin-filters__errors" role="alert">
+            <p class="mono">Filters could not be applied</p>
+            <ul>
+              {% for error in filters.errors %}
+                <li>{{ error }}</li>
+              {% endfor %}
+            </ul>
+          </div>
+        {% endif %}
+
+        <div class="admin-filters__field">
+          <label class="form-label" for="security-event-type">Event type</label>
+          <select class="form-control" id="security-event-type" name="event_type">
+            <option value=""{% if filters.event_type is none %} selected{% endif %}>All types</option>
+            {% for value, label in event_types %}
+              <option value="{{ value }}"{% if filters.event_type == value %} selected{% endif %}>
+                {{ label }}
+              </option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="admin-filters__field">
+          <label class="form-label" for="security-event-outcome">Outcome</label>
+          <select class="form-control" id="security-event-outcome" name="outcome">
+            <option value=""{% if filters.outcome is none %} selected{% endif %}>All outcomes</option>
+            {% for value, label in outcomes %}
+              <option value="{{ value }}"{% if filters.outcome == value %} selected{% endif %}>
+                {{ label }}
+              </option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="admin-filters__field">
+          <label class="form-label" for="security-event-reason">Reason</label>
+          <select class="form-control" id="security-event-reason" name="reason">
+            <option value=""{% if filters.reason_code is none %} selected{% endif %}>All reasons</option>
+            {% for group_label, choices in reason_groups %}
+              <optgroup label="{{ group_label }}">
+                {% for value, label in choices %}
+                  <option value="{{ value }}"{% if filters.reason_code == value %} selected{% endif %}>
+                    {{ label }}
+                  </option>
+                {% endfor %}
+              </optgroup>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="admin-filters__field">
+          <label class="form-label" for="security-event-from">From (UTC)</label>
+          <input
+            class="form-control"
+            id="security-event-from"
+            name="date_from"
+            type="date"
+            value="{{ filters.date_from.isoformat() if filters.date_from else '' }}"
+          >
+        </div>
+
+        <div class="admin-filters__field">
+          <label class="form-label" for="security-event-to">To (UTC)</label>
+          <input
+            class="form-control"
+            id="security-event-to"
+            name="date_to"
+            type="date"
+            value="{{ filters.date_to.isoformat() if filters.date_to else '' }}"
+          >
+        </div>
+
+        <div class="admin-filters__field admin-filters__field--wide">
+          <label class="form-label" for="security-event-request-id">Request ID</label>
+          <input
+            class="form-control"
+            id="security-event-request-id"
+            name="request_id"
+            type="search"
+            value="{{ filters.request_id or '' }}"
+            maxlength="64"
+            placeholder="UUID or 32-character hex"
+            autocomplete="off"
+          >
+        </div>
+
+        <div class="admin-filters__field admin-filters__field--wide">
+          <label class="form-label" for="security-event-identifier-hash">Identifier hash</label>
+          <input
+            class="form-control"
+            id="security-event-identifier-hash"
+            name="identifier_hash"
+            type="search"
+            value="{{ filters.identifier_hash or '' }}"
+            maxlength="64"
+            pattern="[0-9a-f]{64}"
+            placeholder="Exactly 64 lowercase hexadecimal characters"
+            autocomplete="off"
+          >
+        </div>
+
+        <div class="admin-filters__field">
+          <label class="form-label" for="security-event-actor-id">Actor user ID</label>
+          <input
+            class="form-control"
+            id="security-event-actor-id"
+            name="actor_user_id"
+            type="number"
+            min="1"
+            max="2147483647"
+            value="{{ filters.actor_user_id if filters.actor_user_id is not none else '' }}"
+            inputmode="numeric"
+          >
+        </div>
+
+        <div class="admin-filters__field">
+          <label class="form-label" for="security-event-subject-id">Subject user ID</label>
+          <input
+            class="form-control"
+            id="security-event-subject-id"
+            name="subject_user_id"
+            type="number"
+            min="1"
+            max="2147483647"
+            value="{{ filters.subject_user_id if filters.subject_user_id is not none else '' }}"
+            inputmode="numeric"
+          >
+        </div>
+
+        <div class="admin-filters__actions">
+          <button class="button button--primary" type="submit">Apply filters</button>
+          <a class="text-link" href="{{ url_for('admin.security_event_list') }}">Reset</a>
+        </div>
+      </form>
+
+      {% if pagination.items %}
+        <div class="admin-toolbar">
+          <p class="mono">{{ pagination.total }} event{% if pagination.total != 1 %}s{% endif %}</p>
+          <p class="mono">Page {{ pagination.page }} / {{ pagination.pages }}</p>
+        </div>
+
+        <div class="admin-table-wrap">
+          <table class="admin-table admin-table--security-events">
+            <caption class="visually-hidden">Authentication security events, newest first</caption>
+            <thead>
+              <tr>
+                <th scope="col">Event</th>
+                <th scope="col">Timestamp (UTC)</th>
+                <th scope="col">Type</th>
+                <th scope="col">Outcome</th>
+                <th scope="col">Reason</th>
+                <th scope="col">Actor</th>
+                <th scope="col">Subject</th>
+                <th scope="col">Client IP</th>
+                <th scope="col">Request ID</th>
+                <th scope="col"><span class="visually-hidden">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for event in pagination.items %}
+                <tr class="security-event-row">
+                  <td class="mono">#{{ event.id }}</td>
+                  <td class="mono security-event-timestamp">
+                    {{ event.created_at|utc }}
+                  </td>
+                  <td>{{ security_event_type_badge(event.event_type) }}</td>
+                  <td>{{ security_outcome_badge(event.outcome) }}</td>
+                  <td>{{ security_reason_badge(event.reason_code) }}</td>
+                  <td>
+                    {% if event.actor_email %}
+                      <p class="admin-table__primary">{{ event.actor_email }}</p>
+                      <p class="admin-meta mono">
+                        #{{ event.actor_user_id if event.actor_user_id is not none else "deleted" }}
+                      </p>
+                    {% else %}
+                      <span class="admin-meta">—</span>
+                    {% endif %}
+                  </td>
+                  <td>
+                    {% if event.subject_email %}
+                      <p class="admin-table__primary">{{ event.subject_email }}</p>
+                      <p class="admin-meta mono">
+                        #{{ event.subject_user_id if event.subject_user_id is not none else "deleted" }}
+                      </p>
+                    {% elif event.event_type == "auth.login_failed" and event.reason_code == "unknown_account" %}
+                      <p class="admin-table__primary">Unknown account</p>
+                      <p class="admin-meta mono">not identified</p>
+                    {% else %}
+                      <span class="admin-meta">—</span>
+                    {% endif %}
+                  </td>
+                  <td class="mono">{{ event.ip_address }}</td>
+                  <td class="mono security-event-request-id">
+                    {% if event.request_id %}
+                      <span
+                        title="{{ event.request_id }}"
+                        aria-label="Request ID {{ event.request_id }}"
+                      >{{ event.request_id[:12] }}{% if event.request_id|length > 12 %}…{% endif %}</span>
+                    {% else %}
+                      —
+                    {% endif %}
+                  </td>
+                  <td>
+                    <a class="text-link" href="{{ url_for('admin.security_event_detail', event_id=event.id) }}">
+                      Inspect
+                      <span aria-hidden="true">↗</span>
+                    </a>
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+
+        {% if filters.is_valid %}
+          {{ render_pagination(pagination, 'admin.security_event_list', filters.as_query_params()) }}
+        {% endif %}
+      {% elif filters.errors %}
+        <div class="admin-empty">
+          <p class="mono">Filters not applied</p>
+          <h2>No results <em>returned.</em></h2>
+          <p>Fix the filter errors above and apply the filters again.</p>
+          <a class="button button--ghost" href="{{ url_for('admin.security_event_list') }}">Reset filters</a>
+        </div>
+      {% else %}
+        <div class="admin-empty">
+          <p class="mono">No authentication events</p>
+          <h2>Nothing on the <em>wire yet.</em></h2>
+          <p>
+            Authentication security events will appear here as accounts sign in,
+            fail credential checks or sign out.
+          </p>
+          <a class="button button--ghost" href="{{ url_for('admin.dashboard') }}">Admin dashboard</a>
+        </div>
+      {% endif %}
+    </div>
+  </section>
+{% endblock %}

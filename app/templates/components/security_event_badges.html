@@ -1,0 +1,53 @@
+{% macro security_event_type_badge(event_type) -%}
+  {%- if event_type == "auth.login_succeeded" -%}
+    {% set label = "Login succeeded" %}
+    {% set modifier = "success" %}
+  {%- elif event_type == "auth.login_failed" -%}
+    {% set label = "Login failed" %}
+    {% set modifier = "failure" %}
+  {%- elif event_type == "auth.logout" -%}
+    {% set label = "Logout" %}
+    {% set modifier = "neutral" %}
+  {%- else -%}
+    {% set label = event_type %}
+    {% set modifier = "unknown" %}
+  {%- endif -%}
+  <span class="security-event-badge security-event-badge--{{ modifier }}" title="{{ event_type }}">{{ label }}</span>
+{%- endmacro %}
+
+{% macro security_outcome_badge(outcome) -%}
+  {%- if outcome == "success" -%}
+    {% set label = "Success" %}
+    {% set modifier = "success" %}
+  {%- elif outcome == "failure" -%}
+    {% set label = "Failure" %}
+    {% set modifier = "failure" %}
+  {%- else -%}
+    {% set label = outcome %}
+    {% set modifier = "unknown" %}
+  {%- endif -%}
+  <span class="security-event-badge security-event-badge--{{ modifier }}" title="{{ outcome }}">{{ label }}</span>
+{%- endmacro %}
+
+{% macro security_reason_badge(reason_code) -%}
+  {%- if reason_code == "authenticated" -%}
+    {% set label = "Authenticated" %}
+    {% set modifier = "success" %}
+  {%- elif reason_code == "unknown_account" -%}
+    {% set label = "Unknown account" %}
+    {% set modifier = "failure" %}
+  {%- elif reason_code == "inactive_account" -%}
+    {% set label = "Inactive account" %}
+    {% set modifier = "warning" %}
+  {%- elif reason_code == "invalid_password" -%}
+    {% set label = "Invalid password" %}
+    {% set modifier = "failure" %}
+  {%- elif reason_code == "user_requested" -%}
+    {% set label = "User requested" %}
+    {% set modifier = "neutral" %}
+  {%- else -%}
+    {% set label = reason_code %}
+    {% set modifier = "unknown" %}
+  {%- endif -%}
+  <span class="security-event-badge security-event-badge--{{ modifier }}" title="{{ reason_code }}">{{ label }}</span>
+{%- endmacro %}
