@@ -1,6 +1,6 @@
 # UTOP14 — Project Roadmap and Status
 
-Last updated: M14.3.22 (2026-11-06)
+Last updated: M14.3.24 (2026-11-06)
 
 This document is the durable status record for the UTOP14 development effort.
 It separates **development completion** from **production readiness**: a phase
@@ -103,7 +103,7 @@ verification scripts pass on a disposable cluster.
 
 ## Phase 3 — Authentication protection and retention hardening
 
-**Status: IN PROGRESS**
+**Status: COMPLETE**
 
 ### Phase objective
 
@@ -146,25 +146,41 @@ that can be trusted as a production gate.
 
 ### Dependencies and known blockers
 
-- Open until an independent review of M14.3.22 completes.
+- Nothing blocks Phase 3 closure.
 - Accepted design decisions that remain in force:
   - The schema owner may hold `search_path` because it is the trusted DDL
     boundary and already owns the schema and objects; parameter ACLs remain
     default-deny for it.
   - The DBA / schema-owner trust boundary is accepted (see Phase 5).
-- Known non-blocking items carried into Phase 5 (below).
+- The production backlog in Phase 5 is **not** resolved by Phase 3 completion.
 
-### Evidence required to mark complete
+### Closure record (M14.3.24)
 
-- M14.3.22 local commit with passing quality gates.
-- A separate read-only independent review approving M14.3.22.
-- Documented evidence that M14319-01, M14319-02, and M14319-03 are closed.
+Phase 3 is COMPLETE based on the M14.3.23 independent review.
+
+| Evidence | Result |
+|---|---|
+| M14.3.1 PostgreSQL rate-limit foundation | Delivered |
+| M14.3.2 login abuse protection | Delivered |
+| M14.3.3 retention implementation and review remediation | Delivered |
+| M14.3.10–M14.3.20 ownership, ACL, GUC, and catalog hardening | Delivered |
+| M14.3.21 independent review | APPROVED WITH CONDITIONS |
+| M14.3.22 implementation | COMPLETE |
+| M14.3.23 independent review | **APPROVED** |
+
+**Reviewed SHA:** `a8e9a9b6ea251f9bb183e373f218764e68538481`.
+The approval applies to this exact commit; any later change to the reviewed
+scripts requires a new review.
+
+Completion means the Phase 3 development workstream and its review criteria are
+complete. It does **not** mean the Phase 5 production blockers are resolved, and
+it does not authorize deployment.
 
 ---
 
 ## Phase 4 — Independent approval and M14.3 integration
 
-**Status: NOT STARTED**
+**Status: IN PROGRESS**
 
 ### Phase objective
 
@@ -188,15 +204,33 @@ integrate the approved branch, without deploying.
 
 ### Dependencies and known blockers
 
-- Depends on Phase 3 completion.
+- Phase 3 is COMPLETE and M14.3.23 approved `a8e9a9b6…`.
+- The last known remote branch head is
+  `e7a3b45d691dd548be57f60c4fd5c2b9d957393a`; the local branch is seven
+  commits ahead and has **not** been pushed.
+- PR #14 must be updated and CI must run on the new head before merge.
 - Requires a decision from the project owner on the accepted DBA/schema-owner
   trust boundary.
+
+### Proposed integration sequence (not executed in M14.3.24)
+
+1. Explicit user approval to push the local branch.
+2. Push the exact reviewed head
+   `a8e9a9b6ea251f9bb183e373f218764e68538481`.
+3. Update the existing PR #14 (no new PR).
+4. Verify the remote PR head equals the approved local SHA.
+5. Wait for CI on the new head.
+6. Perform integration-level review and regression verification.
+7. Present merge readiness for explicit user approval.
+
+None of these steps has been executed.
 
 ### Evidence required to mark complete
 
 - Review report with verdict and commit SHA.
+- Remote PR head equal to the approved SHA and CI green on that head.
 - Merge commit on the main branch.
-- Updated PR record.
+- Updated PR record and release notes.
 
 ---
 
@@ -214,21 +248,27 @@ outside the M14.3 hardening scope.
 The following items are known, open, and **not fixed**. None may be marked
 complete without its own milestone and evidence.
 
-| ID | Item | Current state |
-|---|---|---|
-| B-01 | M14.2 F-02: query-string, access-log, redirect, and referrer exposure | Open |
-| B-02 | Targeted login denial-of-service (identifier bucket) | Open |
-| B-03 | Application clock-skew considerations | Open |
-| B-04 | Retention hold extension and metadata mutation boundary (RR-03) | Open |
-| B-05 | Retention run-log spoofing boundary (RR-04) | Open |
-| B-06 | Retention scheduler, rate-limit TTL cleanup, run-log cleanup | Open |
-| B-07 | Runner credentials, monitoring, backup/restore, operational runbook | Open |
-| B-08 | Privacy / data-classification sign-off | Open |
-| B-09 | App `DELETE` privilege on `auth_rate_limits` | **Accepted risk** |
-| B-10 | DBA / schema-owner trust boundary | **Accepted boundary** |
-| B-11 | Extension-owned objects outside the application ACL matrix | **Accepted exclusion** |
-| B-12 | Connection-pool recycling after provisioning | Documented operational step |
-| B-13 | Cluster-level configuration invisible to PostgreSQL catalogs | DBA audit procedure |
+| ID | Item | State | Classification |
+|---|---|---|---|
+| B-01 | M14.2 F-02: query-string, access-log, redirect, and referrer exposure | Open | Required before development acceptance |
+| B-02 | Targeted login denial-of-service (identifier bucket) | Open | Required before development acceptance |
+| B-03 | Application clock-skew considerations | Open | Required before development acceptance |
+| B-04 | Retention hold extension and metadata mutation boundary (RR-03) | Open | Required before development acceptance |
+| B-05 | Retention run-log spoofing boundary (RR-04) | Open | Required before development acceptance |
+| B-06 | Retention scheduler; rate-limit TTL and run-log cleanup | Open | Operational prerequisite for production only |
+| B-07 | Runner credentials, monitoring, backup/restore, operational runbook | Open | Operational prerequisite for production only |
+| B-08 | Privacy / data-classification sign-off | Open | Required before development acceptance |
+| B-09 | App `DELETE` privilege on `auth_rate_limits` | **Accepted risk** | Accepted risk requiring explicit documented acceptance |
+| B-10 | DBA / schema-owner trust boundary | **Accepted boundary** | Accepted risk requiring explicit documented acceptance |
+| B-11 | Extension-owned objects outside the application ACL matrix | **Accepted exclusion** | Accepted risk requiring explicit documented acceptance |
+| B-12 | Connection-pool recycling after provisioning | Documented operational step | Operational prerequisite for production only |
+| B-13 | Cluster-level configuration invisible to PostgreSQL catalogs | DBA audit procedure | Operational prerequisite for production only |
+
+Classification records where an item must be resolved; it does **not** close the
+item. Every row above remains open or accepted, never fixed.
+
+**Deferred enhancement:** none recorded at this checkpoint. New candidates must
+be added here with an explicit decision before they are treated as deferred.
 
 ### Acceptance rationale (accepted items only)
 
@@ -327,12 +367,12 @@ evidence and sign-off. Nothing in this roadmap authorizes a deployment.
 
 | Item | Value |
 |---|---|
-| Current phase | Phase 3 — Authentication protection and retention hardening (`IN PROGRESS`) |
-| Current milestone | M14.3.22 — Final catalog qualification remediation and roadmap |
-| Last completed independent review | M14.3.21 (verdict: APPROVED WITH CONDITIONS) |
-| Next checkpoint | Independent review of M14.3.22 (M14.3.23) |
-| Remaining high-level phases | 4 (Phase 3 completion, then Phases 4, 5, 6) |
-| Outstanding blockers | B-01 … B-13 (Phase 5), plus Phase 3 review completion |
+| Current phase | Phase 4 — Independent approval and M14.3 integration (`IN PROGRESS`) |
+| Current milestone | M14.3.24 — Phase 3 closure and M14.3 integration readiness |
+| Last completed independent review | M14.3.23 (verdict: APPROVED, review of `a8e9a9b6…`) |
+| Next checkpoint | M14.3 integration readiness and PR #14 synchronization |
+| Remaining high-level phases | 3 (Phases 4, 5, 6) |
+| Outstanding blockers | B-01 … B-13 (Phase 5) |
 | Development complete | **NO** |
 | Production deployment authorized | **NO** |
 
@@ -340,6 +380,8 @@ evidence and sign-off. Nothing in this roadmap authorizes a deployment.
 
 | Milestone | Outcome |
 |---|---|
+| M14.3.24 | Phase 3 closed; Phase 4 started; integration readiness and PR #14 plan recorded |
+| M14.3.23 | Independent review of M14.3.22: APPROVED |
 | M14.3.22 | Closes M14.3.21 R1/R2/R3; catalog-derived qualification test; this roadmap |
 | M14.3.21 | Independent review of M14.3.20: APPROVED WITH CONDITIONS |
 | M14.3.20 | Full `pg_catalog` qualification of verifier, provisioner, template |

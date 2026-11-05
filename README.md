@@ -6,9 +6,10 @@ UTOP14 is a streetwear e-commerce platform built for Well Architected SOC 14.
 
 - See [`docs/PROJECT_ROADMAP.md`](docs/PROJECT_ROADMAP.md) for the durable
   phase-by-phase status, checkpoint evidence, and outstanding blockers.
-- Development is in Phase 3 (authentication protection and retention
-  hardening). Production readiness is deferred and is not authorized by
-  development completion.
+- Development is in Phase 4 (independent approval and M14.3 integration).
+  Phase 3 is complete based on the M14.3.23 approval of `a8e9a9b6…`.
+  Production readiness is deferred and is not authorized by development
+  completion.
 
 ## Technology
 
