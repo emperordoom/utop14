@@ -1043,7 +1043,7 @@ DECLARE
     v_column_privs text[] := ARRAY['SELECT','INSERT','UPDATE','REFERENCES'];
 BEGIN
     IF v_server_num >= 170000 THEN
-        v_table_privs := array_append(v_table_privs, 'MAINTAIN');
+        v_table_privs := pg_catalog.array_append(v_table_privs, 'MAINTAIN');
     ELSE
         RAISE NOTICE
             'INFO: MAINTAIN privilege is not available on this PostgreSQL version; skipping that specific check';

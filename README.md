@@ -4,12 +4,11 @@ UTOP14 is a streetwear e-commerce platform built for Well Architected SOC 14.
 
 **Project status:**
 
-- Integrated into `main`: M1–M11.
-- Implemented and verified on `feature/admin-audit-log`, pending integration:
-  M12 Admin User Management, M13 Admin Audit Log, and M13.2 Audit Log
-  Hardening.
-- Current: M13.5 CI validation and final integration readiness review.
-- Pending and not started: M14 and later milestones.
+- See [`docs/PROJECT_ROADMAP.md`](docs/PROJECT_ROADMAP.md) for the durable
+  phase-by-phase status, checkpoint evidence, and outstanding blockers.
+- Development is in Phase 3 (authentication protection and retention
+  hardening). Production readiness is deferred and is not authorized by
+  development completion.
 
 ## Technology
 

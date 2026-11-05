@@ -36,6 +36,11 @@
 \set ON_ERROR_STOP on
 \pset pager off
 
+-- Resolve every unqualified name against pg_catalog first.  A caller-supplied
+-- PGOPTIONS or role-level search_path cannot override this session setting, so
+-- security-sensitive object and function resolution is deterministic.
+SET search_path = pg_catalog, public;
+
 BEGIN;
 
 -- ---------------------------------------------------------------------------

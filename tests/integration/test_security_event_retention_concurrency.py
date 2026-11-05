@@ -2642,6 +2642,37 @@ def test_disposable_ownership_and_hold_concurrency() -> None:
                 "DELETE FROM pg_extension;"
             ),
         }
+        all_shadow_sql = " ".join(catalog_shadows.values())
+
+        # M14.3.22: all eight shadows on a clean configuration must not change
+        # the outcome.  Each shadow hides or empties the real catalog rows, so
+        # any unqualified lookup would force a false FAIL here.
+        assert (
+            _psql(
+                port,
+                "REVOKE SELECT ON public.audit_logs FROM utop14_app",
+            ).returncode
+            == 0
+        )
+        assert (
+            _psql(
+                port,
+                "GRANT SELECT, INSERT ON public.audit_logs TO utop14_app",
+            ).returncode
+            == 0
+        )
+        all_shadowed_clean = _verify_with_catalog_shadow(port, all_shadow_sql)
+        all_shadowed_clean_output = all_shadowed_clean.stdout + all_shadowed_clean.stderr
+        assert all_shadowed_clean.returncode == 0, all_shadowed_clean_output
+        assert ok_marker in all_shadowed_clean_output, all_shadowed_clean_output
+        assert (
+            _psql(
+                port,
+                "GRANT SELECT ON public.audit_logs TO utop14_app WITH GRANT OPTION",
+            ).returncode
+            == 0
+        )
+
         for catalog, shadow_sql in catalog_shadows.items():
             shadowed = _verify_with_catalog_shadow(port, shadow_sql)
             shadowed_output = shadowed.stdout + shadowed.stderr
@@ -2651,10 +2682,42 @@ def test_disposable_ownership_and_hold_concurrency() -> None:
             assert ok_marker not in shadowed_output, (
                 f"{catalog} shadow produced a false PASS:\n{shadowed_output}"
             )
-            if catalog in ("pg_class", "pg_attribute"):
-                assert "GRANT OPTION" in shadowed_output, (
-                    f"{catalog} shadow hid the table ACL finding:\n{shadowed_output}"
-                )
+            # M14.3.22: require the actual table-ACL diagnostic.  A non-zero
+            # exit from an unrelated SQL error must not satisfy this test.
+            assert "table privilege" in shadowed_output, (
+                f"{catalog} shadow failed for an unrelated reason:\n{shadowed_output}"
+            )
+            assert "GRANT OPTION" in shadowed_output, (
+                f"{catalog} shadow hid the table ACL finding:\n{shadowed_output}"
+            )
+
+        # M14.3.22 R1: a hostile public.array_append must never influence the
+        # table-privilege matrix.  The uninventoried-function preflight rejects
+        # it before section 6, and the qualified pg_catalog call is immune.
+        assert (
+            _psql(
+                port,
+                "CREATE FUNCTION public.array_append(text[], text) "
+                "RETURNS text[] LANGUAGE sql "
+                "AS $$ SELECT ARRAY[]::text[] $$",
+            ).returncode
+            == 0
+        )
+        hostile_append = _verify(port)
+        hostile_append_output = hostile_append.stdout + hostile_append.stderr
+        assert hostile_append.returncode != 0, hostile_append_output
+        assert ok_marker not in hostile_append_output, hostile_append_output
+        assert (
+            "uninventoried functions" in hostile_append_output
+            or "GRANT OPTION" in hostile_append_output
+        ), hostile_append_output
+        assert (
+            _psql(
+                port,
+                "DROP FUNCTION public.array_append(text[], text)",
+            ).returncode
+            == 0
+        )
 
         # Temporary functions named like catalog helpers are not implicitly
         # searched (pg_temp is never searched for function names), but a
