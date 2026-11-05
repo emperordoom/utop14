@@ -56,7 +56,7 @@ SET search_path = pg_catalog, public;
 DO $$
 BEGIN
     IF NOT EXISTS (
-        SELECT 1 FROM pg_roles WHERE rolname = current_user AND rolsuper
+        SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = current_user AND rolsuper
     ) THEN
         RAISE EXCEPTION
             'FAIL: verification must run as a PostgreSQL superuser; current_user=% cannot assume utop14_app without a forbidden membership',
@@ -74,7 +74,7 @@ BEGIN
     -- app and retention roles must not be.  The ownership/membership checks
     -- below still prove the schema owner is separate from those roles.
     IF EXISTS (
-        SELECT 1 FROM pg_roles
+        SELECT 1 FROM pg_catalog.pg_roles
         WHERE rolname IN ('utop14_retention_owner',
                           'utop14_retention_runner',
                           'utop14_app')
@@ -84,31 +84,31 @@ BEGIN
         RAISE EXCEPTION 'FAIL: application/retention role has SUPERUSER/CREATEDB/CREATEROLE/REPLICATION/BYPASSRLS';
     END IF;
     IF NOT EXISTS (
-        SELECT 1 FROM pg_roles
+        SELECT 1 FROM pg_catalog.pg_roles
         WHERE rolname = 'utop14_schema_owner'
     ) THEN
         RAISE EXCEPTION 'FAIL: utop14_schema_owner is missing';
     END IF;
     IF NOT EXISTS (
-        SELECT 1 FROM pg_roles
+        SELECT 1 FROM pg_catalog.pg_roles
         WHERE rolname = 'utop14_retention_owner' AND NOT rolcanlogin
     ) THEN
         RAISE EXCEPTION 'FAIL: utop14_retention_owner must exist and be NOLOGIN';
     END IF;
     IF NOT EXISTS (
-        SELECT 1 FROM pg_roles
+        SELECT 1 FROM pg_catalog.pg_roles
         WHERE rolname = 'utop14_retention_runner' AND rolcanlogin
     ) THEN
         RAISE EXCEPTION 'FAIL: utop14_retention_runner must exist and be LOGIN';
     END IF;
     IF NOT EXISTS (
-        SELECT 1 FROM pg_roles
+        SELECT 1 FROM pg_catalog.pg_roles
         WHERE rolname = 'utop14_app' AND rolcanlogin
     ) THEN
         RAISE EXCEPTION 'FAIL: utop14_app must exist and be LOGIN';
     END IF;
     IF EXISTS (
-        SELECT 1 FROM pg_roles
+        SELECT 1 FROM pg_catalog.pg_roles
         WHERE rolname IN ('utop14_app',
                           'utop14_retention_owner',
                           'utop14_retention_runner')
@@ -128,9 +128,9 @@ DECLARE
 BEGIN
     IF EXISTS (
         SELECT 1
-        FROM pg_database d
-        CROSS JOIN LATERAL aclexplode(
-            COALESCE(d.datacl, acldefault('d', d.datdba))
+        FROM pg_catalog.pg_database d
+        CROSS JOIN LATERAL pg_catalog.aclexplode(
+            COALESCE(d.datacl, pg_catalog.acldefault('d', d.datdba))
         ) a
         WHERE d.datname = current_database()
           AND a.grantee = 0
@@ -144,7 +144,7 @@ BEGIN
                             'utop14_retention_owner',
                             'utop14_retention_runner']) AS role_name
     LOOP
-        IF has_database_privilege(r.role_name, current_database(), 'CREATE') THEN
+        IF pg_catalog.has_database_privilege(r.role_name, current_database(), 'CREATE') THEN
             RAISE EXCEPTION
                 'FAIL: % has database-level CREATE; CREATE SCHEMA must be denied',
                 r.role_name;
@@ -155,7 +155,7 @@ BEGIN
     -- schema named after the role could otherwise shadow application tables.
     IF NOT EXISTS (
         SELECT 1
-        FROM pg_roles
+        FROM pg_catalog.pg_roles
         WHERE rolname = 'utop14_app'
           AND rolconfig IS NOT NULL
           AND EXISTS (
@@ -172,11 +172,11 @@ BEGIN
     -- A database-specific role setting overrides the role-level setting.
     IF EXISTS (
         SELECT 1
-        FROM pg_db_role_setting s
+        FROM pg_catalog.pg_db_role_setting s
         CROSS JOIN LATERAL unnest(s.setconfig) c
         WHERE s.setrole = 'utop14_app'::regrole
           AND s.setdatabase = (
-              SELECT oid FROM pg_database WHERE datname = current_database()
+              SELECT oid FROM pg_catalog.pg_database WHERE datname = current_database()
           )
           AND replace(replace(c, ' ', ''), '"', '') LIKE 'search_path=%'
           AND replace(replace(c, ' ', ''), '"', '')
@@ -195,34 +195,42 @@ END $$;
 --
 -- PostgreSQL 15+ catalog.  The project supports PostgreSQL 16+, so absence
 -- of the catalog/function is a hard verification failure, not a skip.
+-- utop14_schema_owner is a managed principal for explicit parameter ACLs;
+-- its implicit superuser privileges, if any, are outside the ACL model.
 -- ---------------------------------------------------------------------------
 DO $$
 DECLARE
     r record;
     p record;
     priv text;
+    v_schema_super boolean;
 BEGIN
-    IF to_regclass('pg_catalog.pg_parameter_acl') IS NULL
-       OR to_regprocedure(
+    IF pg_catalog.to_regclass('pg_catalog.pg_parameter_acl') IS NULL
+       OR pg_catalog.to_regprocedure(
            'pg_catalog.has_parameter_privilege(name,text,text)'
        ) IS NULL THEN
         RAISE EXCEPTION
             'FAIL: parameter ACL catalog/function support is unavailable; cannot verify parameter privileges';
     END IF;
 
+    SELECT rolsuper INTO v_schema_super
+    FROM pg_catalog.pg_roles
+    WHERE rolname = 'utop14_schema_owner';
+
     -- Direct grants to managed roles or PUBLIC, and GRANT OPTION.
     FOR r IN
         SELECT pa.parname,
                CASE WHEN a.grantee = 0 THEN 'PUBLIC'
-                    ELSE pg_get_userbyid(a.grantee) END AS grantee,
+                    ELSE pg_catalog.pg_get_userbyid(a.grantee) END AS grantee,
                a.privilege_type,
                a.is_grantable
-        FROM pg_parameter_acl pa
-        CROSS JOIN LATERAL aclexplode(pa.paracl) a
+        FROM pg_catalog.pg_parameter_acl pa
+        CROSS JOIN LATERAL pg_catalog.aclexplode(pa.paracl) a
         WHERE a.grantee = 0
            OR a.grantee IN ('utop14_app'::regrole,
                             'utop14_retention_owner'::regrole,
-                            'utop14_retention_runner'::regrole)
+                            'utop14_retention_runner'::regrole,
+                            'utop14_schema_owner'::regrole)
     LOOP
         IF r.is_grantable THEN
             RAISE EXCEPTION
@@ -235,27 +243,35 @@ BEGIN
     END LOOP;
 
     -- Effective privileges through membership/PUBLIC/custom-role paths.
-    FOR p IN SELECT parname FROM pg_parameter_acl LOOP
+    FOR p IN SELECT parname FROM pg_catalog.pg_parameter_acl LOOP
         FOREACH priv IN ARRAY ARRAY['SET', 'ALTER SYSTEM'] LOOP
-            IF has_parameter_privilege(
+            IF pg_catalog.has_parameter_privilege(
                 'utop14_app', p.parname, priv
             ) THEN
                 RAISE EXCEPTION
                     'FAIL: utop14_app has effective parameter % on %',
                     priv, p.parname;
             END IF;
-            IF has_parameter_privilege(
+            IF pg_catalog.has_parameter_privilege(
                 'utop14_retention_owner', p.parname, priv
             ) THEN
                 RAISE EXCEPTION
                     'FAIL: utop14_retention_owner has effective parameter % on %',
                     priv, p.parname;
             END IF;
-            IF has_parameter_privilege(
+            IF pg_catalog.has_parameter_privilege(
                 'utop14_retention_runner', p.parname, priv
             ) THEN
                 RAISE EXCEPTION
                     'FAIL: utop14_retention_runner has effective parameter % on %',
+                    priv, p.parname;
+            END IF;
+            IF NOT v_schema_super
+               AND pg_catalog.has_parameter_privilege(
+                   'utop14_schema_owner', p.parname, priv
+               ) THEN
+                RAISE EXCEPTION
+                    'FAIL: utop14_schema_owner has effective parameter % on %',
                     priv, p.parname;
             END IF;
         END LOOP;
@@ -265,14 +281,15 @@ BEGIN
 END $$;
 
 -- ---------------------------------------------------------------------------
--- 1d. Persistent GUC allowlist for managed roles and the current database
+-- 1d. Persistent GUC allowlist for managed roles in every database
 --
 -- Approved:
 --   utop14_app role-level: exactly search_path=public, pg_catalog
---   retention roles: no role-level or database-specific settings
+--   retention roles: no role-level settings
 --   schema owner: search_path only (DBA operational need); anything else
 --                 requires explicit DBA reconciliation
---   database-wide (setrole=0, current DB or all DBs): no settings
+--   managed role database-specific settings: none in any database
+--   database-wide settings (setrole=0): none in any database or globally
 --
 -- Database-wide settings are never modified by verification; the DBA must
 -- reconcile them.
@@ -286,37 +303,35 @@ DECLARE
     v_owner_oid oid := 'utop14_retention_owner'::regrole;
     v_runner_oid oid := 'utop14_retention_runner'::regrole;
     v_schema_oid oid := 'utop14_schema_owner'::regrole;
-    v_db_oid oid := (
-        SELECT oid FROM pg_database WHERE datname = current_database()
-    );
 BEGIN
     -- App role-level settings must be exactly one approved search_path.
-    SELECT coalesce(array_length(rolconfig, 1), 0)
+    SELECT coalesce(pg_catalog.array_length(rolconfig, 1), 0)
       INTO v_app_entries
-      FROM pg_roles
+      FROM pg_catalog.pg_roles
      WHERE rolname = 'utop14_app';
     IF v_app_entries IS NULL OR v_app_entries <> 1
        OR NOT EXISTS (
            SELECT 1
-           FROM pg_roles, unnest(rolconfig) c
+           FROM pg_catalog.pg_roles,
+                LATERAL pg_catalog.unnest(rolconfig) c
            WHERE rolname = 'utop14_app'
              AND replace(replace(c, ' ', ''), '"', '')
                    = 'search_path=public,pg_catalog'
        ) THEN
         RAISE EXCEPTION
             'FAIL: utop14_app role-level settings must be exactly search_path=public, pg_catalog; current=%',
-            (SELECT rolconfig FROM pg_roles WHERE rolname = 'utop14_app');
+            (SELECT rolconfig FROM pg_catalog.pg_roles WHERE rolname = 'utop14_app');
     END IF;
 
     -- Retention roles must have no role-level settings.
     FOR r IN
         SELECT rolname, rolconfig
-        FROM pg_roles
+        FROM pg_catalog.pg_roles
         WHERE rolname IN ('utop14_retention_owner',
                           'utop14_retention_runner')
     LOOP
         IF r.rolconfig IS NOT NULL
-           AND array_length(r.rolconfig, 1) > 0 THEN
+           AND pg_catalog.array_length(r.rolconfig, 1) > 0 THEN
             RAISE EXCEPTION
                 'FAIL: % has unexpected role-level GUC %',
                 r.rolname, r.rolconfig;
@@ -325,7 +340,9 @@ BEGIN
 
     -- Schema owner: search_path only; other persistent GUCs need DBA approval.
     FOR r IN
-        SELECT rolconfig FROM pg_roles WHERE rolname = 'utop14_schema_owner'
+        SELECT rolconfig
+        FROM pg_catalog.pg_roles
+        WHERE rolname = 'utop14_schema_owner'
     LOOP
         IF r.rolconfig IS NOT NULL THEN
             FOREACH v_entry IN ARRAY r.rolconfig LOOP
@@ -339,57 +356,148 @@ BEGIN
         END IF;
     END LOOP;
 
-    -- Managed role-in-database settings must be empty.
+    -- Managed role-in-database settings must be empty in EVERY database.
     FOR r IN
-        SELECT pg_get_userbyid(s.setrole) AS role_name, s.setconfig
-        FROM pg_db_role_setting s
+        SELECT pg_catalog.pg_get_userbyid(s.setrole) AS role_name,
+               coalesce(
+                   d.datname,
+                   format('UNKNOWN DATABASE (oid=%s)', s.setdatabase)
+               ) AS dbname,
+               s.setconfig
+        FROM pg_catalog.pg_db_role_setting s
+        LEFT JOIN pg_catalog.pg_database d ON d.oid = s.setdatabase
         WHERE s.setrole IN (v_app_oid, v_owner_oid, v_runner_oid)
-          AND s.setdatabase = v_db_oid
+          AND s.setdatabase <> 0
     LOOP
         IF r.setconfig IS NOT NULL
-           AND array_length(r.setconfig, 1) > 0 THEN
+           AND pg_catalog.array_length(r.setconfig, 1) > 0 THEN
             RAISE EXCEPTION
-                'FAIL: % has database-specific GUC %; provisioning must reset it',
-                r.role_name, r.setconfig;
+                'FAIL: % has database-specific GUC % in database %; provisioning must reset it',
+                r.role_name, r.setconfig, r.dbname;
         END IF;
     END LOOP;
 
-    -- Schema owner database-specific settings: search_path only.
+    -- Schema owner database-specific settings must be search_path only,
+    -- regardless of database.
     FOR r IN
-        SELECT s.setconfig
-        FROM pg_db_role_setting s
+        SELECT coalesce(
+                   d.datname,
+                   format('UNKNOWN DATABASE (oid=%s)', s.setdatabase)
+               ) AS dbname,
+               s.setconfig
+        FROM pg_catalog.pg_db_role_setting s
+        LEFT JOIN pg_catalog.pg_database d ON d.oid = s.setdatabase
         WHERE s.setrole = v_schema_oid
-          AND s.setdatabase = v_db_oid
+          AND s.setdatabase <> 0
     LOOP
         IF r.setconfig IS NOT NULL THEN
             FOREACH v_entry IN ARRAY r.setconfig LOOP
                 IF replace(replace(v_entry, ' ', ''), '"', '')
                    NOT LIKE 'search_path=%' THEN
                     RAISE EXCEPTION
-                        'FAIL: utop14_schema_owner has unapproved database-specific GUC %; DBA reconciliation required',
-                        v_entry;
+                        'FAIL: utop14_schema_owner has unapproved database-specific GUC % in database %; DBA reconciliation required',
+                        v_entry, r.dbname;
                 END IF;
             END LOOP;
         END IF;
     END LOOP;
 
-    -- Database-wide/global settings affect application sessions.  Fail closed
-    -- and leave reconciliation to the DBA; never silently modify unrelated roles.
+    -- Database-wide/global settings in ANY database affect application
+    -- sessions there.  Fail closed and leave reconciliation to the DBA.
     FOR r IN
-        SELECT s.setrole, s.setdatabase, s.setconfig
-        FROM pg_db_role_setting s
+        SELECT coalesce(d.datname, 'ALL DATABASES') AS dbname,
+               s.setdatabase,
+               s.setconfig
+        FROM pg_catalog.pg_db_role_setting s
+        LEFT JOIN pg_catalog.pg_database d ON d.oid = s.setdatabase
         WHERE s.setrole = 0
-          AND s.setdatabase IN (0, v_db_oid)
     LOOP
         IF r.setconfig IS NOT NULL
-           AND array_length(r.setconfig, 1) > 0 THEN
+           AND pg_catalog.array_length(r.setconfig, 1) > 0 THEN
             RAISE EXCEPTION
-                'FAIL: database-wide GUC % (setdatabase=%) requires DBA reconciliation; verification will not modify unrelated roles',
-                r.setconfig, r.setdatabase;
+                'FAIL: database-wide GUC % in % (setdatabase=%) requires DBA reconciliation; verification will not modify unrelated roles',
+                r.setconfig, r.dbname, r.setdatabase;
         END IF;
     END LOOP;
 
-    RAISE NOTICE 'PASS: persistent role/database GUC allowlist';
+    RAISE NOTICE 'PASS: persistent role/database GUC allowlist for all databases';
+END $$;
+
+-- ---------------------------------------------------------------------------
+-- 1e. Sensitive cluster-level GUC sources
+--
+-- postgresql.auto.conf is writable through ALTER SYSTEM.  Detect sensitive
+-- settings there even if they are pending restart or the current session has
+-- a session-level override.  DBA-managed sources (postgresql.conf, command
+-- line, environment) are reported for operational review, not failed.
+-- ---------------------------------------------------------------------------
+DO $$
+DECLARE
+    v_sensitive text[] := ARRAY[
+        'shared_preload_libraries',
+        'session_preload_libraries',
+        'local_preload_libraries',
+        'log_statement',
+        'log_min_duration_statement',
+        'log_min_error_statement',
+        'log_min_messages',
+        'log_destination',
+        'logging_collector',
+        'log_connections',
+        'log_disconnections',
+        'log_duration',
+        'log_hostname',
+        'log_line_prefix',
+        'log_statement_sample_rate',
+        'log_transaction_sample_rate',
+        'search_path'
+    ];
+    r record;
+BEGIN
+    IF pg_catalog.to_regclass('pg_catalog.pg_settings') IS NULL
+       OR pg_catalog.to_regclass('pg_catalog.pg_file_settings') IS NULL THEN
+        RAISE EXCEPTION
+            'FAIL: pg_settings/pg_file_settings unavailable; cannot verify cluster-level GUC sources';
+    END IF;
+
+    FOR r IN
+        SELECT name, setting, source, sourcefile, pending_restart
+        FROM pg_catalog.pg_settings
+        WHERE name = ANY (v_sensitive)
+          AND sourcefile IS NOT NULL
+          AND sourcefile LIKE '%postgresql.auto.conf'
+    LOOP
+        RAISE EXCEPTION
+            'FAIL: sensitive cluster GUC %=% is configured in postgresql.auto.conf (%); pending_restart=%',
+            r.name, r.setting, r.sourcefile, r.pending_restart;
+    END LOOP;
+
+    -- pg_file_settings also exposes pending entries and settings hidden by a
+    -- session override.
+    FOR r IN
+        SELECT sourcefile, name, setting, applied, error
+        FROM pg_catalog.pg_file_settings
+        WHERE name = ANY (v_sensitive)
+          AND sourcefile LIKE '%postgresql.auto.conf'
+    LOOP
+        RAISE EXCEPTION
+            'FAIL: postgresql.auto.conf contains sensitive GUC %=% (%); applied=%, error=%',
+            r.name, r.setting, r.sourcefile, r.applied, r.error;
+    END LOOP;
+
+    FOR r IN
+        SELECT name, setting, source, sourcefile, pending_restart
+        FROM pg_catalog.pg_settings
+        WHERE name = ANY (v_sensitive)
+          AND source NOT IN ('default', 'session', 'client', 'override')
+          AND (sourcefile IS NULL OR sourcefile NOT LIKE '%postgresql.auto.conf')
+    LOOP
+        RAISE NOTICE
+            'INFO: cluster GUC %=% source=% file=% pending_restart=% requires DBA review',
+            r.name, r.setting, r.source, r.sourcefile, r.pending_restart;
+    END LOOP;
+
+    RAISE NOTICE 'PASS: no sensitive cluster GUCs in postgresql.auto.conf';
 END $$;
 
 -- ---------------------------------------------------------------------------
@@ -638,7 +746,7 @@ DECLARE
     v_owner text;
 BEGIN
     SELECT pg_get_userbyid(datdba) INTO v_owner
-    FROM pg_database WHERE datname = current_database();
+    FROM pg_catalog.pg_database WHERE datname = current_database();
     IF v_owner IS DISTINCT FROM 'utop14_schema_owner' THEN
         RAISE EXCEPTION 'FAIL: database owner=% (expected utop14_schema_owner)', v_owner;
     END IF;
@@ -759,9 +867,9 @@ BEGIN
                    AS set_opt,
                COALESCE((to_jsonb(m) ->> 'admin_option')::boolean, FALSE)
                    AS admin_opt
-        FROM pg_auth_members m
-        JOIN pg_roles r ON r.oid = m.member
-        JOIN pg_roles g ON g.oid = m.roleid
+        FROM pg_catalog.pg_auth_members m
+        JOIN pg_catalog.pg_roles r ON r.oid = m.member
+        JOIN pg_catalog.pg_roles g ON g.oid = m.roleid
     ),
     managed(rolname) AS (
         VALUES ('utop14_app'),
@@ -812,9 +920,9 @@ BEGIN
     -- Reverse direction: another role must not be able to assume a managed
     -- role.  Managed-to-managed edges are already covered above.
     SELECT r.rolname, g.rolname INTO v_reverse_member, v_reverse_role
-    FROM pg_auth_members m
-    JOIN pg_roles r ON r.oid = m.member
-    JOIN pg_roles g ON g.oid = m.roleid
+    FROM pg_catalog.pg_auth_members m
+    JOIN pg_catalog.pg_roles r ON r.oid = m.member
+    JOIN pg_catalog.pg_roles g ON g.oid = m.roleid
     WHERE g.rolname IN ('utop14_app',
                         'utop14_retention_owner',
                         'utop14_retention_runner')
@@ -864,10 +972,10 @@ BEGIN
         END IF;
 
         SELECT count(*) INTO v_public_create
-        FROM aclexplode(
+        FROM pg_catalog.aclexplode(
             COALESCE(
                 (SELECT nspacl FROM pg_namespace WHERE nspname = r.nspname),
-                acldefault(
+                pg_catalog.acldefault(
                     'n',
                     (SELECT nspowner FROM pg_namespace WHERE nspname = r.nspname)
                 )
@@ -904,8 +1012,8 @@ BEGIN
                     ELSE pg_get_userbyid(a.grantee) END AS grantee,
                a.privilege_type
         FROM pg_namespace n
-        CROSS JOIN LATERAL aclexplode(
-            COALESCE(n.nspacl, acldefault('n', n.nspowner))
+        CROSS JOIN LATERAL pg_catalog.aclexplode(
+            COALESCE(n.nspacl, pg_catalog.acldefault('n', n.nspowner))
         ) a
         WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
           AND n.nspname NOT LIKE 'pg\_%' ESCAPE '\'
@@ -1057,8 +1165,8 @@ BEGIN
         FROM pg_class c
         JOIN pg_namespace n ON n.oid = c.relnamespace
         JOIN matrix m ON m.table_name = c.relname
-        CROSS JOIN LATERAL aclexplode(
-            COALESCE(c.relacl, acldefault('r', c.relowner))
+        CROSS JOIN LATERAL pg_catalog.aclexplode(
+            COALESCE(c.relacl, pg_catalog.acldefault('r', c.relowner))
         ) a
         WHERE n.nspname = 'public'
           AND c.relkind IN ('r', 'p', 'f')
@@ -1117,7 +1225,7 @@ BEGIN
         FROM pg_attribute a
         JOIN pg_class c ON c.oid = a.attrelid
         JOIN pg_namespace n ON n.oid = c.relnamespace
-        CROSS JOIN LATERAL aclexplode(a.attacl) x
+        CROSS JOIN LATERAL pg_catalog.aclexplode(a.attacl) x
         WHERE n.nspname = 'public'
           AND c.relkind IN ('r', 'p', 'f')
           AND a.attnum > 0
@@ -1412,8 +1520,8 @@ BEGIN
                a.is_grantable
         FROM pg_class c
         JOIN pg_namespace n ON n.oid = c.relnamespace
-        CROSS JOIN LATERAL aclexplode(
-            COALESCE(c.relacl, acldefault('s', c.relowner))
+        CROSS JOIN LATERAL pg_catalog.aclexplode(
+            COALESCE(c.relacl, pg_catalog.acldefault('s', c.relowner))
         ) a
         WHERE n.nspname = 'public'
           AND c.relkind = 'S'
@@ -1546,8 +1654,8 @@ BEGIN
                         ELSE pg_get_userbyid(x.grantee) END AS grantee,
                    x.privilege_type,
                    x.is_grantable
-            FROM aclexplode(
-                COALESCE(r.proacl, acldefault('f', r.proowner))
+            FROM pg_catalog.aclexplode(
+                COALESCE(r.proacl, pg_catalog.acldefault('f', r.proowner))
             ) x
         LOOP
             IF a.is_grantable THEN

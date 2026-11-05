@@ -872,6 +872,93 @@ M14.3.16 closes the parameter-ACL and persistent-GUC gaps:
   this environment; the catalog/function/syntax compatibility is inspected, but
   only PostgreSQL 18.6 was runtime-tested.
 
+M14.3.18 closes the cross-database and cluster-level gaps:
+
+- Persistent GUC inspection is cluster-wide, not current-database-only:
+  - Every `pg_db_role_setting` row for `utop14_app`,
+    `utop14_retention_owner`, and `utop14_retention_runner` is inspected,
+    regardless of `setdatabase`; no managed-role database-specific setting is
+    approved in any database.
+  - Every `pg_db_role_setting` row for `utop14_schema_owner` is inspected;
+    `search_path` is allowed, anything else requires DBA reconciliation.
+  - Every `setrole = 0` row (database-wide and global) is inspected; any
+    database-wide setting fails closed because it can affect application
+    sessions in that database.
+  - Provisioning resets managed-role role-level settings and every
+    managed-role/database-specific setting in every non-template database; it
+    re-applies the approved app search_path and fails closed if a database
+    cannot be reconciled.
+- Schema-owner parameter ACLs are now default-deny: direct/effective
+  `SET`/`ALTER SYSTEM`, PUBLIC, GRANT OPTION, and membership paths are checked;
+  explicit schema-owner parameter grants are revoked by provisioning. A
+  superuser schema owner’s implicit privileges are treated as the trusted DBA
+  boundary, not an explicit ACL.
+- Sensitive cluster-level GUCs are checked through `pg_settings` and
+  `pg_file_settings`. Any sensitive setting in `postgresql.auto.conf`
+  (`shared_preload_libraries`, `session_preload_libraries`,
+  `local_preload_libraries`, `log_statement`, logging controls, `search_path`)
+  fails verification and provisioning, including pending-restart entries.
+  DBA-managed sources (`postgresql.conf`, command line, environment) are
+  reported as INFO for operational review; they are not app-writable.
+- New parameter/GUC catalog references are `pg_catalog`-qualified; hostile
+  schema and session-local temp-object shadowing tests are included.
+- Provisioning failure injection covers a failure after cross-database resets:
+  the transaction rolls back the cross-database settings, and a rerun
+  reconciles them. PostgreSQL does not emit event-trigger DDL commands for
+  `ALTER ROLE`, so GUC-reset failure injection uses the post-reset GRANT failure
+  path and parameter REVOKE failure separately.
+- PostgreSQL 16 was not available for runtime testing; catalog/function/syntax
+  compatibility is statically inspected only. Only PostgreSQL 18.6 was
+  runtime-tested.
+
+#### Cluster-level GUC audit procedure
+
+Run as a PostgreSQL superuser before relying on verification:
+
+```sql
+SELECT name, setting, source, sourcefile, pending_restart
+FROM pg_settings
+WHERE name IN (
+    'shared_preload_libraries', 'session_preload_libraries',
+    'local_preload_libraries', 'log_statement',
+    'log_min_duration_statement', 'log_min_error_statement',
+    'log_min_messages', 'log_destination', 'logging_collector',
+    'log_connections', 'log_disconnections', 'log_duration',
+    'log_hostname', 'log_line_prefix', 'log_statement_sample_rate',
+    'log_transaction_sample_rate', 'search_path'
+)
+ORDER BY name;
+
+SELECT sourcefile, name, setting, applied, error
+FROM pg_file_settings
+WHERE name IN (
+    'shared_preload_libraries', 'session_preload_libraries',
+    'local_preload_libraries', 'log_statement',
+    'log_min_duration_statement', 'log_min_error_statement',
+    'log_min_messages', 'log_destination', 'logging_collector',
+    'log_connections', 'log_disconnections', 'log_duration',
+    'log_hostname', 'log_line_prefix', 'log_statement_sample_rate',
+    'log_transaction_sample_rate', 'search_path'
+)
+ORDER BY sourcefile, name;
+```
+
+- A sensitive setting whose `sourcefile` ends in `postgresql.auto.conf` must be
+  reset with `ALTER SYSTEM RESET <name>;`. Reload with
+  `SELECT pg_reload_conf();` for reloadable settings; if `pending_restart` is
+  true or the setting has postmaster context, restart the cluster through the
+  approved operational process.
+- After reload/restart, re-run both queries and require the setting to be at its
+  approved/default value with `pending_restart = false`; then re-run
+  `security_event_retention_verify.sql`.
+- Settings sourced from `postgresql.conf`, the command line, environment, or
+  service configuration are DBA-managed. The verifier reports them as INFO;
+  review them against the approved operational baseline. Do not edit production
+  configuration files from this project.
+- The verifier does not claim to inspect settings it cannot see through
+  `pg_settings`/`pg_file_settings`; the audit above is the operational gate.
+
+
 ### Production ownership model (OPS-01)
 
 The append-only and retention boundary depends on ownership separation. The
@@ -888,12 +975,15 @@ PostgreSQL cluster with a separate DDL role:
   role memberships, no function `EXECUTE` (including trigger/helper functions),
   no explicit column-level grants, no `GRANT OPTION`, no parameter `SET` or
   `ALTER SYSTEM`, and no persistent GUC other than
-  `search_path=public, pg_catalog`.
+  `search_path=public, pg_catalog` in any database.
 - `utop14_retention_owner` remains NOLOGIN and owns only
   `public.prune_security_events`. `utop14_retention_runner` remains separate and
   has only function `EXECUTE` plus run-log append. Neither retention role has
   database `CREATE`, explicit column grants, `GRANT OPTION`, parameter
-  `SET`/`ALTER SYSTEM`, or persistent GUC settings.
+  `SET`/`ALTER SYSTEM`, or persistent GUC settings in any database.
+- `utop14_schema_owner` may have `search_path` only; any other role-level or
+  database-specific GUC requires explicit DBA reconciliation. Explicit
+  schema-owner parameter `SET`/`ALTER SYSTEM` grants are default-deny.
 - The app grant matrix is least-privilege and complete:
   - `SELECT, INSERT` on `security_events`, `audit_logs`, and `order_items`
     (append-only/immutable writes; no UPDATE/DELETE).
@@ -925,15 +1015,18 @@ and view, enforces default-deny memberships, checks ownership and the complete
 app/owner/runner table, column, sequence and function ACL/EXECUTE matrices
 (including `GRANT OPTION`), checks database-level `CREATE` and PostgreSQL 17+
 `MAINTAIN`, checks `pg_parameter_acl` for `SET`/`ALTER SYSTEM` grants and
-GRANT OPTION, checks all role-level and database-specific GUCs against the
-approved allowlist, checks database-wide settings for DBA reconciliation,
-checks every non-system schema for app/retention `CREATE` and `USAGE`, and
-probes append-only boundaries. The ownership model is only considered verified
-when the disposable ownership/privilege test passes the rate-limit, audit,
-security-event, trigger-disable, ALTER, DELETE, TRUNCATE, membership, schema,
-type, column-ACL, database-CREATE, MAINTAIN, parameter-ACL, role-GUC,
-database-GUC, function-EXECUTE, provisioning-idempotency and negative-grant
-probes.
+GRANT OPTION for app/retention/schema-owner/PUBLIC, checks all role-level and
+database-specific GUCs in **every database** against the approved allowlist,
+checks database-wide/global settings in every database for DBA reconciliation,
+checks sensitive cluster-level settings in `pg_settings`/`pg_file_settings`
+(any `postgresql.auto.conf` entry fails), checks every non-system schema for
+app/retention `CREATE` and `USAGE`, and probes append-only boundaries. The
+ownership model is only considered verified when the disposable
+ownership/privilege test passes the rate-limit, audit, security-event,
+trigger-disable, ALTER, DELETE, TRUNCATE, membership, schema, type, column-ACL,
+database-CREATE, MAINTAIN, parameter-ACL, role-GUC, database-GUC,
+cluster-GUC, function-EXECUTE, provisioning-idempotency, cross-database and
+negative-grant probes.
 
 Provisioning requires PostgreSQL 16 or newer. Parameter ACLs use
 `pg_parameter_acl` and `has_parameter_privilege` (PostgreSQL 15+); if those are
@@ -953,9 +1046,10 @@ Provisioning and recovery:
 2. The roles script is repeatable: a second run succeeds and produces the same
    non-owner ACL and ownership state. It creates missing retention roles,
    reconciles their `LOGIN`/`INHERIT`/privilege attributes, resets all
-   persistent role-level and database-specific GUCs, sets the app `search_path`
-   to `public, pg_catalog`, revokes database-level `CREATE`, and revokes
-   parameter `SET`/`ALTER SYSTEM` grants for managed roles and PUBLIC. It never
+   persistent role-level and database-specific GUCs for the managed roles in
+   every non-template database, sets the app `search_path` to
+   `public, pg_catalog`, revokes database-level `CREATE`, and revokes parameter
+   `SET`/`ALTER SYSTEM` grants for app/retention/schema-owner/PUBLIC. It never
    reads or changes passwords.
 3. A forward membership of `utop14_app`, `utop14_retention_owner`, or
    `utop14_retention_runner` is removed by provisioning and reported with
@@ -966,14 +1060,16 @@ Provisioning and recovery:
    fails preflight; correct it with `ALTER ROLE ... NOSUPERUSER NOCREATEDB
    NOCREATEROLE NOREPLICATION NOBYPASSRLS` and rerun. Preflight failure is
    transactional: no partial grants remain.
-5. Database-wide GUCs and non-`search_path` schema-owner GUCs are not modified
-   automatically. Verification and provisioning fail with a DBA-reconciliation
-   message; the DBA must review and reset the setting, then rerun.
+5. Database-wide GUCs, non-`search_path` schema-owner GUCs, and sensitive
+   `postgresql.auto.conf` settings are not modified automatically. Verification
+   and provisioning fail with a DBA-reconciliation message; follow the
+   cluster-level GUC audit procedure above, reset the setting, reload/restart
+   if required, then rerun.
 6. A pre-existing column-level grant, database `CREATE`, `MAINTAIN`, or
-   parameter privilege is removed by the roles script. Verification fails if a
-   forbidden grant or GUC is reintroduced after provisioning. Recycle existing
-   application connections and pools after provisioning so they pick up the new
-   `search_path`.
+   parameter privilege is removed by the roles script, including managed-role
+   settings in other databases. Verification fails if a forbidden grant or GUC
+   is reintroduced after provisioning. Recycle existing application connections
+   and pools after provisioning so they pick up the new `search_path`.
 7. Any new schema, extension, type/domain, table, sequence, function, trigger
    or view must be reviewed and added to the ownership/provisioning inventory
    before provisioning or verification will pass. Only `public` and `plpgsql`
@@ -1160,19 +1256,21 @@ are not part of M14.1 or M14.3.2. M14.3.3 provides manual/bounded retention for
     `utop14_app` is DML-only, owns nothing, has no role memberships, no function
     `EXECUTE`, no column-level grants, no `GRANT OPTION`, no database `CREATE`,
     no parameter `SET`/`ALTER SYSTEM`, and no persistent GUC other than
-    `search_path=public, pg_catalog`; `prune_security_events` stays owned by
-    `utop14_retention_owner`. The app must have the complete least-privilege
-    matrix, including `SELECT, INSERT` on `audit_logs` / `security_events`,
-    `SELECT, INSERT, UPDATE, DELETE` on `auth_rate_limits`, and `USAGE, SELECT`
-    on all application sequences it inserts into, but never
+    `search_path=public, pg_catalog` in any database; `prune_security_events`
+    stays owned by `utop14_retention_owner`. The app must have the complete
+    least-privilege matrix, including `SELECT, INSERT` on `audit_logs` /
+    `security_events`, `SELECT, INSERT, UPDATE, DELETE` on `auth_rate_limits`,
+    and `USAGE, SELECT` on all application sequences it inserts into, but never
     `TRUNCATE`/`TRIGGER`/`REFERENCES`/`MAINTAIN`, sequence UPDATE, schema or
     database CREATE outside `public`, column-level grants, parameter ACLs, or
     ownership. Apply `scripts/security_event_retention_ownership_template.sql`
     only after DBA review, then run the provisioning and verification scripts.
+    Follow the cluster-level GUC audit procedure for `postgresql.auto.conf`.
     Do not proceed to production if `security_event_retention_verify.sql` exits
     non-zero or if the app can disable an append-only trigger, assume a role,
     create objects in a non-application schema, create a schema, hold a column
-    privilege, set a parameter, or retain an unapproved role/database GUC.
+    privilege, set a parameter, or retain an unapproved role/database GUC in
+    any database.
 
 ## Milestone 7 scope
 

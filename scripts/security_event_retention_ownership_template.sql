@@ -258,42 +258,63 @@ BEGIN
 END $$;
 
 -- ---------------------------------------------------------------------------
--- Preflight: parameter ACL support and database-wide/schema-owner GUCs.
--- These are DBA-reconciled, never silently reset by this template.
+-- Preflight: parameter ACL support, database-wide/schema-owner GUCs, and
+-- sensitive cluster settings in postgresql.auto.conf.  These are DBA-reconciled,
+-- never silently reset by this template.
 -- ---------------------------------------------------------------------------
 DO $$
 DECLARE
     r record;
     v_entry text;
-    v_db_oid oid := (
-        SELECT oid FROM pg_database WHERE datname = current_database()
-    );
+    v_sensitive text[] := ARRAY[
+        'shared_preload_libraries',
+        'session_preload_libraries',
+        'local_preload_libraries',
+        'log_statement',
+        'log_min_duration_statement',
+        'log_min_error_statement',
+        'log_min_messages',
+        'log_destination',
+        'logging_collector',
+        'log_connections',
+        'log_disconnections',
+        'log_duration',
+        'log_hostname',
+        'log_line_prefix',
+        'log_statement_sample_rate',
+        'log_transaction_sample_rate',
+        'search_path'
+    ];
 BEGIN
-    IF to_regclass('pg_catalog.pg_parameter_acl') IS NULL
-       OR to_regprocedure(
+    IF pg_catalog.to_regclass('pg_catalog.pg_parameter_acl') IS NULL
+       OR pg_catalog.to_regprocedure(
            'pg_catalog.has_parameter_privilege(name,text,text)'
-       ) IS NULL THEN
+       ) IS NULL
+       OR pg_catalog.to_regclass('pg_catalog.pg_settings') IS NULL
+       OR pg_catalog.to_regclass('pg_catalog.pg_file_settings') IS NULL THEN
         RAISE EXCEPTION
-            'FAIL: parameter ACL catalog/function support is unavailable; cannot apply this template safely';
+            'FAIL: required parameter/GUC catalog support is unavailable; cannot apply this template safely';
     END IF;
 
     FOR r IN
-        SELECT s.setrole, s.setdatabase, s.setconfig
-        FROM pg_db_role_setting s
+        SELECT coalesce(d.datname, 'ALL DATABASES') AS dbname,
+               s.setdatabase,
+               s.setconfig
+        FROM pg_catalog.pg_db_role_setting s
+        LEFT JOIN pg_catalog.pg_database d ON d.oid = s.setdatabase
         WHERE s.setrole = 0
-          AND s.setdatabase IN (0, v_db_oid)
     LOOP
         IF r.setconfig IS NOT NULL
-           AND array_length(r.setconfig, 1) > 0 THEN
+           AND pg_catalog.array_length(r.setconfig, 1) > 0 THEN
             RAISE EXCEPTION
-                'FAIL: database-wide GUC % (setdatabase=%) requires DBA reconciliation before applying this template',
-                r.setconfig, r.setdatabase;
+                'FAIL: database-wide GUC % in % (setdatabase=%) requires DBA reconciliation before applying this template',
+                r.setconfig, r.dbname, r.setdatabase;
         END IF;
     END LOOP;
 
     FOR r IN
         SELECT rolconfig
-        FROM pg_roles
+        FROM pg_catalog.pg_roles
         WHERE rolname = '<schema_owner>'
     LOOP
         IF r.rolconfig IS NOT NULL THEN
@@ -309,21 +330,45 @@ BEGIN
     END LOOP;
 
     FOR r IN
-        SELECT s.setconfig
-        FROM pg_db_role_setting s
+        SELECT coalesce(d.datname, 'UNKNOWN DATABASE') AS dbname,
+               s.setconfig
+        FROM pg_catalog.pg_db_role_setting s
+        LEFT JOIN pg_catalog.pg_database d ON d.oid = s.setdatabase
         WHERE s.setrole = '<schema_owner>'::regrole
-          AND s.setdatabase = v_db_oid
+          AND s.setdatabase <> 0
     LOOP
         IF r.setconfig IS NOT NULL THEN
             FOREACH v_entry IN ARRAY r.setconfig LOOP
                 IF replace(replace(v_entry, ' ', ''), '"', '')
                    NOT LIKE 'search_path=%' THEN
                     RAISE EXCEPTION
-                        'FAIL: schema owner has unapproved database-specific GUC %; DBA reconciliation required',
-                        v_entry;
+                        'FAIL: schema owner has unapproved database-specific GUC % in %; DBA reconciliation required',
+                        v_entry, r.dbname;
                 END IF;
             END LOOP;
         END IF;
+    END LOOP;
+
+    FOR r IN
+        SELECT name, setting, sourcefile, pending_restart
+        FROM pg_catalog.pg_settings
+        WHERE name = ANY (v_sensitive)
+          AND sourcefile IS NOT NULL
+          AND sourcefile LIKE '%postgresql.auto.conf'
+    LOOP
+        RAISE EXCEPTION
+            'FAIL: sensitive cluster GUC %=% remains in postgresql.auto.conf (%); pending_restart=% requires DBA reconciliation',
+            r.name, r.setting, r.sourcefile, r.pending_restart;
+    END LOOP;
+    FOR r IN
+        SELECT sourcefile, name, setting, applied, error
+        FROM pg_catalog.pg_file_settings
+        WHERE name = ANY (v_sensitive)
+          AND sourcefile LIKE '%postgresql.auto.conf'
+    LOOP
+        RAISE EXCEPTION
+            'FAIL: postgresql.auto.conf contains sensitive GUC %=% (%); applied=%, error=% requires DBA reconciliation',
+            r.name, r.setting, r.sourcefile, r.applied, r.error;
     END LOOP;
 END $$;
 
@@ -416,19 +461,30 @@ END $$;
 DO $$
 DECLARE
     r text;
+    db text;
 BEGIN
     FOREACH r IN ARRAY ARRAY['utop14_app',
                              'utop14_retention_owner',
                              'utop14_retention_runner'] LOOP
-        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+        IF EXISTS (
+            SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = r
+        ) THEN
             EXECUTE format('ALTER ROLE %I RESET ALL', r);
-            EXECUTE format(
-                'ALTER ROLE %I IN DATABASE %I RESET ALL',
-                r, current_database()
-            );
+            FOR db IN
+                SELECT datname
+                FROM pg_catalog.pg_database
+                WHERE NOT datistemplate
+            LOOP
+                EXECUTE format(
+                    'ALTER ROLE %I IN DATABASE %I RESET ALL',
+                    r, db
+                );
+            END LOOP;
         END IF;
     END LOOP;
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'utop14_app') THEN
+    IF EXISTS (
+        SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'utop14_app'
+    ) THEN
         EXECUTE 'ALTER ROLE utop14_app SET search_path = public, pg_catalog';
     END IF;
 END $$;
@@ -442,15 +498,16 @@ BEGIN
         SELECT p.parname,
                a.grantee,
                CASE WHEN a.grantee = 0 THEN 'PUBLIC'
-                    ELSE pg_get_userbyid(a.grantee) END AS grantee_name,
+                    ELSE pg_catalog.pg_get_userbyid(a.grantee) END AS grantee_name,
                a.privilege_type
-        FROM pg_parameter_acl p
-        CROSS JOIN LATERAL aclexplode(p.paracl) a
+        FROM pg_catalog.pg_parameter_acl p
+        CROSS JOIN LATERAL pg_catalog.aclexplode(p.paracl) a
         WHERE a.grantee = 0
-           OR pg_get_userbyid(a.grantee) IN (
+           OR pg_catalog.pg_get_userbyid(a.grantee) IN (
                'utop14_app',
                'utop14_retention_owner',
-               'utop14_retention_runner'
+               'utop14_retention_runner',
+               'utop14_schema_owner'
            )
     LOOP
         IF r.grantee = 0 THEN
@@ -571,18 +628,36 @@ DECLARE
     r record;
     v_entry text;
     v_app_entries integer;
-    v_db_oid oid := (
-        SELECT oid FROM pg_database WHERE datname = current_database()
-    );
+    v_schema_super boolean;
+    v_sensitive text[] := ARRAY[
+        'shared_preload_libraries',
+        'session_preload_libraries',
+        'local_preload_libraries',
+        'log_statement',
+        'log_min_duration_statement',
+        'log_min_error_statement',
+        'log_min_messages',
+        'log_destination',
+        'logging_collector',
+        'log_connections',
+        'log_disconnections',
+        'log_duration',
+        'log_hostname',
+        'log_line_prefix',
+        'log_statement_sample_rate',
+        'log_transaction_sample_rate',
+        'search_path'
+    ];
 BEGIN
-    SELECT coalesce(array_length(rolconfig, 1), 0)
+    SELECT coalesce(pg_catalog.array_length(rolconfig, 1), 0)
       INTO v_app_entries
-      FROM pg_roles
+      FROM pg_catalog.pg_roles
      WHERE rolname = 'utop14_app';
     IF v_app_entries IS NULL OR v_app_entries <> 1
        OR NOT EXISTS (
            SELECT 1
-           FROM pg_roles, unnest(rolconfig) c
+           FROM pg_catalog.pg_roles,
+                LATERAL pg_catalog.unnest(rolconfig) c
            WHERE rolname = 'utop14_app'
              AND replace(replace(c, ' ', ''), '"', '')
                    = 'search_path=public,pg_catalog'
@@ -591,14 +666,18 @@ BEGIN
             'FAIL: postcondition app role-level settings are not exactly search_path=public, pg_catalog';
     END IF;
 
+    SELECT rolsuper INTO v_schema_super
+    FROM pg_catalog.pg_roles
+    WHERE rolname = '<schema_owner>';
+
     FOR r IN
         SELECT rolname, rolconfig
-        FROM pg_roles
+        FROM pg_catalog.pg_roles
         WHERE rolname IN ('utop14_retention_owner',
                           'utop14_retention_runner')
     LOOP
         IF r.rolconfig IS NOT NULL
-           AND array_length(r.rolconfig, 1) > 0 THEN
+           AND pg_catalog.array_length(r.rolconfig, 1) > 0 THEN
             RAISE EXCEPTION
                 'FAIL: postcondition % still has role-level GUC %',
                 r.rolname, r.rolconfig;
@@ -607,7 +686,7 @@ BEGIN
 
     FOR r IN
         SELECT rolconfig
-        FROM pg_roles
+        FROM pg_catalog.pg_roles
         WHERE rolname = '<schema_owner>'
     LOOP
         IF r.rolconfig IS NOT NULL THEN
@@ -623,83 +702,98 @@ BEGIN
     END LOOP;
 
     FOR r IN
-        SELECT pg_get_userbyid(s.setrole) AS role_name, s.setconfig
-        FROM pg_db_role_setting s
-        WHERE pg_get_userbyid(s.setrole) IN (
+        SELECT pg_catalog.pg_get_userbyid(s.setrole) AS role_name,
+               coalesce(
+                   d.datname,
+                   format('UNKNOWN DATABASE (oid=%s)', s.setdatabase)
+               ) AS dbname,
+               s.setconfig
+        FROM pg_catalog.pg_db_role_setting s
+        LEFT JOIN pg_catalog.pg_database d ON d.oid = s.setdatabase
+        WHERE pg_catalog.pg_get_userbyid(s.setrole) IN (
                   'utop14_app',
                   'utop14_retention_owner',
                   'utop14_retention_runner'
               )
-          AND s.setdatabase = v_db_oid
+          AND s.setdatabase <> 0
     LOOP
         IF r.setconfig IS NOT NULL
-           AND array_length(r.setconfig, 1) > 0 THEN
+           AND pg_catalog.array_length(r.setconfig, 1) > 0 THEN
             RAISE EXCEPTION
-                'FAIL: postcondition % has database-specific GUC %',
-                r.role_name, r.setconfig;
+                'FAIL: postcondition % has database-specific GUC % in database %',
+                r.role_name, r.setconfig, r.dbname;
         END IF;
     END LOOP;
 
     FOR r IN
-        SELECT s.setconfig
-        FROM pg_db_role_setting s
+        SELECT coalesce(
+                   d.datname,
+                   format('UNKNOWN DATABASE (oid=%s)', s.setdatabase)
+               ) AS dbname,
+               s.setconfig
+        FROM pg_catalog.pg_db_role_setting s
+        LEFT JOIN pg_catalog.pg_database d ON d.oid = s.setdatabase
         WHERE s.setrole = '<schema_owner>'::regrole
-          AND s.setdatabase = v_db_oid
+          AND s.setdatabase <> 0
     LOOP
         IF r.setconfig IS NOT NULL THEN
             FOREACH v_entry IN ARRAY r.setconfig LOOP
                 IF replace(replace(v_entry, ' ', ''), '"', '')
                    NOT LIKE 'search_path=%' THEN
                     RAISE EXCEPTION
-                        'FAIL: postcondition schema owner unapproved database-specific GUC %',
-                        v_entry;
+                        'FAIL: postcondition schema owner unapproved database-specific GUC % in %',
+                        v_entry, r.dbname;
                 END IF;
             END LOOP;
         END IF;
     END LOOP;
 
     FOR r IN
-        SELECT s.setrole, s.setdatabase, s.setconfig
-        FROM pg_db_role_setting s
+        SELECT coalesce(d.datname, 'ALL DATABASES') AS dbname,
+               s.setdatabase,
+               s.setconfig
+        FROM pg_catalog.pg_db_role_setting s
+        LEFT JOIN pg_catalog.pg_database d ON d.oid = s.setdatabase
         WHERE s.setrole = 0
-          AND s.setdatabase IN (0, v_db_oid)
     LOOP
         IF r.setconfig IS NOT NULL
-           AND array_length(r.setconfig, 1) > 0 THEN
+           AND pg_catalog.array_length(r.setconfig, 1) > 0 THEN
             RAISE EXCEPTION
-                'FAIL: postcondition database-wide GUC % (setdatabase=%) remains',
-                r.setconfig, r.setdatabase;
+                'FAIL: postcondition database-wide GUC % in % (setdatabase=%) remains',
+                r.setconfig, r.dbname, r.setdatabase;
         END IF;
     END LOOP;
 
     IF EXISTS (
         SELECT 1
-        FROM pg_parameter_acl p
-        CROSS JOIN LATERAL aclexplode(p.paracl) a
+        FROM pg_catalog.pg_parameter_acl p
+        CROSS JOIN LATERAL pg_catalog.aclexplode(p.paracl) a
         WHERE a.grantee = 0
-           OR pg_get_userbyid(a.grantee) IN (
+           OR pg_catalog.pg_get_userbyid(a.grantee) IN (
                   'utop14_app',
                   'utop14_retention_owner',
-                  'utop14_retention_runner'
+                  'utop14_retention_runner',
+                  '<schema_owner>'
               )
     ) THEN
         RAISE EXCEPTION
             'FAIL: postcondition managed-role/PUBLIC parameter privilege remains';
     END IF;
 
-    FOR r IN SELECT parname FROM pg_parameter_acl LOOP
-        IF has_parameter_privilege('utop14_app', r.parname, 'SET')
-           OR has_parameter_privilege(
-               'utop14_app', r.parname, 'ALTER SYSTEM'
-           ) THEN
+    FOR r IN SELECT parname FROM pg_catalog.pg_parameter_acl LOOP
+        IF pg_catalog.has_parameter_privilege(
+            'utop14_app', r.parname, 'SET'
+        ) OR pg_catalog.has_parameter_privilege(
+            'utop14_app', r.parname, 'ALTER SYSTEM'
+        ) THEN
             RAISE EXCEPTION
                 'FAIL: postcondition app parameter privilege remains on %',
                 r.parname;
         END IF;
-        IF to_regrole('utop14_retention_owner') IS NOT NULL THEN
-            IF has_parameter_privilege(
+        IF pg_catalog.to_regrole('utop14_retention_owner') IS NOT NULL THEN
+            IF pg_catalog.has_parameter_privilege(
                 'utop14_retention_owner', r.parname, 'SET'
-            ) OR has_parameter_privilege(
+            ) OR pg_catalog.has_parameter_privilege(
                 'utop14_retention_owner', r.parname, 'ALTER SYSTEM'
             ) THEN
                 RAISE EXCEPTION
@@ -707,10 +801,10 @@ BEGIN
                     r.parname;
             END IF;
         END IF;
-        IF to_regrole('utop14_retention_runner') IS NOT NULL THEN
-            IF has_parameter_privilege(
+        IF pg_catalog.to_regrole('utop14_retention_runner') IS NOT NULL THEN
+            IF pg_catalog.has_parameter_privilege(
                 'utop14_retention_runner', r.parname, 'SET'
-            ) OR has_parameter_privilege(
+            ) OR pg_catalog.has_parameter_privilege(
                 'utop14_retention_runner', r.parname, 'ALTER SYSTEM'
             ) THEN
                 RAISE EXCEPTION
@@ -718,7 +812,31 @@ BEGIN
                     r.parname;
             END IF;
         END IF;
+        IF NOT v_schema_super
+           AND (pg_catalog.has_parameter_privilege(
+                    '<schema_owner>', r.parname, 'SET'
+                ) OR pg_catalog.has_parameter_privilege(
+                    '<schema_owner>', r.parname, 'ALTER SYSTEM'
+                )) THEN
+            RAISE EXCEPTION
+                'FAIL: postcondition schema-owner parameter privilege remains on %',
+                r.parname;
+        END IF;
     END LOOP;
+
+    IF EXISTS (
+        SELECT 1 FROM pg_catalog.pg_settings
+        WHERE name = ANY (v_sensitive)
+          AND sourcefile IS NOT NULL
+          AND sourcefile LIKE '%postgresql.auto.conf'
+    ) OR EXISTS (
+        SELECT 1 FROM pg_catalog.pg_file_settings
+        WHERE name = ANY (v_sensitive)
+          AND sourcefile LIKE '%postgresql.auto.conf'
+    ) THEN
+        RAISE EXCEPTION
+            'FAIL: postcondition sensitive GUC remains in postgresql.auto.conf; DBA reconciliation required';
+    END IF;
 END $$;
 
 COMMIT;

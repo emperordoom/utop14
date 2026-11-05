@@ -224,6 +224,40 @@ def _verify_with_search_path(port: int, search_path: str) -> subprocess.Complete
     )
 
 
+def _verify_with_temp_shadow(port: int) -> subprocess.CompletedProcess[str]:
+    setup = (
+        "CREATE TEMP TABLE pg_parameter_acl "
+        "(parname text, paracl aclitem[]); "
+        "CREATE TEMP TABLE pg_db_role_setting "
+        "(setrole oid, setdatabase oid, setconfig text[]); "
+        "CREATE FUNCTION pg_temp.has_parameter_privilege("
+        "name, text, text) RETURNS boolean "
+        "LANGUAGE sql AS 'SELECT false';"
+    )
+    return subprocess.run(
+        [
+            "psql",
+            "-h",
+            "127.0.0.1",
+            "-p",
+            str(port),
+            "-U",
+            "postgres",
+            "-d",
+            DB,
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-c",
+            setup,
+            "-f",
+            "scripts/security_event_retention_verify.sql",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
 def _psql_file(port: int, path: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
@@ -1805,6 +1839,11 @@ def test_disposable_ownership_and_hold_concurrency() -> None:
             )
             assert result.returncode == 0, result.stderr
             _assert_verify_fails(port, "parameter", parameter)
+            if parameter == "log_statement":
+                shadow = _verify_with_temp_shadow(port)
+                shadow_output = shadow.stdout + shadow.stderr
+                assert shadow.returncode != 0, shadow_output
+                assert "parameter" in shadow_output, shadow_output
             with app_engine.begin() as conn:
                 conn.execute(text(runtime_sql))
             provisioned = _psql_file(port, "scripts/security_event_retention_roles.sql")
@@ -2178,6 +2217,283 @@ def test_disposable_ownership_and_hold_concurrency() -> None:
         with search_engine.connect() as conn:
             assert conn.execute(text("SHOW search_path")).scalar_one() == "public, pg_catalog"
         search_engine.dispose()
+
+        # --- M14317-01: cross-database managed-role GUCs ------------------
+        other_db = "utop14_concurrency_other"
+        result = _psql(
+            port,
+            f"CREATE DATABASE {other_db} OWNER utop14_schema_owner",
+        )
+        assert result.returncode == 0, result.stderr
+
+        result = _psql(
+            port,
+            f"ALTER ROLE utop14_app IN DATABASE {other_db} SET work_mem = '64MB'",
+        )
+        assert result.returncode == 0, result.stderr
+        other_engine = create_engine(f"postgresql+psycopg://utop14_app@127.0.0.1:{port}/{other_db}")
+        with other_engine.connect() as conn:
+            assert conn.execute(text("SHOW work_mem")).scalar_one() == "64MB"
+        other_engine.dispose()
+        _assert_verify_fails(port, "database-specific", "utop14_app", other_db)
+        provisioned = _psql_file(port, "scripts/security_event_retention_roles.sql")
+        assert provisioned.returncode == 0, provisioned.stdout + provisioned.stderr
+        with admin.connect() as conn:
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT count(*) FROM pg_db_role_setting s "
+                        "WHERE s.setrole='utop14_app'::regrole "
+                        "AND s.setdatabase=("
+                        "SELECT oid FROM pg_database WHERE datname=:db) "
+                        "AND s.setconfig IS NOT NULL "
+                        "AND array_length(s.setconfig,1) > 0"
+                    ),
+                    {"db": other_db},
+                ).scalar_one()
+                == 0
+            )
+        assert _verify(port).returncode == 0
+
+        result = _psql(
+            port,
+            f"ALTER ROLE utop14_app IN DATABASE {other_db} SET work_mem = '64MB'",
+        )
+        assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "database-specific", "utop14_app", other_db)
+        template_other = _psql_stdin(port, ownership_sql)
+        assert template_other.returncode == 0, template_other.stdout + template_other.stderr
+        assert _verify(port).returncode == 0
+
+        for setting in (
+            "session_preload_libraries = ''",
+            "log_statement = 'all'",
+        ):
+            result = _psql(
+                port,
+                f"ALTER ROLE utop14_app IN DATABASE {other_db} SET {setting}",
+            )
+            assert result.returncode == 0, result.stderr
+            _assert_verify_fails(port, "database-specific", "utop14_app", other_db)
+            provisioned = _psql_file(port, "scripts/security_event_retention_roles.sql")
+            assert provisioned.returncode == 0, provisioned.stdout + provisioned.stderr
+            assert _verify(port).returncode == 0
+
+        for role, setting in (
+            ("utop14_retention_runner", "work_mem = '64MB'"),
+            ("utop14_retention_owner", "work_mem = '64MB'"),
+        ):
+            result = _psql(
+                port,
+                f"ALTER ROLE {role} IN DATABASE {other_db} SET {setting}",
+            )
+            assert result.returncode == 0, result.stderr
+            _assert_verify_fails(port, "database-specific", role, other_db)
+            provisioned = _psql_file(port, "scripts/security_event_retention_roles.sql")
+            assert provisioned.returncode == 0, provisioned.stdout + provisioned.stderr
+            assert _verify(port).returncode == 0
+
+        result = _psql(
+            port,
+            "ALTER ROLE utop14_schema_owner "
+            f"IN DATABASE {other_db} SET session_preload_libraries = ''",
+        )
+        assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "database-specific", "utop14_schema_owner", other_db)
+        schema_failed = _psql_file(port, "scripts/security_event_retention_roles.sql")
+        schema_output = schema_failed.stdout + schema_failed.stderr
+        assert schema_failed.returncode != 0, schema_output
+        assert "reconciliation" in schema_output.lower(), schema_output
+        assert (
+            _psql(
+                port,
+                "ALTER ROLE utop14_schema_owner "
+                f"IN DATABASE {other_db} RESET session_preload_libraries",
+            ).returncode
+            == 0
+        )
+        assert _verify(port).returncode == 0
+
+        result = _psql(
+            port,
+            "ALTER ROLE utop14_schema_owner "
+            f"IN DATABASE {other_db} SET search_path = public, pg_catalog",
+        )
+        assert result.returncode == 0, result.stderr
+        assert _verify(port).returncode == 0
+        assert (
+            _psql(
+                port,
+                f"ALTER ROLE utop14_schema_owner IN DATABASE {other_db} RESET search_path",
+            ).returncode
+            == 0
+        )
+
+        result = _psql(port, f"ALTER DATABASE {other_db} SET work_mem = '64MB'")
+        assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "database-wide", other_db)
+        failed_provision = _psql_file(port, "scripts/security_event_retention_roles.sql")
+        failed_output = failed_provision.stdout + failed_provision.stderr
+        assert failed_provision.returncode != 0, failed_output
+        assert "database-wide" in failed_output, failed_output
+        assert _psql(port, f"ALTER DATABASE {other_db} RESET work_mem").returncode == 0
+        assert _verify(port).returncode == 0
+
+        result = _psql(port, "ALTER ROLE ALL SET work_mem = '64MB'")
+        assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "ALL DATABASES")
+        failed_global = _psql_file(port, "scripts/security_event_retention_roles.sql")
+        global_output = failed_global.stdout + failed_global.stderr
+        assert failed_global.returncode != 0, global_output
+        assert "database-wide" in global_output, global_output
+        assert _psql(port, "ALTER ROLE ALL RESET work_mem").returncode == 0
+        assert _verify(port).returncode == 0
+
+        # Unrelated role and unrelated DBA parameter privileges remain.
+        for statement in (
+            "CREATE ROLE m14318_unrelated LOGIN NOSUPERUSER NOCREATEROLE NOINHERIT",
+            "ALTER ROLE m14318_unrelated SET work_mem = '64MB'",
+            f"ALTER ROLE m14318_unrelated IN DATABASE {other_db} SET work_mem = '32MB'",
+            "CREATE ROLE m14318_param_dba NOLOGIN",
+            "GRANT SET ON PARAMETER log_statement TO m14318_param_dba",
+        ):
+            result = _psql(port, statement)
+            assert result.returncode == 0, result.stderr
+        assert _verify(port).returncode == 0
+        provisioned = _psql_file(port, "scripts/security_event_retention_roles.sql")
+        assert provisioned.returncode == 0, provisioned.stdout + provisioned.stderr
+        assert _verify(port).returncode == 0
+        with admin.connect() as conn:
+            assert (
+                conn.execute(
+                    text("SELECT has_parameter_privilege('m14318_param_dba','log_statement','SET')")
+                ).scalar_one()
+                is True
+            )
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT count(*) FROM pg_db_role_setting s "
+                        "WHERE s.setrole='m14318_unrelated'::regrole "
+                        "AND s.setdatabase=("
+                        "SELECT oid FROM pg_database WHERE datname=:db) "
+                        "AND s.setconfig IS NOT NULL "
+                        "AND array_length(s.setconfig,1) > 0"
+                    ),
+                    {"db": other_db},
+                ).scalar_one()
+                == 1
+            )
+        for statement in (
+            "ALTER ROLE m14318_unrelated RESET ALL",
+            f"ALTER ROLE m14318_unrelated IN DATABASE {other_db} RESET ALL",
+            "REVOKE SET ON PARAMETER log_statement FROM m14318_param_dba",
+            "DROP ROLE m14318_param_dba",
+            "DROP ROLE m14318_unrelated",
+        ):
+            result = _psql(port, statement)
+            assert result.returncode == 0, result.stderr
+
+        # Schema-owner parameter ACLs: direct, ALTER SYSTEM, GRANT OPTION.
+        for statement in (
+            "GRANT SET ON PARAMETER log_statement TO utop14_schema_owner",
+            "GRANT ALTER SYSTEM ON PARAMETER log_statement "
+            "TO utop14_schema_owner WITH GRANT OPTION",
+        ):
+            result = _psql(port, statement)
+            assert result.returncode == 0, result.stderr
+            _assert_verify_fails(port, "parameter", "utop14_schema_owner")
+            provisioned = _psql_file(port, "scripts/security_event_retention_roles.sql")
+            assert provisioned.returncode == 0, provisioned.stdout + provisioned.stderr
+            assert _verify(port).returncode == 0
+
+        # Cluster-level postgresql.auto.conf settings are detected and block
+        # provisioning until the DBA reconciles them.
+        result = _psql(port, "ALTER SYSTEM SET log_statement = 'all'")
+        assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "postgresql.auto.conf", "log_statement")
+        altsys_provision = _psql_file(port, "scripts/security_event_retention_roles.sql")
+        altsys_output = altsys_provision.stdout + altsys_provision.stderr
+        assert altsys_provision.returncode != 0, altsys_output
+        assert "postgresql.auto.conf" in altsys_output, altsys_output
+        assert _psql(port, "ALTER SYSTEM RESET log_statement").returncode == 0
+        assert _verify(port).returncode == 0
+
+        result = _psql(port, "ALTER SYSTEM SET search_path = public, pg_catalog")
+        assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "postgresql.auto.conf", "search_path")
+        assert _psql(port, "ALTER SYSTEM RESET search_path").returncode == 0
+        assert _verify(port).returncode == 0
+
+        # Reliable failure after cross-database resets: the GRANT event
+        # trigger aborts after the reset loop; the transaction must roll back
+        # the cross-database setting, and a rerun must reconcile it.
+        result = _psql(
+            port,
+            f"ALTER ROLE utop14_app IN DATABASE {other_db} SET work_mem = '64MB'",
+        )
+        assert result.returncode == 0, result.stderr
+        for statement in (
+            "CREATE FUNCTION pg_catalog.m14318_fail_on_grant() "
+            "RETURNS event_trigger LANGUAGE plpgsql AS $$ "
+            "BEGIN "
+            "IF EXISTS (SELECT 1 FROM pg_event_trigger_ddl_commands() "
+            "WHERE command_tag = 'GRANT') THEN "
+            "RAISE EXCEPTION 'injected cross-database failure'; "
+            "END IF; END $$",
+            "CREATE EVENT TRIGGER m14318_fail_on_grant ON ddl_command_end "
+            "EXECUTE FUNCTION pg_catalog.m14318_fail_on_grant()",
+        ):
+            result = _psql(port, statement)
+            assert result.returncode == 0, result.stderr
+        cross_failed = _psql_file(port, "scripts/security_event_retention_roles.sql")
+        cross_failed_output = cross_failed.stdout + cross_failed.stderr
+        assert cross_failed.returncode != 0, cross_failed_output
+        with admin.connect() as conn:
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT count(*) FROM pg_db_role_setting s "
+                        "WHERE s.setrole='utop14_app'::regrole "
+                        "AND s.setdatabase=("
+                        "SELECT oid FROM pg_database WHERE datname=:db) "
+                        "AND s.setconfig IS NOT NULL "
+                        "AND array_length(s.setconfig,1) > 0"
+                    ),
+                    {"db": other_db},
+                ).scalar_one()
+                == 1
+            )
+        _assert_verify_fails(port, "database-specific", "utop14_app", other_db)
+        assert _psql(port, "DROP EVENT TRIGGER m14318_fail_on_grant").returncode == 0
+        assert (
+            _psql(
+                port,
+                "DROP FUNCTION pg_catalog.m14318_fail_on_grant()",
+            ).returncode
+            == 0
+        )
+        cross_recovered = _psql_file(port, "scripts/security_event_retention_roles.sql")
+        assert cross_recovered.returncode == 0, cross_recovered.stdout + cross_recovered.stderr
+        with admin.connect() as conn:
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT count(*) FROM pg_db_role_setting s "
+                        "WHERE s.setrole='utop14_app'::regrole "
+                        "AND s.setdatabase=("
+                        "SELECT oid FROM pg_database WHERE datname=:db) "
+                        "AND s.setconfig IS NOT NULL "
+                        "AND array_length(s.setconfig,1) > 0"
+                    ),
+                    {"db": other_db},
+                ).scalar_one()
+                == 0
+            )
+        assert _verify(port).returncode == 0
+
+        assert _psql(port, f"DROP DATABASE {other_db}").returncode == 0
+        assert _verify(port).returncode == 0
 
         # --- M14313-05: hostile schema / caller search_path ----------------
         for statement in (
