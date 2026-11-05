@@ -53,6 +53,15 @@ _PLACEHOLDER_SECURITY_EVENT_HASH_KEYS: Final = frozenset(
         "your-security-event-hash-key",
     }
 )
+_PLACEHOLDER_SECURITY_EVENT_HASH_KEY_PREFIXES: Final = (
+    "change-me",
+    "change_me",
+    "changeme",
+    "replace-me",
+    "replace_me",
+    "unit-test-security-event-hash-key",
+    "your-security-event-hash-key",
+)
 
 
 class ConfigurationError(RuntimeError):
@@ -444,7 +453,10 @@ def _validate_security_event_hash_key(
         raise ConfigurationError(
             f"SECURITY_EVENT_HASH_KEY must be at least {_MIN_SECURITY_EVENT_HASH_KEY_BYTES} bytes."
         )
-    if security_event_hash_key.lower() in _PLACEHOLDER_SECURITY_EVENT_HASH_KEYS:
+    lowered_key = security_event_hash_key.lower()
+    if lowered_key in _PLACEHOLDER_SECURITY_EVENT_HASH_KEYS or lowered_key.startswith(
+        _PLACEHOLDER_SECURITY_EVENT_HASH_KEY_PREFIXES
+    ):
         raise ConfigurationError("SECURITY_EVENT_HASH_KEY must not use a placeholder value.")
     if security_event_hash_key == secret_key:
         raise ConfigurationError("SECURITY_EVENT_HASH_KEY must be distinct from SECRET_KEY.")

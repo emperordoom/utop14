@@ -38,6 +38,7 @@ from app.services.payments import create_payment_attempt
 
 PROJECT_ROOT: Final = Path(__file__).resolve().parents[1]
 MIGRATIONS_DIR: Final = PROJECT_ROOT / "migrations"
+_TEST_SECURITY_EVENT_HASH_KEY: Final = secrets.token_urlsafe(48)
 CONSTRAINED_POOL_OPTIONS: Final = {
     "pool_pre_ping": True,
     "pool_size": 1,
@@ -99,7 +100,7 @@ def _database_app(tmp_path_factory: pytest.TempPathFactory) -> Flask:
         "testing",
         {
             "AVATAR_STORAGE_PATH": str(avatar_storage_path),
-            "SECURITY_EVENT_HASH_KEY": "unit-test-security-event-hash-key-0123456789",
+            "SECURITY_EVENT_HASH_KEY": _TEST_SECURITY_EVENT_HASH_KEY,
         },
     )
     _assert_test_database(application)
@@ -141,7 +142,7 @@ def constrained_pool_app(
         "testing",
         {
             "AVATAR_STORAGE_PATH": str(tmp_path / "avatars"),
-            "SECURITY_EVENT_HASH_KEY": "unit-test-security-event-hash-key-0123456789",
+            "SECURITY_EVENT_HASH_KEY": _TEST_SECURITY_EVENT_HASH_KEY,
             "SQLALCHEMY_ENGINE_OPTIONS": dict(CONSTRAINED_POOL_OPTIONS),
         },
     )
