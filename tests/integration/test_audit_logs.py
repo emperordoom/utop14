@@ -743,8 +743,9 @@ def test_proxy_fix_records_client_ip_when_explicitly_configured(
     make_user,
     login,
     csrf_token,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1)
+    monkeypatch.setattr(app, "wsgi_app", ProxyFix(app.wsgi_app, x_for=1))
     admin = _admin(make_user)
     target = make_user(email="proxy-target@example.com")
     login(admin.email)

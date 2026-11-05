@@ -5,7 +5,18 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from urllib.parse import urlsplit
 
-from flask import abort, flash, g, redirect, render_template, request, send_file, session, url_for
+from flask import (
+    abort,
+    flash,
+    g,
+    make_response,
+    redirect,
+    render_template,
+    request,
+    send_file,
+    session,
+    url_for,
+)
 from flask.typing import ResponseReturnValue
 from flask_login import current_user, login_required, login_user, logout_user
 from sqlalchemy import select
@@ -34,6 +45,13 @@ from app.services.avatars import (
     avatar_file_path,
     remove_avatar,
     save_avatar,
+)
+from app.services.login_abuse import (
+    LoginThrottleDecision,
+    evaluate_login_throttle,
+    record_login_failure,
+    record_throttle_events,
+    reset_login_identifier_bucket,
 )
 from app.services.profiles import (
     ProfileConflictError,
@@ -77,6 +95,24 @@ def _clear_session() -> None:
     """Clear the session and any CSRF token cached on the app context."""
     session.clear()
     g.pop("csrf_token", None)
+
+
+def _record_rate_limit_failure(identifier: str) -> None:
+    """Record failed-login buckets and any new block transitions best-effort."""
+    transitions = record_login_failure(identifier)
+    record_throttle_events(identifier, transitions)
+
+
+def _throttled_login_response(
+    form: LoginForm, decision: LoginThrottleDecision
+) -> ResponseReturnValue:
+    """Render a generic, non-cacheable 429 response for a throttled request."""
+    flash("Too many sign-in attempts. Try again later.", "error")
+    response = make_response(render_template("auth/login.html", form=form), 429)
+    response.headers["Retry-After"] = str(max(1, decision.retry_after_seconds))
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
 
 
 def _render_account(
@@ -157,6 +193,11 @@ def login() -> ResponseReturnValue:
         form.next.data = request.args.get("next", "")
 
     if form.validate_on_submit():
+        identifier = form.email.data
+        throttle = evaluate_login_throttle(identifier)
+        if throttle is not None:
+            return _throttled_login_response(form, throttle)
+
         user = db.session.scalar(select(User).where(User.email == form.email.data))
         if user is None:
             # Verify against a precomputed dummy hash so an unknown account is
@@ -168,6 +209,7 @@ def login() -> ResponseReturnValue:
                 identifier=form.email.data,
                 reason=SECURITY_REASON_UNKNOWN_ACCOUNT,
             )
+            _record_rate_limit_failure(identifier)
             flash("Invalid email or password.", "error")
         elif not user.is_active:
             verify_dummy_password(form.password.data)
@@ -180,6 +222,7 @@ def login() -> ResponseReturnValue:
                 subject_user_id=subject_user_id,
                 subject_email=subject_email,
             )
+            _record_rate_limit_failure(identifier)
             flash("Invalid email or password.", "error")
         elif not user.verify_password(form.password.data):
             subject_user_id = user.id
@@ -191,6 +234,7 @@ def login() -> ResponseReturnValue:
                 subject_user_id=subject_user_id,
                 subject_email=subject_email,
             )
+            _record_rate_limit_failure(identifier)
             flash("Invalid email or password.", "error")
         else:
             user.last_login_at = datetime.now(UTC)
@@ -213,6 +257,7 @@ def login() -> ResponseReturnValue:
                 auth_method=AUTH_METHOD_PASSWORD,
                 remember_requested=bool(form.remember.data),
             )
+            reset_login_identifier_bucket(identifier)
             flash("Signed in. Welcome back.", "success")
             destination = _safe_next_url(form.next.data) or url_for("storefront.home")
             return redirect(destination)

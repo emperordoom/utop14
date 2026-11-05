@@ -30,6 +30,7 @@ from app.services.auth_rate_limit import (
     get_bucket,
     identifier_bucket_key,
     ip_bucket_key,
+    policy_for_scope,
     record_failure,
     reset_identifier_bucket,
 )
@@ -58,6 +59,36 @@ def test_first_failure_and_atomic_increment(app: Flask) -> None:
     assert second.failure_count == 2
     assert second.window_start == NOW
     assert second.blocked_until is None
+
+
+def test_identifier_cooldown_tiers_are_configured(app: Flask) -> None:
+    policy = policy_for_scope(RATE_LIMIT_SCOPE_IDENTIFIER)
+
+    assert policy.cooldown_for(4) == 0
+    assert policy.cooldown_for(5) == 60
+    assert policy.cooldown_for(10) == 300
+    assert policy.cooldown_for(20) == 900
+
+
+def test_identifier_can_reach_third_cooldown_tier(
+    app: Flask,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(app.config, "AUTH_RATE_LIMIT_WINDOW_SECONDS", 100_000)
+    key = identifier_bucket_key(IDENTIFIER)
+    now = NOW
+    cooldowns: list[int] = []
+
+    for _ in range(20):
+        state = record_failure(RATE_LIMIT_SCOPE_IDENTIFIER, key, now=now)
+        if state.just_blocked:
+            cooldowns.append(state.retry_after_seconds(now))
+        if state.blocked_until is not None:
+            now = state.blocked_until + timedelta(seconds=1)
+        else:
+            now += timedelta(seconds=1)
+
+    assert cooldowns == [60] * 5 + [300] * 10 + [900]
 
 
 def test_fixed_window_expiry_resets_counter(app: Flask) -> None:

@@ -140,7 +140,7 @@ environment take precedence. `.env` is ignored by Git.
 | `TEST_SECRET_KEY` | No | Optional test-only secret override |
 | `TRUSTED_PROXY_HOPS` | No | Number of trusted reverse-proxy hops for `X-Forwarded-For`; default `0` |
 | `SECURITY_EVENT_HASH_KEY` | Production | Dedicated HMAC-SHA256 key for authentication identifier hashes; at least 32 bytes, distinct from `SECRET_KEY`; optional in development/testing |
-| `AUTH_RATE_LIMIT_*` | No | PostgreSQL fixed-window rate-limit policy and TTL; defaults documented in `.env.example` and the M14.3.1 section. Login integration is deferred to M14.3.2. |
+| `AUTH_RATE_LIMIT_*` | No | PostgreSQL fixed-window login rate-limit policy and TTL; defaults documented in `.env.example` and the authentication rate-limiting section. |
 
 Startup validation fails with a clear `ConfigurationError` when `SECRET_KEY`
 or `DATABASE_URL` is missing or when a non-Psycopg database URL is supplied.
@@ -498,6 +498,7 @@ Current revision chain in source:
 - `9b2d4e6f8a10` — authentication security events
 - `c4e7a1b9d2f6` — security event request ID index
 - `e1b7c4a9d2f3` — authentication rate-limit buckets
+- `b4d8e2f7a1c9` — login-throttled security event taxonomy
 
 ## Admin audit logging and trusted proxy
 
@@ -660,11 +661,12 @@ The `security_events` table is indexed by request ID for incident correlation.
 A reason-code index is deferred until the M14.2 viewer defines its filters and
 the query pattern is measured.
 
-### Authentication rate-limit foundation (M14.3.1)
+### Authentication rate limiting (M14.3.1/M14.3.2)
 
 M14.3.1 adds a PostgreSQL shared store for fixed-window authentication rate
-limiting. **Login is not wired to this store yet**; activation and response
-behavior belong to M14.3.2. No Redis or new rate-limiting dependency is used.
+limiting. M14.3.2 wires the limiter into form login. Registration, password
+reset and other endpoints are not rate-limited by this milestone. No Redis or
+new rate-limiting dependency is used.
 
 Bucket keys are HMAC-SHA256 values derived from `SECURITY_EVENT_HASH_KEY` with
 the `utop14.auth_rate_limit.v1` domain and a scope-specific input. Raw email
@@ -686,6 +688,22 @@ The counter and window rollover use PostgreSQL
 cooldown is not extended by further failed requests; after the window expires,
 the counter starts at one.
 
+The login flow validates CSRF/form input, derives all three bucket keys, checks
+cooldowns before user lookup, and returns a generic HTTP `429` with
+`Retry-After` when blocked. Password verification is not run for a throttled
+request. The response is non-cacheable and does not reveal whether the account
+exists. A successful login resets the identifier bucket but not the IP bucket.
+A rate-limit store failure is fail-open: authentication continues and a safe
+warning with request ID, scope and exception type is logged. No local fallback
+store or retry loop is used.
+
+A new `auth.login_throttled` security event records meaningful block
+transitions with reason codes `ip_rate_limited`, `identifier_rate_limited` or
+`combined_rate_limited`. Its metadata allowlist is `scope`,
+`retry_after_seconds`, `window_seconds` and `failure_count`. The event is
+written once per new block transition; requests that are already blocked do not
+create repeated events.
+
 Relevant environment variables are documented in `.env.example`. The
 `*_MAX_FAILURES` values must match the final entry in the corresponding
 threshold list. The TTL defaults to 48 hours and must exceed the window plus the
@@ -700,15 +718,16 @@ flask --app wsgi auth-rate-limit cleanup --batch-size 1000
 
 The command deletes only rows whose `updated_at` is older than the cutoff
 (`updated_at < now - AUTH_RATE_LIMIT_BUCKET_TTL_HOURS`). A row exactly at the
-cutoff is retained. There is no scheduler or background worker in M14.3.1;
-deployment must invoke the command through an approved cron/systemd/maintenance
-job. Cleanup never touches `security_events`, `audit_logs`, retention holds or
-retention run logs.
+cutoff is retained. There is no scheduler or background worker; deployment must
+invoke the command through an approved cron/systemd/maintenance job. Cleanup
+never touches `security_events`, `audit_logs`, retention holds or retention run
+logs.
 
 Migration `e1b7c4a9d2f3` is additive. Its downgrade removes the
 `auth_rate_limits` table and all current rate-limit state; it does not modify
-security-event or audit-log history. The table must exist before M14.3.2 uses
-the limiter.
+security-event or audit-log history. Migration `b4d8e2f7a1c9` extends the
+security-event taxonomy for `auth.login_throttled`; downgrade removes those
+allowed values and requires existing throttled events to be archived first.
 
 ### M14.2 admin security-event viewer
 
@@ -740,24 +759,24 @@ is changed by this repository milestone.
    least 32 bytes of UTF-8 key material.
 3. Ensure the key differs from `SECRET_KEY`.
 4. Never reuse the repository test key or any placeholder value.
-5. Apply both migrations from a controlled release job:
-   `9b2d4e6f8a10` and `c4e7a1b9d2f6`.
+5. Apply the security-event and rate-limit migrations from a controlled release
+   job: `9b2d4e6f8a10`, `c4e7a1b9d2f6`, `e1b7c4a9d2f3`, and
+   `b4d8e2f7a1c9`.
 6. The request-ID index migration is non-concurrent. If `security_events`
    already contains production traffic, schedule index creation in a maintenance
    window or use a separately reviewed concurrent-index procedure.
 7. Never downgrade `9b2d4e6f8a10` in production. Its downgrade drops the
    `security_events` table and destroys its history; do not run it without an
    approved backup and explicit authorization.
-8. M14.1 does not complete production security hardening. The following remain
-   deferred: rate limiting and lockout; retention and purge; an admin
-   security-event viewer; remember-cookie restoration and forced
-   session-invalidation events; password reset/recovery event integration; and
-   session anomaly detection.
+8. M14.1 does not complete production security hardening. Login rate limiting
+   is implemented in M14.3.1/M14.3.2; permanent lockout, security-event
+   retention/purge, remember-cookie restoration, password reset/recovery event
+   integration, and session anomaly detection remain deferred.
 
-Password reset, account recovery, rate limiting, session-anomaly detection,
-remember-cookie restoration events, an admin security-event viewer and automatic
-retention purges are not part of M14.1. Retention is permanent until a separately
-approved archival policy exists.
+Password reset, account recovery, permanent lockout, session-anomaly detection,
+remember-cookie restoration events, and automatic retention purges are not part
+of M14.1 or M14.3.2. Retention is permanent until a separately approved
+archival policy exists.
 
 ## Production notes
 
@@ -784,8 +803,9 @@ approved archival policy exists.
    query strings (`request_id`, `identifier_hash`, actor/subject IDs) are not
    recorded in production logs. See the M14.2 viewer privacy note above.
 8. Schedule the bounded authentication rate-limit cleanup command through an
-   approved maintenance job until a scheduler is introduced. M14.3.1 does not
-   activate login throttling; that integration is M14.3.2.
+   approved maintenance job until a scheduler is introduced. Login throttling is
+   active in M14.3.2; deployment must also review rate-limit thresholds and
+   access-log privacy.
 
 ## Milestone 7 scope
 

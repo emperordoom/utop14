@@ -14,14 +14,18 @@ from app.extensions import db
 from app.models.security_event import (
     SECURITY_EVENT_LOGIN_FAILED,
     SECURITY_EVENT_LOGIN_SUCCEEDED,
+    SECURITY_EVENT_LOGIN_THROTTLED,
     SECURITY_EVENT_LOGOUT,
     SECURITY_EVENT_TYPES,
     SECURITY_OUTCOME_FAILURE,
     SECURITY_OUTCOME_SUCCESS,
     SECURITY_OUTCOMES,
     SECURITY_REASON_AUTHENTICATED,
+    SECURITY_REASON_COMBINED_RATE_LIMITED,
+    SECURITY_REASON_IDENTIFIER_RATE_LIMITED,
     SECURITY_REASON_INACTIVE_ACCOUNT,
     SECURITY_REASON_INVALID_PASSWORD,
+    SECURITY_REASON_IP_RATE_LIMITED,
     SECURITY_REASON_UNKNOWN_ACCOUNT,
     SECURITY_REASON_USER_REQUESTED,
     SECURITY_REASONS,
@@ -46,6 +50,7 @@ _MAX_USER_ID: Final = 2_147_483_647
 EVENT_TYPE_CHOICES: Final = (
     (SECURITY_EVENT_LOGIN_SUCCEEDED, "Login succeeded"),
     (SECURITY_EVENT_LOGIN_FAILED, "Login failed"),
+    (SECURITY_EVENT_LOGIN_THROTTLED, "Login throttled"),
     (SECURITY_EVENT_LOGOUT, "Logout"),
 )
 OUTCOME_CHOICES: Final = (
@@ -62,6 +67,14 @@ REASON_GROUPS: Final = (
             (SECURITY_REASON_INVALID_PASSWORD, "Invalid password"),
         ),
     ),
+    (
+        "Login throttled",
+        (
+            (SECURITY_REASON_IP_RATE_LIMITED, "IP rate limited"),
+            (SECURITY_REASON_IDENTIFIER_RATE_LIMITED, "Identifier rate limited"),
+            (SECURITY_REASON_COMBINED_RATE_LIMITED, "Combined rate limited"),
+        ),
+    ),
     ("Logout", ((SECURITY_REASON_USER_REQUESTED, "User requested"),)),
 )
 
@@ -70,6 +83,9 @@ _REASON_EVENT_TYPES: Final = {
     SECURITY_REASON_UNKNOWN_ACCOUNT: SECURITY_EVENT_LOGIN_FAILED,
     SECURITY_REASON_INACTIVE_ACCOUNT: SECURITY_EVENT_LOGIN_FAILED,
     SECURITY_REASON_INVALID_PASSWORD: SECURITY_EVENT_LOGIN_FAILED,
+    SECURITY_REASON_IP_RATE_LIMITED: SECURITY_EVENT_LOGIN_THROTTLED,
+    SECURITY_REASON_IDENTIFIER_RATE_LIMITED: SECURITY_EVENT_LOGIN_THROTTLED,
+    SECURITY_REASON_COMBINED_RATE_LIMITED: SECURITY_EVENT_LOGIN_THROTTLED,
     SECURITY_REASON_USER_REQUESTED: SECURITY_EVENT_LOGOUT,
 }
 
@@ -366,6 +382,11 @@ _AUTH_METHOD_LABELS: Final = {
     AUTH_METHOD_PASSWORD: "Password",
     AUTH_METHOD_REGISTRATION: "Registration",
 }
+_RATE_LIMIT_SCOPE_LABELS: Final = {
+    "ip": "IP",
+    "identifier": "Identifier",
+    "combined": "Combined IP + identifier",
+}
 
 
 def displayable_metadata(
@@ -390,6 +411,20 @@ def displayable_metadata(
         auth_method = metadata.get("auth_method")
         if auth_method == AUTH_METHOD_PASSWORD:
             items.append(("Authentication method", "Password"))
+    elif event_type == SECURITY_EVENT_LOGIN_THROTTLED:
+        scope = metadata.get("scope")
+        if isinstance(scope, str):
+            label = _RATE_LIMIT_SCOPE_LABELS.get(scope)
+            if label is not None:
+                items.append(("Rate-limit scope", label))
+        for key, label in (
+            ("retry_after_seconds", "Retry after (seconds)"),
+            ("window_seconds", "Window (seconds)"),
+            ("failure_count", "Failure count"),
+        ):
+            value = metadata.get(key)
+            if type(value) is int and value >= 0:
+                items.append((label, str(value)))
     return tuple(items)
 
 

@@ -24,11 +24,13 @@ if TYPE_CHECKING:
 
 SECURITY_EVENT_LOGIN_SUCCEEDED: Final = "auth.login_succeeded"
 SECURITY_EVENT_LOGIN_FAILED: Final = "auth.login_failed"
+SECURITY_EVENT_LOGIN_THROTTLED: Final = "auth.login_throttled"
 SECURITY_EVENT_LOGOUT: Final = "auth.logout"
 
 SECURITY_EVENT_TYPES: Final[tuple[str, ...]] = (
     SECURITY_EVENT_LOGIN_SUCCEEDED,
     SECURITY_EVENT_LOGIN_FAILED,
+    SECURITY_EVENT_LOGIN_THROTTLED,
     SECURITY_EVENT_LOGOUT,
 )
 
@@ -44,6 +46,9 @@ SECURITY_REASON_UNKNOWN_ACCOUNT: Final = "unknown_account"
 SECURITY_REASON_INACTIVE_ACCOUNT: Final = "inactive_account"
 SECURITY_REASON_INVALID_PASSWORD: Final = "invalid_password"
 SECURITY_REASON_USER_REQUESTED: Final = "user_requested"
+SECURITY_REASON_IP_RATE_LIMITED: Final = "ip_rate_limited"
+SECURITY_REASON_IDENTIFIER_RATE_LIMITED: Final = "identifier_rate_limited"
+SECURITY_REASON_COMBINED_RATE_LIMITED: Final = "combined_rate_limited"
 
 SECURITY_REASONS: Final[tuple[str, ...]] = (
     SECURITY_REASON_AUTHENTICATED,
@@ -51,6 +56,9 @@ SECURITY_REASONS: Final[tuple[str, ...]] = (
     SECURITY_REASON_INACTIVE_ACCOUNT,
     SECURITY_REASON_INVALID_PASSWORD,
     SECURITY_REASON_USER_REQUESTED,
+    SECURITY_REASON_IP_RATE_LIMITED,
+    SECURITY_REASON_IDENTIFIER_RATE_LIMITED,
+    SECURITY_REASON_COMBINED_RATE_LIMITED,
 )
 
 SECURITY_MAX_USER_AGENT_LENGTH: Final = 512
@@ -74,7 +82,8 @@ class SecurityEvent(Base):
     __tablename__ = "security_events"
     __table_args__ = (
         CheckConstraint(
-            "event_type IN ('auth.login_succeeded', 'auth.login_failed', 'auth.logout')",
+            "event_type IN ('auth.login_succeeded', 'auth.login_failed', "
+            "'auth.login_throttled', 'auth.logout')",
             name="security_event_type_valid",
         ),
         CheckConstraint(
@@ -88,6 +97,10 @@ class SecurityEvent(Base):
             "OR (event_type = 'auth.login_failed' "
             "AND outcome = 'failure' "
             "AND reason_code IN ('unknown_account', 'inactive_account', 'invalid_password')) "
+            "OR (event_type = 'auth.login_throttled' "
+            "AND outcome = 'failure' "
+            "AND reason_code IN ('ip_rate_limited', 'identifier_rate_limited', "
+            "'combined_rate_limited')) "
             "OR (event_type = 'auth.logout' "
             "AND outcome = 'success' "
             "AND reason_code = 'user_requested')",

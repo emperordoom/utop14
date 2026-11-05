@@ -94,6 +94,7 @@ class BucketState:
     window_start: datetime
     failure_count: int
     blocked_until: datetime | None
+    just_blocked: bool = False
 
     def is_blocked(self, now: datetime | None = None) -> bool:
         """Return whether the bucket is currently in cooldown."""
@@ -346,14 +347,17 @@ def record_failure(
             window_start = row.window_start
             failure_count = row.failure_count
             blocked_until = row.blocked_until
+            was_blocked = blocked_until is not None and blocked_until > reference
+            just_blocked = False
 
             # A request that is already blocked never extends its own cooldown.
             # Once an expired cooldown is encountered, a new failure may enter
             # the next configured tier.
-            if blocked_until is None or blocked_until <= reference:
+            if not was_blocked:
                 cooldown = policy.cooldown_for(failure_count)
                 if cooldown > 0:
                     blocked_until = reference + timedelta(seconds=cooldown)
+                    just_blocked = True
                     session.execute(
                         update(AuthRateLimit)
                         .where(
@@ -369,6 +373,7 @@ def record_failure(
                 window_start=_to_utc(window_start) or window_start,
                 failure_count=failure_count,
                 blocked_until=_to_utc(blocked_until),
+                just_blocked=just_blocked,
             )
             session.commit()
             return state
