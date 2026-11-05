@@ -4,13 +4,20 @@ from __future__ import annotations
 
 import click
 from email_validator import EmailNotValidError, validate_email
-from sqlalchemy import select
+from flask import current_app
+from sqlalchemy import create_engine, select
 from sqlalchemy.exc import IntegrityError
 
 from app.catalog.seed import seed_catalog
 from app.extensions import db
 from app.models.user import ROLE_ADMIN, User
 from app.services.auth_rate_limit import RateLimitStoreError, delete_expired_buckets
+from app.services.security_event_retention import (
+    RetentionLocked,
+    RetentionRunError,
+    RetentionValidationError,
+    run_retention,
+)
 
 
 @click.group("catalog")
@@ -108,3 +115,60 @@ def cleanup_rate_limits_command(batch_size: int) -> None:
     except RateLimitStoreError as exc:
         raise click.ClickException("Rate-limit cleanup failed.") from exc
     click.echo(f"Deleted {deleted} expired authentication rate-limit bucket(s).")
+
+
+@click.group("security-event-retention")
+def security_event_retention_cli() -> None:
+    """Security-event retention maintenance commands."""
+
+
+@security_event_retention_cli.command("run")
+@click.option(
+    "--batch-size",
+    type=click.IntRange(1, 5000),
+    default=None,
+    help="Rows per batch; defaults to configured value.",
+)
+@click.option(
+    "--max-batches",
+    type=click.IntRange(1, 100),
+    default=None,
+    help="Maximum batches in this run; defaults to configured value.",
+)
+def run_security_event_retention_command(
+    batch_size: int | None,
+    max_batches: int | None,
+) -> None:
+    """Run bounded security-event retention using the dedicated runner DSN."""
+    if not current_app.config.get("SECURITY_EVENT_RETENTION_ENABLED", True):
+        raise click.ClickException("Security-event retention is disabled.")
+    database_url = str(
+        current_app.config.get("SECURITY_EVENT_RETENTION_DATABASE_URL") or ""
+    ).strip()
+    if not database_url:
+        raise click.ClickException(
+            "SECURITY_EVENT_RETENTION_DATABASE_URL is required for retention runs."
+        )
+
+    engine = create_engine(database_url, pool_pre_ping=True)
+    try:
+        try:
+            summary = run_retention(
+                engine,
+                batch_size=batch_size,
+                max_batches=max_batches,
+            )
+        except RetentionLocked as exc:
+            click.echo("Security-event retention is already running.", err=True)
+            raise click.exceptions.Exit(3) from exc
+        except (RetentionValidationError, RetentionRunError) as exc:
+            raise click.ClickException(str(exc)) from exc
+    finally:
+        engine.dispose()
+
+    click.echo(
+        f"Retention {summary.status}: deleted={summary.deleted_count} "
+        f"batches={summary.batch_count} run_id={summary.run_id}"
+    )
+    if summary.status == "partial":
+        raise click.exceptions.Exit(2)

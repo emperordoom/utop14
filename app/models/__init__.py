@@ -20,6 +20,10 @@ from app.models.product_image import ProductImage
 from app.models.product_review import ProductReview
 from app.models.product_variant import ProductVariant
 from app.models.security_event import SecurityEvent
+from app.models.security_event_retention import (
+    SecurityEventRetentionHold,
+    SecurityEventRetentionRun,
+)
 from app.models.user import User
 
 __all__ = [
@@ -38,5 +42,7 @@ __all__ = [
     "ProductReview",
     "ProductVariant",
     "SecurityEvent",
+    "SecurityEventRetentionHold",
+    "SecurityEventRetentionRun",
     "User",
 ]

@@ -185,6 +185,51 @@ def _rate_limit_settings() -> dict[str, object]:
     }
 
 
+def _retention_settings() -> dict[str, object]:
+    """Return environment-backed security-event retention settings."""
+    return {
+        "SECURITY_EVENT_RETENTION_ENABLED": _env_bool(
+            "SECURITY_EVENT_RETENTION_ENABLED",
+            default=True,
+        ),
+        "SECURITY_EVENT_SUCCESS_RETENTION_DAYS": _env_int(
+            "SECURITY_EVENT_SUCCESS_RETENTION_DAYS",
+            default=90,
+        ),
+        "SECURITY_EVENT_FAILURE_RETENTION_DAYS": _env_int(
+            "SECURITY_EVENT_FAILURE_RETENTION_DAYS",
+            default=180,
+        ),
+        "SECURITY_EVENT_RETENTION_MAX_DAYS": _env_int(
+            "SECURITY_EVENT_RETENTION_MAX_DAYS",
+            default=3650,
+        ),
+        "SECURITY_EVENT_RETENTION_HOLD_MAX_DAYS": _env_int(
+            "SECURITY_EVENT_RETENTION_HOLD_MAX_DAYS",
+            default=365,
+        ),
+        "SECURITY_EVENT_RETENTION_BATCH_SIZE": _env_int(
+            "SECURITY_EVENT_RETENTION_BATCH_SIZE",
+            default=2000,
+        ),
+        "SECURITY_EVENT_RETENTION_MAX_BATCH_SIZE": _env_int(
+            "SECURITY_EVENT_RETENTION_MAX_BATCH_SIZE",
+            default=5000,
+        ),
+        "SECURITY_EVENT_RETENTION_MAX_BATCHES": _env_int(
+            "SECURITY_EVENT_RETENTION_MAX_BATCHES",
+            default=20,
+        ),
+        "SECURITY_EVENT_RETENTION_RUN_LOG_DAYS": _env_int(
+            "SECURITY_EVENT_RETENTION_RUN_LOG_DAYS",
+            default=365,
+        ),
+        "SECURITY_EVENT_RETENTION_DATABASE_URL": _env_str(
+            "SECURITY_EVENT_RETENTION_DATABASE_URL",
+        ),
+    }
+
+
 class BaseConfig:
     """Settings shared by every environment."""
 
@@ -255,6 +300,19 @@ class BaseConfig:
     AUTH_RATE_LIMIT_IP_MAX_COOLDOWN_SECONDS = 1800
     AUTH_RATE_LIMIT_COMBINED_MAX_COOLDOWN_SECONDS = 900
 
+    # Security-event retention.  Admin audit logs M13 are permanent and are
+    # never included in this policy.
+    SECURITY_EVENT_RETENTION_ENABLED = True
+    SECURITY_EVENT_SUCCESS_RETENTION_DAYS = 90
+    SECURITY_EVENT_FAILURE_RETENTION_DAYS = 180
+    SECURITY_EVENT_RETENTION_MAX_DAYS = 3650
+    SECURITY_EVENT_RETENTION_HOLD_MAX_DAYS = 365
+    SECURITY_EVENT_RETENTION_BATCH_SIZE = 2000
+    SECURITY_EVENT_RETENTION_MAX_BATCH_SIZE = 5000
+    SECURITY_EVENT_RETENTION_MAX_BATCHES = 20
+    SECURITY_EVENT_RETENTION_RUN_LOG_DAYS = 365
+    SECURITY_EVENT_RETENTION_DATABASE_URL = ""
+
     @classmethod
     def load(cls) -> dict[str, Any]:
         """Return the environment-dependent settings for this configuration."""
@@ -271,6 +329,7 @@ class BaseConfig:
             "SECURITY_EVENT_HASH_KEY": _env_str("SECURITY_EVENT_HASH_KEY"),
         }
         settings.update(_rate_limit_settings())
+        settings.update(_retention_settings())
         return settings
 
 
@@ -350,6 +409,7 @@ class TestingConfig(BaseConfig):
             "SECURITY_EVENT_HASH_KEY": _env_str("SECURITY_EVENT_HASH_KEY"),
         }
         settings.update(_rate_limit_settings())
+        settings.update(_retention_settings())
         return settings
 
 
@@ -539,6 +599,7 @@ def validate_config(app: Flask) -> None:
         required=environment == "production",
     )
     _validate_rate_limit_config(app)
+    _validate_retention_config(app)
 
     if environment == "production":
         _validate_production(secret_key, app)
@@ -641,6 +702,55 @@ def _validate_rate_limit_config(app: Flask) -> None:
                 "AUTH_RATE_LIMIT_BUCKET_TTL_HOURS must exceed the window plus "
                 f"{label} maximum cooldown."
             )
+
+
+def _validate_retention_config(app: Flask) -> None:
+    """Validate retention policy without exposing credentials."""
+    enabled = app.config.get("SECURITY_EVENT_RETENTION_ENABLED")
+    if type(enabled) is not bool:
+        raise ConfigurationError("SECURITY_EVENT_RETENTION_ENABLED must be a boolean.")
+
+    success_days = app.config.get("SECURITY_EVENT_SUCCESS_RETENTION_DAYS")
+    failure_days = app.config.get("SECURITY_EVENT_FAILURE_RETENTION_DAYS")
+    max_days = app.config.get("SECURITY_EVENT_RETENTION_MAX_DAYS")
+    hold_max_days = app.config.get("SECURITY_EVENT_RETENTION_HOLD_MAX_DAYS")
+    batch_size = app.config.get("SECURITY_EVENT_RETENTION_BATCH_SIZE")
+    max_batch_size = app.config.get("SECURITY_EVENT_RETENTION_MAX_BATCH_SIZE")
+    max_batches = app.config.get("SECURITY_EVENT_RETENTION_MAX_BATCHES")
+    run_log_days = app.config.get("SECURITY_EVENT_RETENTION_RUN_LOG_DAYS")
+
+    if type(success_days) is not int or success_days < 90:
+        raise ConfigurationError("SECURITY_EVENT_SUCCESS_RETENTION_DAYS must be at least 90.")
+    if type(failure_days) is not int or failure_days < 180:
+        raise ConfigurationError("SECURITY_EVENT_FAILURE_RETENTION_DAYS must be at least 180.")
+    if type(max_days) is not int or max_days < max(success_days, failure_days):
+        raise ConfigurationError(
+            "SECURITY_EVENT_RETENTION_MAX_DAYS must cover both retention periods."
+        )
+    if type(hold_max_days) is not int or not 1 <= hold_max_days <= max_days:
+        raise ConfigurationError(
+            "SECURITY_EVENT_RETENTION_HOLD_MAX_DAYS must be between 1 and max days."
+        )
+    if type(batch_size) is not int or batch_size <= 0:
+        raise ConfigurationError("SECURITY_EVENT_RETENTION_BATCH_SIZE must be positive.")
+    if type(max_batch_size) is not int or not 1 <= max_batch_size <= 5000:
+        raise ConfigurationError(
+            "SECURITY_EVENT_RETENTION_MAX_BATCH_SIZE must be between 1 and 5000."
+        )
+    if batch_size > max_batch_size:
+        raise ConfigurationError("SECURITY_EVENT_RETENTION_BATCH_SIZE must not exceed the maximum.")
+    if type(max_batches) is not int or not 1 <= max_batches <= 100:
+        raise ConfigurationError("SECURITY_EVENT_RETENTION_MAX_BATCHES must be between 1 and 100.")
+    if type(run_log_days) is not int or not 1 <= run_log_days <= 3650:
+        raise ConfigurationError(
+            "SECURITY_EVENT_RETENTION_RUN_LOG_DAYS must be between 1 and 3650."
+        )
+
+    retention_url = str(app.config.get("SECURITY_EVENT_RETENTION_DATABASE_URL") or "").strip()
+    if retention_url and not retention_url.startswith(_POSTGRES_PSYCOPG_SCHEME):
+        raise ConfigurationError(
+            "SECURITY_EVENT_RETENTION_DATABASE_URL must use the PostgreSQL Psycopg 3 driver."
+        )
 
 
 def _validate_production(secret_key: str, app: Flask) -> None:

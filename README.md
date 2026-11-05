@@ -141,6 +141,7 @@ environment take precedence. `.env` is ignored by Git.
 | `TRUSTED_PROXY_HOPS` | No | Number of trusted reverse-proxy hops for `X-Forwarded-For`; default `0` |
 | `SECURITY_EVENT_HASH_KEY` | Production | Dedicated HMAC-SHA256 key for authentication identifier hashes; at least 32 bytes, distinct from `SECRET_KEY`; optional in development/testing |
 | `AUTH_RATE_LIMIT_*` | No | PostgreSQL fixed-window login rate-limit policy and TTL; defaults documented in `.env.example` and the authentication rate-limiting section. |
+| `SECURITY_EVENT_RETENTION_*` | No | Per-type security-event retention, holds and bounded cleanup policy; defaults documented in `.env.example` and the retention section. |
 
 Startup validation fails with a clear `ConfigurationError` when `SECRET_KEY`
 or `DATABASE_URL` is missing or when a non-Psycopg database URL is supplied.
@@ -499,6 +500,7 @@ Current revision chain in source:
 - `c4e7a1b9d2f6` — security event request ID index
 - `e1b7c4a9d2f3` — authentication rate-limit buckets
 - `b4d8e2f7a1c9` — login-throttled security event taxonomy
+- `d7c1a9e4b2f8` — security-event retention holds, run log and function
 
 ## Admin audit logging and trusted proxy
 
@@ -729,6 +731,85 @@ security-event or audit-log history. Migration `b4d8e2f7a1c9` extends the
 security-event taxonomy for `auth.login_throttled`; downgrade removes those
 allowed values and requires existing throttled events to be archived first.
 
+### Security-event retention (M14.3.3)
+
+Retention applies only to the authentication `security_events` table. Admin
+`audit_logs` M13 remain permanent and are never purged by this job. The default
+policy is:
+
+| Event type | Retention |
+| --- | --- |
+| `auth.login_succeeded` | 90 days |
+| `auth.logout` | 90 days |
+| `auth.login_failed` | 180 days |
+| `auth.login_throttled` | 180 days |
+
+Retention uses UTC `created_at`, a fixed cutoff for one run, bounded batches,
+and an advisory lock. Event types outside this policy are never deleted.
+
+Investigative holds live in `security_event_retention_holds`. At most one hold
+row exists per event; an active hold (`expires_at > now()`) prevents deletion.
+Expired holds may be replaced. Hold creation takes a per-event advisory lock
+that the retention function uses, so a successful hold and a concurrent cleanup
+cannot delete the event. Holds and run-log rows are separate from
+`security_events` and are not deleted by retention.
+
+Retention runs are recorded in `security_event_retention_runs` with non-PII
+operational fields: run id, batch index, scope, cutoff, deleted count, status,
+error code, and timestamps. Run logs are retained for one year by default; their
+cleanup is a separate operational decision.
+
+The cleanup entry point is a `SECURITY DEFINER` function,
+`public.prune_security_events`, owned by `utop14_retention_owner`. It locks
+`search_path`, validates scope/cutoff/batch limits, excludes active holds, and
+deletes only rows older than the policy cutoff. The append-only trigger permits
+DELETE only when `current_user` is that owner. Application and runner roles
+cannot DELETE/UPDATE/TRUNCATE `security_events`. Role creation is deliberately
+outside migrations; see `scripts/security_event_retention_roles.sql` and verify
+with `scripts/security_event_retention_verify.sql`.
+
+The runner DSN is supplied through
+`SECURITY_EVENT_RETENTION_DATABASE_URL`, ideally from a secret manager. The
+manual command is:
+
+```bash
+flask --app wsgi security-event-retention run \
+  --batch-size 2000 --max-batches 20
+```
+
+Exit status: `0` success, `2` partial (batch budget reached), `3` advisory lock
+already held, `1` validation/store failure. There is no scheduler or background
+worker. Production must invoke the command from an approved cron/systemd timer
+using a non-login application account and a separately protected runner
+credential; never put the database password on the command line.
+
+Operational monitoring should track deleted rows, duration, success/partial/
+failure status, oldest event age against each cutoff, hold count, table size,
+dead tuples/index bloat, and consecutive failures. Alert on two consecutive
+failures, oldest event age beyond cutoff + 7 days, or repeated partial runs.
+
+Recommended deployment invocation:
+
+- Run as a dedicated unprivileged OS service account, not the web process user.
+- Load the runner DSN from a root-owned, mode-0600 environment file or secret
+  manager; never place it in the command line, shell history, or application
+  logs.
+- Use a systemd timer or cron entry that invokes
+  `flask --app wsgi security-event-retention run`.
+- Capture stdout/stderr to the selected operational log or journald. The
+  command prints only run_id, status, batch count and deleted count.
+- Alert after two consecutive non-zero exits, a persistent partial status, or
+  an oldest-event age beyond the relevant cutoff plus 7 days.
+- A partial run is safe to rerun: the next invocation uses a new fixed cutoff
+  and deletes the remaining eligible rows. A failed batch is rolled back and is
+  followed by a failed run-log row; do not treat it as success.
+- Manual execution must use the same runner credential and environment-loading
+  procedure.
+
+Superusers and sufficiently privileged table owners remain outside the
+database-level retention boundary. This is not absolute immutability.
+
+
 ### M14.2 admin security-event viewer
 
 The admin viewer is read-only and restricted to the `admin` role. The list page
@@ -760,8 +841,8 @@ is changed by this repository milestone.
 3. Ensure the key differs from `SECRET_KEY`.
 4. Never reuse the repository test key or any placeholder value.
 5. Apply the security-event and rate-limit migrations from a controlled release
-   job: `9b2d4e6f8a10`, `c4e7a1b9d2f6`, `e1b7c4a9d2f3`, and
-   `b4d8e2f7a1c9`.
+   job: `9b2d4e6f8a10`, `c4e7a1b9d2f6`, `e1b7c4a9d2f3`,
+   `b4d8e2f7a1c9`, and `d7c1a9e4b2f8`.
 6. The request-ID index migration is non-concurrent. If `security_events`
    already contains production traffic, schedule index creation in a maintenance
    window or use a separately reviewed concurrent-index procedure.
@@ -769,14 +850,14 @@ is changed by this repository milestone.
    `security_events` table and destroys its history; do not run it without an
    approved backup and explicit authorization.
 8. M14.1 does not complete production security hardening. Login rate limiting
-   is implemented in M14.3.1/M14.3.2; permanent lockout, security-event
-   retention/purge, remember-cookie restoration, password reset/recovery event
-   integration, and session anomaly detection remain deferred.
+   is implemented in M14.3.1/M14.3.2; security-event retention is implemented in
+   M14.3.3. Permanent lockout, remember-cookie restoration, password reset/
+   recovery event integration, and session anomaly detection remain deferred.
 
 Password reset, account recovery, permanent lockout, session-anomaly detection,
-remember-cookie restoration events, and automatic retention purges are not part
-of M14.1 or M14.3.2. Retention is permanent until a separately approved
-archival policy exists.
+remember-cookie restoration events, and automatic scheduler-driven retention
+are not part of M14.1 or M14.3.2. M14.3.3 provides manual/bounded retention for
+`security_events`; M13 `audit_logs` remain permanent.
 
 ## Production notes
 
@@ -806,6 +887,11 @@ archival policy exists.
    approved maintenance job until a scheduler is introduced. Login throttling is
    active in M14.3.2; deployment must also review rate-limit thresholds and
    access-log privacy.
+9. Provision the dedicated retention roles from
+   `scripts/security_event_retention_roles.sql` with a superuser, verify with
+   `scripts/security_event_retention_verify.sql`, then schedule
+   `security-event-retention run` using a protected runner DSN. Never run role
+   provisioning from the application or a production migration.
 
 ## Milestone 7 scope
 

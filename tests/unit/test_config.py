@@ -374,3 +374,58 @@ def test_rate_limit_policy_can_be_overridden_from_environment(
     assert app.config["AUTH_RATE_LIMIT_IDENTIFIER_THRESHOLDS"] == (4, 8, 12)
     assert app.config["AUTH_RATE_LIMIT_IDENTIFIER_COOLDOWNS"] == (30, 120, 600)
     assert app.config["AUTH_RATE_LIMIT_IDENTIFIER_MAX_COOLDOWN_SECONDS"] == 600
+
+
+def test_security_event_retention_defaults_are_loaded() -> None:
+    app = create_app(
+        "testing",
+        {"SECURITY_EVENT_HASH_KEY": VALID_SECURITY_EVENT_HASH_KEY},
+    )
+
+    assert app.config["SECURITY_EVENT_RETENTION_ENABLED"] is True
+    assert app.config["SECURITY_EVENT_SUCCESS_RETENTION_DAYS"] == 90
+    assert app.config["SECURITY_EVENT_FAILURE_RETENTION_DAYS"] == 180
+    assert app.config["SECURITY_EVENT_RETENTION_HOLD_MAX_DAYS"] == 365
+    assert app.config["SECURITY_EVENT_RETENTION_BATCH_SIZE"] == 2000
+    assert app.config["SECURITY_EVENT_RETENTION_MAX_BATCH_SIZE"] == 5000
+    assert app.config["SECURITY_EVENT_RETENTION_MAX_BATCHES"] == 20
+    assert app.config["SECURITY_EVENT_RETENTION_RUN_LOG_DAYS"] == 365
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "message"),
+    [
+        ("SECURITY_EVENT_SUCCESS_RETENTION_DAYS", 89, "SUCCESS_RETENTION"),
+        ("SECURITY_EVENT_FAILURE_RETENTION_DAYS", 179, "FAILURE_RETENTION"),
+        ("SECURITY_EVENT_RETENTION_MAX_DAYS", 100, "MAX_DAYS"),
+        ("SECURITY_EVENT_RETENTION_HOLD_MAX_DAYS", 0, "HOLD_MAX_DAYS"),
+        ("SECURITY_EVENT_RETENTION_BATCH_SIZE", 5001, "BATCH_SIZE"),
+        ("SECURITY_EVENT_RETENTION_MAX_BATCH_SIZE", 0, "MAX_BATCH_SIZE"),
+        ("SECURITY_EVENT_RETENTION_MAX_BATCHES", 101, "MAX_BATCHES"),
+        ("SECURITY_EVENT_RETENTION_RUN_LOG_DAYS", 0, "RUN_LOG_DAYS"),
+    ],
+)
+def test_invalid_security_event_retention_config_is_rejected(
+    key: str,
+    value: int,
+    message: str,
+) -> None:
+    with pytest.raises(ConfigurationError, match=message):
+        create_app(
+            "testing",
+            {
+                "SECURITY_EVENT_HASH_KEY": VALID_SECURITY_EVENT_HASH_KEY,
+                key: value,
+            },
+        )
+
+
+def test_invalid_retention_database_url_is_rejected() -> None:
+    with pytest.raises(ConfigurationError, match="SECURITY_EVENT_RETENTION_DATABASE_URL"):
+        create_app(
+            "testing",
+            {
+                "SECURITY_EVENT_HASH_KEY": VALID_SECURITY_EVENT_HASH_KEY,
+                "SECURITY_EVENT_RETENTION_DATABASE_URL": "sqlite:///tmp/retention.db",
+            },
+        )
