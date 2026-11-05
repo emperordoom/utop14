@@ -77,31 +77,31 @@ DECLARE
     fn text;
     v_extra text[];
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '<schema_owner>') THEN
+    IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = '<schema_owner>') THEN
         RAISE EXCEPTION 'FAIL: schema owner <schema_owner> does not exist';
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'utop14_app') THEN
+    IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'utop14_app') THEN
         RAISE EXCEPTION 'FAIL: utop14_app does not exist; create the application login role first';
     END IF;
 
-    IF NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'plpgsql') THEN
+    IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_extension WHERE extname = 'plpgsql') THEN
         RAISE EXCEPTION 'FAIL: required extension plpgsql is missing';
     END IF;
-    SELECT array_agg(extname ORDER BY extname) INTO v_extra
-    FROM pg_extension WHERE NOT (extname = ANY (expected_extensions));
+    SELECT pg_catalog.array_agg(extname ORDER BY extname) INTO v_extra
+    FROM pg_catalog.pg_extension WHERE NOT (extname = ANY (expected_extensions));
     IF v_extra IS NOT NULL THEN
         RAISE EXCEPTION
             'FAIL: uninventoried extensions %; review them and update this template',
             v_extra;
     END IF;
 
-    SELECT array_agg(n.nspname ORDER BY n.nspname) INTO v_extra
-    FROM pg_namespace n
+    SELECT pg_catalog.array_agg(n.nspname ORDER BY n.nspname) INTO v_extra
+    FROM pg_catalog.pg_namespace n
     WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
       AND n.nspname NOT LIKE 'pg\_%' ESCAPE '\'
       AND NOT EXISTS (
-          SELECT 1 FROM pg_depend d
-          WHERE d.classid = 'pg_namespace'::regclass
+          SELECT 1 FROM pg_catalog.pg_depend d
+          WHERE d.classid = 'pg_catalog.pg_namespace'::regclass
             AND d.objid = n.oid
             AND d.deptype = 'e'
       )
@@ -112,22 +112,22 @@ BEGIN
             v_extra;
     END IF;
 
-    SELECT array_agg(format('%I.%I', n.nspname, t.typname) ORDER BY 1) INTO v_extra
-    FROM pg_type t
-    JOIN pg_namespace n ON n.oid = t.typnamespace
+    SELECT pg_catalog.array_agg(pg_catalog.format('%I.%I', n.nspname, t.typname) ORDER BY 1) INTO v_extra
+    FROM pg_catalog.pg_type t
+    JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
     WHERE n.nspname = ANY (expected_schemas)
       AND t.typtype IN ('b', 'c', 'd', 'e', 'r', 'm')
       AND NOT (t.typtype = 'b' AND t.typelem <> 0 AND t.typlen = -1)
       AND NOT (
           t.typtype = 'c'
           AND EXISTS (
-              SELECT 1 FROM pg_class c
+              SELECT 1 FROM pg_catalog.pg_class c
               WHERE c.oid = t.typrelid AND c.relkind IN ('r', 'p', 'f')
           )
       )
       AND NOT EXISTS (
-          SELECT 1 FROM pg_depend d
-          WHERE d.classid = 'pg_type'::regclass
+          SELECT 1 FROM pg_catalog.pg_depend d
+          WHERE d.classid = 'pg_catalog.pg_type'::regclass
             AND d.objid = t.oid
             AND d.deptype = 'e'
       );
@@ -137,21 +137,21 @@ BEGIN
             v_extra;
     END IF;
 
-    SELECT array_agg(t) INTO v_extra
-    FROM unnest(expected_tables) t
-    WHERE to_regclass(format('public.%I', t)) IS NULL;
+    SELECT pg_catalog.array_agg(t) INTO v_extra
+    FROM pg_catalog.unnest(expected_tables) t
+    WHERE pg_catalog.to_regclass(pg_catalog.format('public.%I', t)) IS NULL;
     IF v_extra IS NOT NULL THEN
         RAISE EXCEPTION 'FAIL: missing expected tables %', v_extra;
     END IF;
-    SELECT array_agg(c.relname ORDER BY c.relname) INTO v_extra
-    FROM pg_class c
-    JOIN pg_namespace n ON n.oid = c.relnamespace
+    SELECT pg_catalog.array_agg(c.relname ORDER BY c.relname) INTO v_extra
+    FROM pg_catalog.pg_class c
+    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
     WHERE n.nspname = 'public'
       AND c.relkind IN ('r', 'p', 'f')
       AND NOT (c.relname = ANY (expected_tables))
       AND NOT EXISTS (
-          SELECT 1 FROM pg_depend d
-          WHERE d.classid = 'pg_class'::regclass
+          SELECT 1 FROM pg_catalog.pg_depend d
+          WHERE d.classid = 'pg_catalog.pg_class'::regclass
             AND d.objid = c.oid
             AND d.deptype = 'e'
       );
@@ -159,21 +159,21 @@ BEGIN
         RAISE EXCEPTION 'FAIL: uninventoried tables %', v_extra;
     END IF;
 
-    SELECT array_agg(s) INTO v_extra
-    FROM unnest(expected_sequences) s
-    WHERE to_regclass(format('public.%I', s)) IS NULL;
+    SELECT pg_catalog.array_agg(s) INTO v_extra
+    FROM pg_catalog.unnest(expected_sequences) s
+    WHERE pg_catalog.to_regclass(pg_catalog.format('public.%I', s)) IS NULL;
     IF v_extra IS NOT NULL THEN
         RAISE EXCEPTION 'FAIL: missing expected sequences %', v_extra;
     END IF;
-    SELECT array_agg(c.relname ORDER BY c.relname) INTO v_extra
-    FROM pg_class c
-    JOIN pg_namespace n ON n.oid = c.relnamespace
+    SELECT pg_catalog.array_agg(c.relname ORDER BY c.relname) INTO v_extra
+    FROM pg_catalog.pg_class c
+    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
     WHERE n.nspname = 'public'
       AND c.relkind = 'S'
       AND NOT (c.relname = ANY (expected_sequences))
       AND NOT EXISTS (
-          SELECT 1 FROM pg_depend d
-          WHERE d.classid = 'pg_class'::regclass
+          SELECT 1 FROM pg_catalog.pg_depend d
+          WHERE d.classid = 'pg_catalog.pg_class'::regclass
             AND d.objid = c.oid
             AND d.deptype = 'e'
       );
@@ -182,21 +182,21 @@ BEGIN
     END IF;
 
     FOREACH fn IN ARRAY expected_functions LOOP
-        IF to_regprocedure(fn) IS NULL THEN
+        IF pg_catalog.to_regprocedure(fn) IS NULL THEN
             RAISE EXCEPTION 'FAIL: required function % is missing', fn;
         END IF;
     END LOOP;
-    SELECT array_agg(p.proname ORDER BY p.proname) INTO v_extra
-    FROM pg_proc p
-    JOIN pg_namespace n ON n.oid = p.pronamespace
+    SELECT pg_catalog.array_agg(p.proname ORDER BY p.proname) INTO v_extra
+    FROM pg_catalog.pg_proc p
+    JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
     WHERE n.nspname = 'public'
       AND NOT (p.proname = ANY (ARRAY[
           'audit_logs_reject_mutation', 'prune_security_events',
           'security_event_retention_holds_lock', 'security_events_reject_mutation'
       ]))
       AND NOT EXISTS (
-          SELECT 1 FROM pg_depend d
-          WHERE d.classid = 'pg_proc'::regclass
+          SELECT 1 FROM pg_catalog.pg_depend d
+          WHERE d.classid = 'pg_catalog.pg_proc'::regclass
             AND d.objid = p.oid
             AND d.deptype = 'e'
       );
@@ -204,21 +204,21 @@ BEGIN
         RAISE EXCEPTION 'FAIL: uninventoried functions/procedures %', v_extra;
     END IF;
 
-    SELECT array_agg(t) INTO v_extra
-    FROM unnest(expected_triggers) t
+    SELECT pg_catalog.array_agg(t) INTO v_extra
+    FROM pg_catalog.unnest(expected_triggers) t
     WHERE NOT EXISTS (
-        SELECT 1 FROM pg_trigger tr
-        JOIN pg_class c ON c.oid = tr.tgrelid
-        JOIN pg_namespace n ON n.oid = c.relnamespace
+        SELECT 1 FROM pg_catalog.pg_trigger tr
+        JOIN pg_catalog.pg_class c ON c.oid = tr.tgrelid
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
         WHERE n.nspname = 'public' AND tr.tgname = t AND NOT tr.tgisinternal
     );
     IF v_extra IS NOT NULL THEN
         RAISE EXCEPTION 'FAIL: missing expected triggers %', v_extra;
     END IF;
-    SELECT array_agg(tr.tgname ORDER BY tr.tgname) INTO v_extra
-    FROM pg_trigger tr
-    JOIN pg_class c ON c.oid = tr.tgrelid
-    JOIN pg_namespace n ON n.oid = c.relnamespace
+    SELECT pg_catalog.array_agg(tr.tgname ORDER BY tr.tgname) INTO v_extra
+    FROM pg_catalog.pg_trigger tr
+    JOIN pg_catalog.pg_class c ON c.oid = tr.tgrelid
+    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
     WHERE n.nspname = 'public'
       AND c.relname = ANY (expected_tables)
       AND NOT tr.tgisinternal
@@ -228,13 +228,13 @@ BEGIN
     END IF;
 
     IF EXISTS (
-        SELECT 1 FROM pg_class c
-        JOIN pg_namespace n ON n.oid = c.relnamespace
+        SELECT 1 FROM pg_catalog.pg_class c
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
         WHERE n.nspname = 'public'
           AND c.relkind IN ('v', 'm')
           AND NOT EXISTS (
-              SELECT 1 FROM pg_depend d
-              WHERE d.classid = 'pg_class'::regclass
+              SELECT 1 FROM pg_catalog.pg_depend d
+              WHERE d.classid = 'pg_catalog.pg_class'::regclass
                 AND d.objid = c.oid
                 AND d.deptype = 'e'
           )
@@ -244,9 +244,9 @@ BEGIN
 
     -- The app must never already own an application object.
     FOR r IN
-        SELECT c.relname, pg_get_userbyid(c.relowner) AS owner
-        FROM pg_class c
-        JOIN pg_namespace n ON n.oid = c.relnamespace
+        SELECT c.relname, pg_catalog.pg_get_userbyid(c.relowner) AS owner
+        FROM pg_catalog.pg_class c
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
         WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'f', 'S')
     LOOP
         IF r.owner = 'utop14_app' THEN
@@ -319,7 +319,7 @@ BEGIN
     LOOP
         IF r.rolconfig IS NOT NULL THEN
             FOREACH v_entry IN ARRAY r.rolconfig LOOP
-                IF replace(replace(v_entry, ' ', ''), '"', '')
+                IF pg_catalog.replace(pg_catalog.replace(v_entry, ' ', ''), '"', '')
                    NOT LIKE 'search_path=%' THEN
                     RAISE EXCEPTION
                         'FAIL: schema owner has unapproved role-level GUC %; DBA reconciliation required',
@@ -339,7 +339,7 @@ BEGIN
     LOOP
         IF r.setconfig IS NOT NULL THEN
             FOREACH v_entry IN ARRAY r.setconfig LOOP
-                IF replace(replace(v_entry, ' ', ''), '"', '')
+                IF pg_catalog.replace(pg_catalog.replace(v_entry, ' ', ''), '"', '')
                    NOT LIKE 'search_path=%' THEN
                     RAISE EXCEPTION
                         'FAIL: schema owner has unapproved database-specific GUC % in %; DBA reconciliation required',
@@ -442,16 +442,16 @@ BEGIN
     FOREACH r IN ARRAY ARRAY['utop14_app',
                              'utop14_retention_owner',
                              'utop14_retention_runner'] LOOP
-        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
-            EXECUTE format(
+        IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = r) THEN
+            EXECUTE pg_catalog.format(
                 'REVOKE CREATE ON DATABASE %I FROM %I',
-                current_database(), r
+                pg_catalog.current_database(), r
             );
         END IF;
     END LOOP;
-    EXECUTE format(
+    EXECUTE pg_catalog.format(
         'REVOKE CREATE ON DATABASE %I FROM PUBLIC',
-        current_database()
+        pg_catalog.current_database()
     );
 END $$;
 
@@ -469,13 +469,13 @@ BEGIN
         IF EXISTS (
             SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = r
         ) THEN
-            EXECUTE format('ALTER ROLE %I RESET ALL', r);
+            EXECUTE pg_catalog.format('ALTER ROLE %I RESET ALL', r);
             FOR db IN
                 SELECT datname
                 FROM pg_catalog.pg_database
                 WHERE NOT datistemplate
             LOOP
-                EXECUTE format(
+                EXECUTE pg_catalog.format(
                     'ALTER ROLE %I IN DATABASE %I RESET ALL',
                     r, db
                 );
@@ -511,12 +511,12 @@ BEGIN
            )
     LOOP
         IF r.grantee = 0 THEN
-            EXECUTE format(
+            EXECUTE pg_catalog.format(
                 'REVOKE %s ON PARAMETER %I FROM PUBLIC CASCADE',
                 r.privilege_type, r.parname
             );
         ELSE
-            EXECUTE format(
+            EXECUTE pg_catalog.format(
                 'REVOKE %s ON PARAMETER %I FROM %I CASCADE',
                 r.privilege_type, r.parname, r.grantee_name
             );
@@ -537,31 +537,31 @@ DECLARE
     r record;
     v_owner text;
 BEGIN
-    SELECT pg_get_userbyid(datdba) INTO v_owner
-    FROM pg_database WHERE datname = current_database();
+    SELECT pg_catalog.pg_get_userbyid(datdba) INTO v_owner
+    FROM pg_catalog.pg_database WHERE datname = pg_catalog.current_database();
     IF v_owner IS DISTINCT FROM '<schema_owner>' THEN
         RAISE EXCEPTION 'FAIL: postcondition database owner=%', v_owner;
     END IF;
     SELECT nspowner::regrole::text INTO v_owner
-    FROM pg_namespace WHERE nspname = 'public';
+    FROM pg_catalog.pg_namespace WHERE nspname = 'public';
     IF v_owner IS DISTINCT FROM '<schema_owner>' THEN
         RAISE EXCEPTION 'FAIL: postcondition schema public owner=%', v_owner;
     END IF;
 
-    IF has_database_privilege('utop14_app', current_database(), 'CREATE') THEN
+    IF pg_catalog.has_database_privilege('utop14_app', pg_catalog.current_database(), 'CREATE') THEN
         RAISE EXCEPTION 'FAIL: postcondition utop14_app has database CREATE';
     END IF;
-    IF to_regrole('utop14_retention_owner') IS NOT NULL THEN
-        IF has_database_privilege(
-            'utop14_retention_owner', current_database(), 'CREATE'
+    IF pg_catalog.to_regrole('utop14_retention_owner') IS NOT NULL THEN
+        IF pg_catalog.has_database_privilege(
+            'utop14_retention_owner', pg_catalog.current_database(), 'CREATE'
         ) THEN
             RAISE EXCEPTION
                 'FAIL: postcondition utop14_retention_owner has database CREATE';
         END IF;
     END IF;
-    IF to_regrole('utop14_retention_runner') IS NOT NULL THEN
-        IF has_database_privilege(
-            'utop14_retention_runner', current_database(), 'CREATE'
+    IF pg_catalog.to_regrole('utop14_retention_runner') IS NOT NULL THEN
+        IF pg_catalog.has_database_privilege(
+            'utop14_retention_runner', pg_catalog.current_database(), 'CREATE'
         ) THEN
             RAISE EXCEPTION
                 'FAIL: postcondition utop14_retention_runner has database CREATE';
@@ -569,11 +569,11 @@ BEGIN
     END IF;
     IF EXISTS (
         SELECT 1
-        FROM pg_database d
-        CROSS JOIN LATERAL aclexplode(
-            COALESCE(d.datacl, acldefault('d', d.datdba))
+        FROM pg_catalog.pg_database d
+        CROSS JOIN LATERAL pg_catalog.aclexplode(
+            COALESCE(d.datacl, pg_catalog.acldefault('d', d.datdba))
         ) a
-        WHERE d.datname = current_database()
+        WHERE d.datname = pg_catalog.current_database()
           AND a.grantee = 0
           AND a.privilege_type = 'CREATE'
     ) THEN
@@ -581,13 +581,13 @@ BEGIN
     END IF;
 
     FOR r IN
-        SELECT c.relname, pg_get_userbyid(c.relowner) AS owner
-        FROM pg_class c
-        JOIN pg_namespace n ON n.oid = c.relnamespace
+        SELECT c.relname, pg_catalog.pg_get_userbyid(c.relowner) AS owner
+        FROM pg_catalog.pg_class c
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
         WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'f', 'S')
           AND NOT EXISTS (
-              SELECT 1 FROM pg_depend d
-              WHERE d.classid = 'pg_class'::regclass
+              SELECT 1 FROM pg_catalog.pg_depend d
+              WHERE d.classid = 'pg_catalog.pg_class'::regclass
                 AND d.objid = c.oid
                 AND d.deptype = 'e'
           )
@@ -598,13 +598,13 @@ BEGIN
     END LOOP;
 
     FOR r IN
-        SELECT p.proname, pg_get_userbyid(p.proowner) AS owner
-        FROM pg_proc p
-        JOIN pg_namespace n ON n.oid = p.pronamespace
+        SELECT p.proname, pg_catalog.pg_get_userbyid(p.proowner) AS owner
+        FROM pg_catalog.pg_proc p
+        JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
         WHERE n.nspname = 'public'
           AND NOT EXISTS (
-              SELECT 1 FROM pg_depend d
-              WHERE d.classid = 'pg_proc'::regclass
+              SELECT 1 FROM pg_catalog.pg_depend d
+              WHERE d.classid = 'pg_catalog.pg_proc'::regclass
                 AND d.objid = p.oid
                 AND d.deptype = 'e'
           )
@@ -659,7 +659,7 @@ BEGIN
            FROM pg_catalog.pg_roles,
                 LATERAL pg_catalog.unnest(rolconfig) c
            WHERE rolname = 'utop14_app'
-             AND replace(replace(c, ' ', ''), '"', '')
+             AND pg_catalog.replace(pg_catalog.replace(c, ' ', ''), '"', '')
                    = 'search_path=public,pg_catalog'
        ) THEN
         RAISE EXCEPTION
@@ -691,7 +691,7 @@ BEGIN
     LOOP
         IF r.rolconfig IS NOT NULL THEN
             FOREACH v_entry IN ARRAY r.rolconfig LOOP
-                IF replace(replace(v_entry, ' ', ''), '"', '')
+                IF pg_catalog.replace(pg_catalog.replace(v_entry, ' ', ''), '"', '')
                    NOT LIKE 'search_path=%' THEN
                     RAISE EXCEPTION
                         'FAIL: postcondition schema owner unapproved role-level GUC %',
@@ -705,7 +705,7 @@ BEGIN
         SELECT pg_catalog.pg_get_userbyid(s.setrole) AS role_name,
                coalesce(
                    d.datname,
-                   format('UNKNOWN DATABASE (oid=%s)', s.setdatabase)
+                   pg_catalog.format('UNKNOWN DATABASE (oid=%s)', s.setdatabase)
                ) AS dbname,
                s.setconfig
         FROM pg_catalog.pg_db_role_setting s
@@ -728,7 +728,7 @@ BEGIN
     FOR r IN
         SELECT coalesce(
                    d.datname,
-                   format('UNKNOWN DATABASE (oid=%s)', s.setdatabase)
+                   pg_catalog.format('UNKNOWN DATABASE (oid=%s)', s.setdatabase)
                ) AS dbname,
                s.setconfig
         FROM pg_catalog.pg_db_role_setting s
@@ -738,7 +738,7 @@ BEGIN
     LOOP
         IF r.setconfig IS NOT NULL THEN
             FOREACH v_entry IN ARRAY r.setconfig LOOP
-                IF replace(replace(v_entry, ' ', ''), '"', '')
+                IF pg_catalog.replace(pg_catalog.replace(v_entry, ' ', ''), '"', '')
                    NOT LIKE 'search_path=%' THEN
                     RAISE EXCEPTION
                         'FAIL: postcondition schema owner unapproved database-specific GUC % in %',

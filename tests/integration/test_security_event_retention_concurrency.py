@@ -258,6 +258,82 @@ def _verify_with_temp_shadow(port: int) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _verify_with_catalog_shadow(
+    port: int,
+    shadow_sql: str,
+) -> subprocess.CompletedProcess[str]:
+    """Run the complete verifier in a session pre-loaded with hostile objects.
+
+    The setup statement executes before the verifier in the same psql session,
+    so any temporary relation it creates shadows the same-named catalog for
+    every unqualified reference.
+    """
+    return subprocess.run(
+        [
+            "psql",
+            "-h",
+            "127.0.0.1",
+            "-p",
+            str(port),
+            "-U",
+            "postgres",
+            "-d",
+            DB,
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-c",
+            shadow_sql,
+            "-f",
+            "scripts/security_event_retention_verify.sql",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _psql_file_with_shadow(
+    port: int,
+    shadow_sql: str,
+    path: str,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "psql",
+            "-h",
+            "127.0.0.1",
+            "-p",
+            str(port),
+            "-U",
+            "postgres",
+            "-d",
+            DB,
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-c",
+            shadow_sql,
+            "-f",
+            path,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _psql_stdin_with_shadow(
+    port: int,
+    shadow_sql: str,
+    sql: str,
+) -> subprocess.CompletedProcess[str]:
+    """Run ``sql`` in a session pre-loaded with ``shadow_sql``.
+
+    psql ignores stdin when ``-c`` is given, so the setup and the script are
+    concatenated into one stdin stream to keep them in the same session.
+    """
+    return _psql_stdin(port, shadow_sql + "\n" + sql)
+
+
 def _psql_file(port: int, path: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
@@ -2493,6 +2569,225 @@ def test_disposable_ownership_and_hold_concurrency() -> None:
         assert _verify(port).returncode == 0
 
         assert _psql(port, f"DROP DATABASE {other_db}").returncode == 0
+        assert _verify(port).returncode == 0
+
+        # --- M14319-01 / M14.3.20: complete-verifier catalog shadowing ------
+        #
+        # A temporary relation shadows the same-named catalog for every
+        # unqualified reference (pg_temp is searched before pg_catalog for
+        # relation names), so a verifier that resolves pg_class, pg_attribute,
+        # pg_proc, ... through the search path can be made to return a false
+        # PASS.  Each case below must still fail closed.
+        ok_marker = "ALL REQUIRED APPLICATION AND RETENTION PRIVILEGE CHECKS PASSED"
+        result = _psql(
+            port,
+            "GRANT SELECT ON public.audit_logs TO utop14_app WITH GRANT OPTION",
+        )
+        assert result.returncode == 0, result.stderr
+        _assert_verify_fails(port, "GRANT OPTION")
+
+        # The prohibited capability is real: with GRANT OPTION the app can
+        # widen audit-log visibility, which is exactly what the verifier must
+        # never bless.
+        with app_engine.begin() as conn:
+            conn.execute(text("GRANT SELECT ON public.audit_logs TO PUBLIC"))
+        # The grant was made by utop14_app as grantor; a superuser REVOKE acts
+        # as the object owner and would not remove it, so revoke as the grantor.
+        with app_engine.begin() as conn:
+            conn.execute(text("REVOKE SELECT ON public.audit_logs FROM PUBLIC"))
+
+        catalog_shadows = {
+            "pg_class": (
+                "CREATE TEMP TABLE pg_class "
+                "AS SELECT * FROM pg_catalog.pg_class; "
+                "UPDATE pg_class SET relacl = NULL "
+                "WHERE relname = 'audit_logs';"
+            ),
+            "pg_attribute": (
+                "CREATE TEMP TABLE pg_attribute "
+                "(attrelid, attname, atttypid, attacl, attnum, attisdropped) "
+                "AS SELECT attrelid, attname, atttypid, attacl, attnum, "
+                "attisdropped FROM pg_catalog.pg_attribute; "
+                "DELETE FROM pg_attribute "
+                "WHERE attrelid = 'public.audit_logs'::regclass;"
+            ),
+            "pg_proc": (
+                "CREATE TEMP TABLE pg_proc "
+                "AS SELECT * FROM pg_catalog.pg_proc; "
+                "DELETE FROM pg_proc;"
+            ),
+            "pg_namespace": (
+                "CREATE TEMP TABLE pg_namespace "
+                "AS SELECT * FROM pg_catalog.pg_namespace; "
+                "DELETE FROM pg_namespace WHERE nspname = 'public';"
+            ),
+            "pg_depend": (
+                "CREATE TEMP TABLE pg_depend "
+                "AS SELECT * FROM pg_catalog.pg_depend; "
+                "DELETE FROM pg_depend;"
+            ),
+            "pg_type": (
+                "CREATE TEMP TABLE pg_type "
+                "AS SELECT * FROM pg_catalog.pg_type; "
+                "DELETE FROM pg_type;"
+            ),
+            "pg_trigger": (
+                "CREATE TEMP TABLE pg_trigger "
+                "AS SELECT * FROM pg_catalog.pg_trigger; "
+                "DELETE FROM pg_trigger;"
+            ),
+            "pg_extension": (
+                "CREATE TEMP TABLE pg_extension "
+                "AS SELECT * FROM pg_catalog.pg_extension; "
+                "DELETE FROM pg_extension;"
+            ),
+        }
+        for catalog, shadow_sql in catalog_shadows.items():
+            shadowed = _verify_with_catalog_shadow(port, shadow_sql)
+            shadowed_output = shadowed.stdout + shadowed.stderr
+            assert shadowed.returncode != 0, (
+                f"{catalog} shadow produced a false PASS:\n{shadowed_output}"
+            )
+            assert ok_marker not in shadowed_output, (
+                f"{catalog} shadow produced a false PASS:\n{shadowed_output}"
+            )
+            if catalog in ("pg_class", "pg_attribute"):
+                assert "GRANT OPTION" in shadowed_output, (
+                    f"{catalog} shadow hid the table ACL finding:\n{shadowed_output}"
+                )
+
+        # Temporary functions named like catalog helpers are not implicitly
+        # searched (pg_temp is never searched for function names), but a
+        # falsely-resolving helper must not be able to suppress the finding.
+        temp_function_shadow = (
+            "CREATE FUNCTION pg_temp.has_table_privilege("
+            "name, text, text) RETURNS boolean LANGUAGE sql "
+            "AS 'SELECT false'; "
+            "CREATE FUNCTION pg_temp.has_column_privilege("
+            "name, text, text, text) RETURNS boolean LANGUAGE sql "
+            "AS 'SELECT false'; "
+            "CREATE FUNCTION pg_temp.has_schema_privilege("
+            "name, text, text) RETURNS boolean LANGUAGE sql "
+            "AS 'SELECT false';"
+        )
+        temp_functions = _verify_with_catalog_shadow(port, temp_function_shadow)
+        temp_function_output = temp_functions.stdout + temp_functions.stderr
+        assert temp_functions.returncode != 0, temp_function_output
+        assert ok_marker not in temp_function_output, temp_function_output
+        assert "GRANT OPTION" in temp_function_output, temp_function_output
+
+        # Hostile ordinary schema: the verifier sets its own search_path, so
+        # shadow objects in a caller-controlled schema cannot be reached.
+        hostile_setup = (
+            "CREATE SCHEMA m14320_hostile; "
+            "CREATE TABLE m14320_hostile.pg_class "
+            "(oid oid, relname text, relacl aclitem[]); "
+            "CREATE TABLE m14320_hostile.pg_attribute "
+            "(attrelid oid, attname text, attacl aclitem[]); "
+            "CREATE TABLE m14320_hostile.pg_namespace "
+            "(oid oid, nspname text); "
+            "CREATE FUNCTION m14320_hostile.has_table_privilege("
+            "name, text, text) RETURNS boolean LANGUAGE sql "
+            "AS 'SELECT false';"
+        )
+        assert _psql(port, hostile_setup).returncode == 0
+        hostile = _verify_with_search_path(port, "m14320_hostile,public")
+        hostile_output = hostile.stdout + hostile.stderr
+        assert hostile.returncode != 0, hostile_output
+        assert ok_marker not in hostile_output, hostile_output
+        assert _psql(port, "DROP SCHEMA m14320_hostile CASCADE").returncode == 0
+        _assert_verify_fails(port, "GRANT OPTION")
+
+        def grant_option_count() -> int:
+            with admin.connect() as conn:
+                return conn.execute(
+                    text(
+                        "SELECT count(*) FROM pg_catalog.pg_class c "
+                        "CROSS JOIN LATERAL pg_catalog.aclexplode("
+                        "COALESCE(c.relacl, "
+                        "pg_catalog.acldefault('r', c.relowner))) a "
+                        "WHERE c.oid = 'public.audit_logs'::regclass "
+                        "AND a.grantee = 'utop14_app'::regrole "
+                        "AND a.is_grantable"
+                    )
+                ).scalar_one()
+
+        # Provisioning under a shadowed catalog must resolve the real catalog
+        # and remove the GRANT OPTION, not skip the table and report success.
+        for catalog in ("pg_class", "pg_depend", "pg_proc"):
+            result = _psql(
+                port,
+                "GRANT SELECT ON public.audit_logs TO utop14_app WITH GRANT OPTION",
+            )
+            assert result.returncode == 0, result.stderr
+            provisioned_shadow = _psql_file_with_shadow(
+                port,
+                catalog_shadows[catalog],
+                "scripts/security_event_retention_roles.sql",
+            )
+            provisioned_output = provisioned_shadow.stdout + provisioned_shadow.stderr
+            assert provisioned_shadow.returncode == 0, (
+                f"{catalog} shadow broke provisioning:\n{provisioned_output}"
+            )
+            assert grant_option_count() == 0, catalog
+            assert _verify(port).returncode == 0, catalog
+
+        # Ownership template under a shadowed pg_class must still see the real
+        # object inventory.  The template deliberately fails closed when the
+        # app already owns an object, so the shadow must not turn that into a
+        # silent success that skips the transfer.
+        assert _psql(port, "GRANT CREATE ON SCHEMA public TO utop14_app").returncode == 0
+        assert (
+            _psql(
+                port,
+                "ALTER TABLE public.audit_logs OWNER TO utop14_app",
+            ).returncode
+            == 0
+        )
+        assert _psql(port, "REVOKE CREATE ON SCHEMA public FROM utop14_app").returncode == 0
+        assert _verify(port).returncode != 0
+        for catalog in ("pg_class", "pg_proc", "pg_depend", "pg_namespace"):
+            template_shadow = _psql_stdin_with_shadow(port, catalog_shadows[catalog], ownership_sql)
+            template_output = template_shadow.stdout + template_shadow.stderr
+            assert template_shadow.returncode != 0, (
+                f"{catalog} shadow made the template silently succeed:\n{template_output}"
+            )
+            if catalog == "pg_class":
+                # The shadow must not hide the stray app-owned table.
+                assert "already owns" in template_output, template_output
+            with admin.connect() as conn:
+                shadowed_owner = conn.execute(
+                    text(
+                        "SELECT pg_catalog.pg_get_userbyid(relowner) "
+                        "FROM pg_catalog.pg_class "
+                        "WHERE oid = 'public.audit_logs'::regclass"
+                    )
+                ).scalar_one()
+            assert shadowed_owner == "utop14_app", (catalog, shadowed_owner)
+        unshadowed_template = _psql_stdin(port, ownership_sql)
+        unshadowed_output = unshadowed_template.stdout + unshadowed_template.stderr
+        assert unshadowed_template.returncode != 0, unshadowed_output
+        assert "already owns" in unshadowed_output, unshadowed_output
+        with admin.connect() as conn:
+            audit_owner = conn.execute(
+                text(
+                    "SELECT pg_catalog.pg_get_userbyid(relowner) "
+                    "FROM pg_catalog.pg_class "
+                    "WHERE oid = 'public.audit_logs'::regclass"
+                )
+            ).scalar_one()
+        assert audit_owner == "utop14_app", audit_owner
+        assert (
+            _psql(
+                port,
+                "ALTER TABLE public.audit_logs OWNER TO utop14_schema_owner",
+            ).returncode
+            == 0
+        )
+        # Changing ownership drops the new owner's explicit ACL entries, so
+        # re-apply the canonical privilege matrix through provisioning.
+        reprovisioned = _psql_file(port, "scripts/security_event_retention_roles.sql")
+        assert reprovisioned.returncode == 0, reprovisioned.stdout + reprovisioned.stderr
         assert _verify(port).returncode == 0
 
         # --- M14313-05: hostile schema / caller search_path ----------------

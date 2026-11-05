@@ -900,8 +900,9 @@ M14.3.18 closes the cross-database and cluster-level gaps:
   fails verification and provisioning, including pending-restart entries.
   DBA-managed sources (`postgresql.conf`, command line, environment) are
   reported as INFO for operational review; they are not app-writable.
-- New parameter/GUC catalog references are `pg_catalog`-qualified; hostile
-  schema and session-local temp-object shadowing tests are included.
+- The parameter/GUC catalog references introduced in M14.3.18 are
+  `pg_catalog`-qualified. M14.3.19 later showed that the rest of the verifier
+  still relied on the search path; see M14.3.20 below.
 - Provisioning failure injection covers a failure after cross-database resets:
   the transaction rolls back the cross-database settings, and a rerun
   reconciles them. PostgreSQL does not emit event-trigger DDL commands for
@@ -910,6 +911,64 @@ M14.3.18 closes the cross-database and cluster-level gaps:
 - PostgreSQL 16 was not available for runtime testing; catalog/function/syntax
   compatibility is statically inspected only. Only PostgreSQL 18.6 was
   runtime-tested.
+
+M14.3.20 completes catalog qualification for the verifier, provisioner, and
+ownership template:
+
+- **M14.3.19 finding — temporary-catalog shadowing produced a false PASS.**
+  The scripts resolved several `pg_catalog` relations through the search path
+  (for example `FROM pg_class c`) and used unqualified `regclass` literals such
+  as `'pg_class'::regclass`. For relation and type names PostgreSQL searches
+  `pg_temp` **before** `pg_catalog`, so a session-local
+  `CREATE TEMP TABLE pg_class AS SELECT * FROM pg_catalog.pg_class` shadows the
+  catalog regardless of the `search_path` setting. A verifier session pre-loaded
+  that way returned exit 0 (false PASS) while `utop14_app` held `GRANT OPTION`
+  on `public.audit_logs`, and the app could then run
+  `GRANT SELECT ON public.audit_logs TO PUBLIC`.
+- `SET search_path = pg_catalog, public` does **not** prevent this, because the
+  temporary schema precedes `pg_catalog` for relation and type name lookup.
+  Function and operator lookup behave differently: `pg_temp` is only searched
+  for those when it is listed explicitly, so a temporary function cannot shadow
+  an unqualified ACL helper under the enforced path. Qualification is still
+  required, because the path is an explicit setting rather than a guarantee.
+- **Remediation.** Every system catalog relation, ACL/privilege helper, and
+  `regclass` literal in `scripts/security_event_retention_verify.sql`,
+  `scripts/security_event_retention_roles.sql`, and
+  `scripts/security_event_retention_ownership_template.sql` now carries an
+  explicit `pg_catalog.` qualifier, for example `FROM pg_catalog.pg_class c`,
+  `pg_catalog.has_table_privilege(...)`, and
+  `'pg_catalog.pg_class'::regclass`. Catalog object identity can no longer change
+  because a temporary or ordinary-schema object of the same name exists. SQL
+  keywords that look like functions (`COALESCE`, `CURRENT_USER`, `SESSION_USER`,
+  `CASE`, ...) are parsed as keywords, are not name-resolved, and cannot be
+  qualified.
+- **Regression coverage.** The disposable privilege test loads temporary copies
+  of `pg_class`, `pg_attribute`, `pg_proc`, `pg_namespace`, `pg_depend`,
+  `pg_type`, `pg_trigger`, and `pg_extension` into the verifier's own session
+  while `utop14_app` holds `GRANT OPTION`, and requires every run to exit
+  non-zero without the success marker. It also runs provisioning and the
+  ownership template with a shadowed `pg_class` and requires correct behavior
+  against the real catalog or a fail-closed abort, plus hostile ordinary-schema
+  and temporary-function variants.
+- **Schema-owner `search_path` rationale.** `utop14_schema_owner` may keep
+  `search_path` at role level and per database because it is the trusted DDL
+  boundary: it already owns the application schema and objects, so a
+  `search_path` value adds no capability. It remains default-deny for parameter
+  ACLs (`SET`/`ALTER SYSTEM`, PUBLIC, GRANT OPTION), so it cannot use
+  `search_path` to change session or cluster configuration, and provisioning
+  does not reset the schema-owner `search_path`.
+- **Cluster-wide provisioning scope.** Provisioning resets managed-role
+  role-level settings and every managed-role/database-specific setting in
+  **every non-template database in the cluster**, including databases that
+  belong to unrelated applications. The resets are catalog updates on
+  `pg_catalog.pg_db_role_setting` (no connection to the target database is
+  opened), so the blast radius is cluster-wide catalog state, not application
+  data. Run provisioning only against the cluster that hosts UTOP14, during a
+  change window, and expect `utop14_*` role settings to be removed from other
+  databases on that cluster.
+- Catalog qualification and its regression tests are local implementation
+  results. They are not independent security approval; a separate review is
+  still required before merge or production use.
 
 #### Cluster-level GUC audit procedure
 

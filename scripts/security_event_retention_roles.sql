@@ -65,14 +65,14 @@ DO $$
 DECLARE
     r record;
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'utop14_schema_owner') THEN
+    IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'utop14_schema_owner') THEN
         RAISE EXCEPTION 'FAIL: utop14_schema_owner is missing; run the ownership template prerequisites first';
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'utop14_app') THEN
+    IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'utop14_app') THEN
         RAISE EXCEPTION 'FAIL: utop14_app is missing; create the application login role first';
     END IF;
     IF NOT EXISTS (
-        SELECT 1 FROM pg_roles WHERE rolname = 'utop14_app' AND rolcanlogin
+        SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'utop14_app' AND rolcanlogin
     ) THEN
         RAISE EXCEPTION 'FAIL: utop14_app must be a LOGIN role';
     END IF;
@@ -80,7 +80,7 @@ BEGIN
     FOR r IN
         SELECT rolname, rolsuper, rolcreatedb, rolcreaterole,
                rolreplication, rolbypassrls
-        FROM pg_roles
+        FROM pg_catalog.pg_roles
         WHERE rolname IN ('utop14_app',
                           'utop14_retention_owner',
                           'utop14_retention_runner')
@@ -89,7 +89,7 @@ BEGIN
            OR r.rolreplication OR r.rolbypassrls THEN
             RAISE EXCEPTION
                 'FAIL: role % has incompatible privileged attributes; run ALTER ROLE % NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS, then rerun this script',
-                r.rolname, quote_ident(r.rolname);
+                r.rolname, pg_catalog.quote_ident(r.rolname);
         END IF;
     END LOOP;
 END $$;
@@ -103,8 +103,8 @@ DECLARE
     v_head text;
     v_rows integer;
 BEGIN
-    SELECT pg_get_userbyid(datdba) INTO v_owner
-    FROM pg_database WHERE datname = current_database();
+    SELECT pg_catalog.pg_get_userbyid(datdba) INTO v_owner
+    FROM pg_catalog.pg_database WHERE datname = pg_catalog.current_database();
     IF v_owner IS DISTINCT FROM 'utop14_schema_owner' THEN
         RAISE EXCEPTION
             'FAIL: database owner=% (expected utop14_schema_owner); apply the ownership template first',
@@ -112,17 +112,17 @@ BEGIN
     END IF;
 
     SELECT nspowner::regrole::text INTO v_owner
-    FROM pg_namespace WHERE nspname = 'public';
+    FROM pg_catalog.pg_namespace WHERE nspname = 'public';
     IF v_owner IS DISTINCT FROM 'utop14_schema_owner' THEN
         RAISE EXCEPTION
             'FAIL: schema public owner=% (expected utop14_schema_owner); apply the ownership template first',
             v_owner;
     END IF;
 
-    IF to_regclass('public.alembic_version') IS NULL THEN
+    IF pg_catalog.to_regclass('public.alembic_version') IS NULL THEN
         RAISE EXCEPTION 'FAIL: public.alembic_version is missing; run migrations first';
     END IF;
-    SELECT count(*), max(version_num) INTO v_rows, v_head
+    SELECT pg_catalog.count(*), pg_catalog.max(version_num) INTO v_rows, v_head
     FROM public.alembic_version;
     IF v_rows <> 1 THEN
         RAISE EXCEPTION 'FAIL: alembic_version must contain exactly one row (found %)', v_rows;
@@ -174,24 +174,24 @@ DECLARE
     v_extra text[];
     v_owner text;
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'plpgsql') THEN
+    IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_extension WHERE extname = 'plpgsql') THEN
         RAISE EXCEPTION 'FAIL: required extension plpgsql is missing';
     END IF;
-    SELECT array_agg(extname ORDER BY extname) INTO v_extra
-    FROM pg_extension WHERE NOT (extname = ANY (expected_extensions));
+    SELECT pg_catalog.array_agg(extname ORDER BY extname) INTO v_extra
+    FROM pg_catalog.pg_extension WHERE NOT (extname = ANY (expected_extensions));
     IF v_extra IS NOT NULL THEN
         RAISE EXCEPTION
             'FAIL: uninventoried extensions %; review them and update the provisioning allowlist',
             v_extra;
     END IF;
 
-    SELECT array_agg(n.nspname ORDER BY n.nspname) INTO v_extra
-    FROM pg_namespace n
+    SELECT pg_catalog.array_agg(n.nspname ORDER BY n.nspname) INTO v_extra
+    FROM pg_catalog.pg_namespace n
     WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
       AND n.nspname NOT LIKE 'pg\_%' ESCAPE '\'
       AND NOT EXISTS (
-          SELECT 1 FROM pg_depend d
-          WHERE d.classid = 'pg_namespace'::regclass
+          SELECT 1 FROM pg_catalog.pg_depend d
+          WHERE d.classid = 'pg_catalog.pg_namespace'::regclass
             AND d.objid = n.oid
             AND d.deptype = 'e'
       )
@@ -202,22 +202,22 @@ BEGIN
             v_extra;
     END IF;
 
-    SELECT array_agg(format('%I.%I', n.nspname, t.typname) ORDER BY 1) INTO v_extra
-    FROM pg_type t
-    JOIN pg_namespace n ON n.oid = t.typnamespace
+    SELECT pg_catalog.array_agg(pg_catalog.format('%I.%I', n.nspname, t.typname) ORDER BY 1) INTO v_extra
+    FROM pg_catalog.pg_type t
+    JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
     WHERE n.nspname = ANY (expected_schemas)
       AND t.typtype IN ('b', 'c', 'd', 'e', 'r', 'm')
       AND NOT (t.typtype = 'b' AND t.typelem <> 0 AND t.typlen = -1)
       AND NOT (
           t.typtype = 'c'
           AND EXISTS (
-              SELECT 1 FROM pg_class c
+              SELECT 1 FROM pg_catalog.pg_class c
               WHERE c.oid = t.typrelid AND c.relkind IN ('r', 'p', 'f')
           )
       )
       AND NOT EXISTS (
-          SELECT 1 FROM pg_depend d
-          WHERE d.classid = 'pg_type'::regclass
+          SELECT 1 FROM pg_catalog.pg_depend d
+          WHERE d.classid = 'pg_catalog.pg_type'::regclass
             AND d.objid = t.oid
             AND d.deptype = 'e'
       );
@@ -227,29 +227,29 @@ BEGIN
             v_extra;
     END IF;
 
-    SELECT array_agg(t) INTO v_extra
-    FROM unnest(expected_tables) t
-    WHERE to_regclass(format('public.%I', t)) IS NULL;
+    SELECT pg_catalog.array_agg(t) INTO v_extra
+    FROM pg_catalog.unnest(expected_tables) t
+    WHERE pg_catalog.to_regclass(pg_catalog.format('public.%I', t)) IS NULL;
     IF v_extra IS NOT NULL THEN
         RAISE EXCEPTION 'FAIL: missing expected tables %', v_extra;
     END IF;
-    SELECT array_agg(s) INTO v_extra
-    FROM unnest(expected_sequences) s
-    WHERE to_regclass(format('public.%I', s)) IS NULL;
+    SELECT pg_catalog.array_agg(s) INTO v_extra
+    FROM pg_catalog.unnest(expected_sequences) s
+    WHERE pg_catalog.to_regclass(pg_catalog.format('public.%I', s)) IS NULL;
     IF v_extra IS NOT NULL THEN
         RAISE EXCEPTION 'FAIL: missing expected sequences %', v_extra;
     END IF;
 
     FOR r IN
-        SELECT c.relname, c.relkind, pg_get_userbyid(c.relowner) AS owner,
+        SELECT c.relname, c.relkind, pg_catalog.pg_get_userbyid(c.relowner) AS owner,
                EXISTS (
-                   SELECT 1 FROM pg_depend d
-                   WHERE d.classid = 'pg_class'::regclass
+                   SELECT 1 FROM pg_catalog.pg_depend d
+                   WHERE d.classid = 'pg_catalog.pg_class'::regclass
                      AND d.objid = c.oid
                      AND d.deptype = 'e'
                ) AS extension_owned
-        FROM pg_class c
-        JOIN pg_namespace n ON n.oid = c.relnamespace
+        FROM pg_catalog.pg_class c
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
         WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'f', 'S')
     LOOP
         CONTINUE WHEN r.extension_owned;
@@ -267,21 +267,21 @@ BEGIN
     END LOOP;
 
     FOREACH fn IN ARRAY expected_functions LOOP
-        IF to_regprocedure(fn) IS NULL THEN
+        IF pg_catalog.to_regprocedure(fn) IS NULL THEN
             RAISE EXCEPTION 'FAIL: required function % is missing; run migrations first', fn;
         END IF;
     END LOOP;
-    SELECT array_agg(p.proname ORDER BY p.proname) INTO v_extra
-    FROM pg_proc p
-    JOIN pg_namespace n ON n.oid = p.pronamespace
+    SELECT pg_catalog.array_agg(p.proname ORDER BY p.proname) INTO v_extra
+    FROM pg_catalog.pg_proc p
+    JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
     WHERE n.nspname = 'public'
       AND NOT (p.proname = ANY (ARRAY[
           'audit_logs_reject_mutation', 'prune_security_events',
           'security_event_retention_holds_lock', 'security_events_reject_mutation'
       ]))
       AND NOT EXISTS (
-          SELECT 1 FROM pg_depend d
-          WHERE d.classid = 'pg_proc'::regclass
+          SELECT 1 FROM pg_catalog.pg_depend d
+          WHERE d.classid = 'pg_catalog.pg_proc'::regclass
             AND d.objid = p.oid
             AND d.deptype = 'e'
       );
@@ -290,13 +290,13 @@ BEGIN
     END IF;
 
     FOR r IN
-        SELECT p.proname, pg_get_userbyid(p.proowner) AS owner
-        FROM pg_proc p
-        JOIN pg_namespace n ON n.oid = p.pronamespace
+        SELECT p.proname, pg_catalog.pg_get_userbyid(p.proowner) AS owner
+        FROM pg_catalog.pg_proc p
+        JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
         WHERE n.nspname = 'public'
           AND NOT EXISTS (
-              SELECT 1 FROM pg_depend d
-              WHERE d.classid = 'pg_proc'::regclass
+              SELECT 1 FROM pg_catalog.pg_depend d
+              WHERE d.classid = 'pg_catalog.pg_proc'::regclass
                 AND d.objid = p.oid
                 AND d.deptype = 'e'
           )
@@ -312,21 +312,21 @@ BEGIN
         END IF;
     END LOOP;
 
-    SELECT array_agg(t) INTO v_extra
-    FROM unnest(expected_triggers) t
+    SELECT pg_catalog.array_agg(t) INTO v_extra
+    FROM pg_catalog.unnest(expected_triggers) t
     WHERE NOT EXISTS (
-        SELECT 1 FROM pg_trigger tr
-        JOIN pg_class c ON c.oid = tr.tgrelid
-        JOIN pg_namespace n ON n.oid = c.relnamespace
+        SELECT 1 FROM pg_catalog.pg_trigger tr
+        JOIN pg_catalog.pg_class c ON c.oid = tr.tgrelid
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
         WHERE n.nspname = 'public' AND tr.tgname = t AND NOT tr.tgisinternal
     );
     IF v_extra IS NOT NULL THEN
         RAISE EXCEPTION 'FAIL: missing expected triggers %', v_extra;
     END IF;
-    SELECT array_agg(tr.tgname ORDER BY tr.tgname) INTO v_extra
-    FROM pg_trigger tr
-    JOIN pg_class c ON c.oid = tr.tgrelid
-    JOIN pg_namespace n ON n.oid = c.relnamespace
+    SELECT pg_catalog.array_agg(tr.tgname ORDER BY tr.tgname) INTO v_extra
+    FROM pg_catalog.pg_trigger tr
+    JOIN pg_catalog.pg_class c ON c.oid = tr.tgrelid
+    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
     WHERE n.nspname = 'public'
       AND c.relname = ANY (expected_tables)
       AND NOT tr.tgisinternal
@@ -336,13 +336,13 @@ BEGIN
     END IF;
 
     IF EXISTS (
-        SELECT 1 FROM pg_class c
-        JOIN pg_namespace n ON n.oid = c.relnamespace
+        SELECT 1 FROM pg_catalog.pg_class c
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
         WHERE n.nspname = 'public'
           AND c.relkind IN ('v', 'm')
           AND NOT EXISTS (
-              SELECT 1 FROM pg_depend d
-              WHERE d.classid = 'pg_class'::regclass
+              SELECT 1 FROM pg_catalog.pg_depend d
+              WHERE d.classid = 'pg_catalog.pg_class'::regclass
                 AND d.objid = c.oid
                 AND d.deptype = 'e'
           )
@@ -350,8 +350,8 @@ BEGIN
         RAISE EXCEPTION 'FAIL: unexpected view/materialized view; update the provisioning inventory';
     END IF;
 
-    SELECT pg_get_userbyid(datdba) INTO v_owner
-    FROM pg_database WHERE datname = current_database();
+    SELECT pg_catalog.pg_get_userbyid(datdba) INTO v_owner
+    FROM pg_catalog.pg_database WHERE datname = pg_catalog.current_database();
     IF v_owner IS DISTINCT FROM 'utop14_schema_owner' THEN
         RAISE EXCEPTION 'FAIL: database owner=%', v_owner;
     END IF;
@@ -369,14 +369,14 @@ BEGIN
                CASE WHEN a.grantee = 0 THEN 'PUBLIC'
                     ELSE a.grantee::regrole::text END AS grantee,
                a.privilege_type
-        FROM pg_default_acl d,
-             aclexplode(d.defaclacl) a
-        WHERE d.defaclrole IN (to_regrole('utop14_app'),
-                               to_regrole('utop14_retention_owner'),
-                               to_regrole('utop14_retention_runner'))
-           OR a.grantee IN (to_regrole('utop14_app'),
-                            to_regrole('utop14_retention_owner'),
-                            to_regrole('utop14_retention_runner'))
+        FROM pg_catalog.pg_default_acl d,
+             pg_catalog.aclexplode(d.defaclacl) a
+        WHERE d.defaclrole IN (pg_catalog.to_regrole('utop14_app'),
+                               pg_catalog.to_regrole('utop14_retention_owner'),
+                               pg_catalog.to_regrole('utop14_retention_runner'))
+           OR a.grantee IN (pg_catalog.to_regrole('utop14_app'),
+                            pg_catalog.to_regrole('utop14_retention_owner'),
+                            pg_catalog.to_regrole('utop14_retention_runner'))
            OR a.grantee = 0
     LOOP
         RAISE EXCEPTION
@@ -399,9 +399,9 @@ DECLARE
     v_reverse_role text;
 BEGIN
     SELECT r.rolname, g.rolname INTO v_reverse_member, v_reverse_role
-    FROM pg_auth_members m
-    JOIN pg_roles r ON r.oid = m.member
-    JOIN pg_roles g ON g.oid = m.roleid
+    FROM pg_catalog.pg_auth_members m
+    JOIN pg_catalog.pg_roles r ON r.oid = m.member
+    JOIN pg_catalog.pg_roles g ON g.oid = m.roleid
     WHERE g.rolname IN ('utop14_app',
                         'utop14_retention_owner',
                         'utop14_retention_runner')
@@ -413,7 +413,7 @@ BEGIN
         RAISE EXCEPTION
             'FAIL: reverse membership % -> % lets another role assume a managed role; run REVOKE % FROM % manually, document the dependency, then rerun',
             v_reverse_member, v_reverse_role,
-            quote_ident(v_reverse_role), quote_ident(v_reverse_member);
+            pg_catalog.quote_ident(v_reverse_role), pg_catalog.quote_ident(v_reverse_member);
     END IF;
 END $$;
 
@@ -482,7 +482,7 @@ BEGIN
     LOOP
         IF r.rolconfig IS NOT NULL THEN
             FOREACH v_entry IN ARRAY r.rolconfig LOOP
-                IF replace(replace(v_entry, ' ', ''), '"', '')
+                IF pg_catalog.replace(pg_catalog.replace(v_entry, ' ', ''), '"', '')
                    NOT LIKE 'search_path=%' THEN
                     RAISE EXCEPTION
                         'FAIL: utop14_schema_owner has unapproved role-level GUC %; DBA reconciliation required before provisioning',
@@ -504,7 +504,7 @@ BEGIN
     LOOP
         IF r.setconfig IS NOT NULL THEN
             FOREACH v_entry IN ARRAY r.setconfig LOOP
-                IF replace(replace(v_entry, ' ', ''), '"', '')
+                IF pg_catalog.replace(pg_catalog.replace(v_entry, ' ', ''), '"', '')
                    NOT LIKE 'search_path=%' THEN
                     RAISE EXCEPTION
                         'FAIL: utop14_schema_owner has unapproved database-specific GUC % in %; DBA reconciliation required before provisioning',
@@ -544,7 +544,7 @@ END $$;
 -- ---------------------------------------------------------------------------
 DO $$
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'utop14_retention_owner') THEN
+    IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'utop14_retention_owner') THEN
         CREATE ROLE utop14_retention_owner
             NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
             NOREPLICATION NOBYPASSRLS;
@@ -553,7 +553,7 @@ BEGIN
     -- dedicated DSN.  Its password/credential must come from a secret manager,
     -- never from this file or a command line.  CREATE ROLE does not set a
     -- password; this script never changes one.
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'utop14_retention_runner') THEN
+    IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'utop14_retention_runner') THEN
         CREATE ROLE utop14_retention_runner
             LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT
             NOREPLICATION NOBYPASSRLS;
@@ -588,15 +588,15 @@ BEGIN
         FROM pg_catalog.pg_database
         WHERE NOT datistemplate
     LOOP
-        EXECUTE format(
+        EXECUTE pg_catalog.format(
             'ALTER ROLE %I IN DATABASE %I RESET ALL',
             'utop14_app', r.datname
         );
-        EXECUTE format(
+        EXECUTE pg_catalog.format(
             'ALTER ROLE %I IN DATABASE %I RESET ALL',
             'utop14_retention_owner', r.datname
         );
-        EXECUTE format(
+        EXECUTE pg_catalog.format(
             'ALTER ROLE %I IN DATABASE %I RESET ALL',
             'utop14_retention_runner', r.datname
         );
@@ -627,12 +627,12 @@ BEGIN
                             'utop14_schema_owner'::regrole)
     LOOP
         IF r.grantee = 0 THEN
-            EXECUTE format(
+            EXECUTE pg_catalog.format(
                 'REVOKE %s ON PARAMETER %I FROM PUBLIC CASCADE',
                 r.privilege_type, r.parname
             );
         ELSE
-            EXECUTE format(
+            EXECUTE pg_catalog.format(
                 'REVOKE %s ON PARAMETER %I FROM %I CASCADE',
                 r.privilege_type, r.parname, r.grantee_name
             );
@@ -648,16 +648,16 @@ END $$;
 -- ---------------------------------------------------------------------------
 DO $$
 BEGIN
-    EXECUTE format(
+    EXECUTE pg_catalog.format(
         'REVOKE CREATE ON DATABASE %I FROM %I, %I, %I',
-        current_database(),
+        pg_catalog.current_database(),
         'utop14_app',
         'utop14_retention_owner',
         'utop14_retention_runner'
     );
-    EXECUTE format(
+    EXECUTE pg_catalog.format(
         'REVOKE CREATE ON DATABASE %I FROM PUBLIC',
-        current_database()
+        pg_catalog.current_database()
     );
 END $$;
 
@@ -674,9 +674,9 @@ DECLARE
 BEGIN
     FOR r IN
         SELECT u.rolname AS member_role, g.rolname AS granted_role
-        FROM pg_auth_members m
-        JOIN pg_roles u ON u.oid = m.member
-        JOIN pg_roles g ON g.oid = m.roleid
+        FROM pg_catalog.pg_auth_members m
+        JOIN pg_catalog.pg_roles u ON u.oid = m.member
+        JOIN pg_catalog.pg_roles g ON g.oid = m.roleid
         WHERE u.rolname IN ('utop14_app',
                             'utop14_retention_owner',
                             'utop14_retention_runner')
@@ -685,7 +685,7 @@ BEGIN
             RAISE NOTICE 'KEEP allowed membership: % -> %',
                 r.member_role, r.granted_role;
         ELSE
-            EXECUTE format('REVOKE %I FROM %I',
+            EXECUTE pg_catalog.format('REVOKE %I FROM %I',
                            r.granted_role, r.member_role);
             RAISE NOTICE 'REVOKED forbidden membership: % -> % (default-deny)',
                 r.member_role, r.granted_role;
@@ -862,10 +862,10 @@ DECLARE
     v_membership text;
 BEGIN
     -- Forward memberships must all be gone.
-    SELECT format('%s -> %s', u.rolname, g.rolname) INTO v_membership
-    FROM pg_auth_members m
-    JOIN pg_roles u ON u.oid = m.member
-    JOIN pg_roles g ON g.oid = m.roleid
+    SELECT pg_catalog.format('%s -> %s', u.rolname, g.rolname) INTO v_membership
+    FROM pg_catalog.pg_auth_members m
+    JOIN pg_catalog.pg_roles u ON u.oid = m.member
+    JOIN pg_catalog.pg_roles g ON g.oid = m.roleid
     WHERE u.rolname IN ('utop14_app',
                         'utop14_retention_owner',
                         'utop14_retention_runner')
@@ -876,7 +876,7 @@ BEGIN
             v_membership;
     END IF;
 
-    IF has_function_privilege(
+    IF pg_catalog.has_function_privilege(
         'utop14_app',
         'public.security_event_retention_holds_lock()',
         'EXECUTE'
@@ -884,7 +884,7 @@ BEGIN
         RAISE EXCEPTION
             'FAIL: postcondition app still has hold-lock trigger EXECUTE';
     END IF;
-    IF has_function_privilege(
+    IF pg_catalog.has_function_privilege(
         'utop14_app',
         'public.prune_security_events(text, timestamptz, integer, uuid, integer)',
         'EXECUTE'
@@ -892,24 +892,24 @@ BEGIN
         RAISE EXCEPTION
             'FAIL: postcondition app has retention function EXECUTE';
     END IF;
-    IF has_schema_privilege('utop14_app', 'public', 'CREATE') THEN
+    IF pg_catalog.has_schema_privilege('utop14_app', 'public', 'CREATE') THEN
         RAISE EXCEPTION 'FAIL: postcondition app has schema CREATE';
     END IF;
-    IF has_database_privilege('utop14_app', current_database(), 'CREATE')
-       OR has_database_privilege('utop14_retention_owner',
-                                 current_database(), 'CREATE')
-       OR has_database_privilege('utop14_retention_runner',
-                                 current_database(), 'CREATE') THEN
+    IF pg_catalog.has_database_privilege('utop14_app', pg_catalog.current_database(), 'CREATE')
+       OR pg_catalog.has_database_privilege('utop14_retention_owner',
+                                 pg_catalog.current_database(), 'CREATE')
+       OR pg_catalog.has_database_privilege('utop14_retention_runner',
+                                 pg_catalog.current_database(), 'CREATE') THEN
         RAISE EXCEPTION
             'FAIL: postcondition managed role still has database CREATE';
     END IF;
     IF EXISTS (
         SELECT 1
-        FROM pg_database d
-        CROSS JOIN LATERAL aclexplode(
-            COALESCE(d.datacl, acldefault('d', d.datdba))
+        FROM pg_catalog.pg_database d
+        CROSS JOIN LATERAL pg_catalog.aclexplode(
+            COALESCE(d.datacl, pg_catalog.acldefault('d', d.datdba))
         ) a
-        WHERE d.datname = current_database()
+        WHERE d.datname = pg_catalog.current_database()
           AND a.grantee = 0
           AND a.privilege_type = 'CREATE'
     ) THEN
@@ -917,13 +917,13 @@ BEGIN
     END IF;
     IF NOT EXISTS (
         SELECT 1
-        FROM pg_roles
+        FROM pg_catalog.pg_roles
         WHERE rolname = 'utop14_app'
           AND rolconfig IS NOT NULL
           AND EXISTS (
               SELECT 1
-              FROM unnest(rolconfig) c
-              WHERE replace(replace(c, ' ', ''), '"', '')
+              FROM pg_catalog.unnest(rolconfig) c
+              WHERE pg_catalog.replace(pg_catalog.replace(c, ' ', ''), '"', '')
                     = 'search_path=public,pg_catalog'
           )
     ) THEN
@@ -932,14 +932,14 @@ BEGIN
     END IF;
     IF EXISTS (
         SELECT 1
-        FROM pg_db_role_setting s
-        CROSS JOIN LATERAL unnest(s.setconfig) c
+        FROM pg_catalog.pg_db_role_setting s
+        CROSS JOIN LATERAL pg_catalog.unnest(s.setconfig) c
         WHERE s.setrole = 'utop14_app'::regrole
           AND s.setdatabase = (
-              SELECT oid FROM pg_database WHERE datname = current_database()
+              SELECT oid FROM pg_catalog.pg_database WHERE datname = pg_catalog.current_database()
           )
-          AND replace(replace(c, ' ', ''), '"', '') LIKE 'search_path=%'
-          AND replace(replace(c, ' ', ''), '"', '')
+          AND pg_catalog.replace(pg_catalog.replace(c, ' ', ''), '"', '') LIKE 'search_path=%'
+          AND pg_catalog.replace(pg_catalog.replace(c, ' ', ''), '"', '')
                 <> 'search_path=public,pg_catalog'
     ) THEN
         RAISE EXCEPTION
@@ -947,10 +947,10 @@ BEGIN
     END IF;
     IF EXISTS (
         SELECT 1
-        FROM pg_attribute a
-        JOIN pg_class c ON c.oid = a.attrelid
-        JOIN pg_namespace n ON n.oid = c.relnamespace
-        CROSS JOIN LATERAL aclexplode(a.attacl) x
+        FROM pg_catalog.pg_attribute a
+        JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+        CROSS JOIN LATERAL pg_catalog.aclexplode(a.attacl) x
         WHERE n.nspname = 'public'
           AND c.relkind IN ('r', 'p', 'f')
           AND a.attnum > 0
@@ -962,11 +962,11 @@ BEGIN
             'FAIL: postcondition unexpected non-owner column ACL remains';
     END IF;
     IF EXISTS (
-        SELECT 1 FROM pg_class c
-        JOIN pg_namespace n ON n.oid = c.relnamespace
+        SELECT 1 FROM pg_catalog.pg_class c
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
         WHERE n.nspname = 'public'
           AND c.relkind IN ('r', 'p', 'f', 'S')
-          AND pg_get_userbyid(c.relowner) IN ('utop14_app',
+          AND pg_catalog.pg_get_userbyid(c.relowner) IN ('utop14_app',
                                               'utop14_retention_owner',
                                               'utop14_retention_runner')
     ) THEN
@@ -1017,7 +1017,7 @@ BEGIN
            FROM pg_catalog.pg_roles,
                 LATERAL pg_catalog.unnest(rolconfig) c
            WHERE rolname = 'utop14_app'
-             AND replace(replace(c, ' ', ''), '"', '')
+             AND pg_catalog.replace(pg_catalog.replace(c, ' ', ''), '"', '')
                    = 'search_path=public,pg_catalog'
        ) THEN
         RAISE EXCEPTION
@@ -1049,7 +1049,7 @@ BEGIN
     LOOP
         IF r.rolconfig IS NOT NULL THEN
             FOREACH v_entry IN ARRAY r.rolconfig LOOP
-                IF replace(replace(v_entry, ' ', ''), '"', '')
+                IF pg_catalog.replace(pg_catalog.replace(v_entry, ' ', ''), '"', '')
                    NOT LIKE 'search_path=%' THEN
                     RAISE EXCEPTION
                         'FAIL: postcondition schema owner unapproved role-level GUC %',
@@ -1063,7 +1063,7 @@ BEGIN
         SELECT pg_catalog.pg_get_userbyid(s.setrole) AS role_name,
                coalesce(
                    d.datname,
-                   format('UNKNOWN DATABASE (oid=%s)', s.setdatabase)
+                   pg_catalog.format('UNKNOWN DATABASE (oid=%s)', s.setdatabase)
                ) AS dbname,
                s.setconfig
         FROM pg_catalog.pg_db_role_setting s
@@ -1082,7 +1082,7 @@ BEGIN
     FOR r IN
         SELECT coalesce(
                    d.datname,
-                   format('UNKNOWN DATABASE (oid=%s)', s.setdatabase)
+                   pg_catalog.format('UNKNOWN DATABASE (oid=%s)', s.setdatabase)
                ) AS dbname,
                s.setconfig
         FROM pg_catalog.pg_db_role_setting s
@@ -1092,7 +1092,7 @@ BEGIN
     LOOP
         IF r.setconfig IS NOT NULL THEN
             FOREACH v_entry IN ARRAY r.setconfig LOOP
-                IF replace(replace(v_entry, ' ', ''), '"', '')
+                IF pg_catalog.replace(pg_catalog.replace(v_entry, ' ', ''), '"', '')
                    NOT LIKE 'search_path=%' THEN
                     RAISE EXCEPTION
                         'FAIL: postcondition schema owner unapproved database-specific GUC % in %',
