@@ -294,3 +294,190 @@ def test_valid_payment_ttl_integer_is_accepted() -> None:
     )
 
     assert app.config["PAYMENT_ATTEMPT_TTL_MINUTES"] == 30
+
+
+def test_rate_limit_defaults_are_loaded() -> None:
+    app = create_app(
+        "testing",
+        {
+            "SECURITY_EVENT_HASH_KEY": VALID_SECURITY_EVENT_HASH_KEY,
+        },
+    )
+
+    assert app.config["AUTH_RATE_LIMIT_ENABLED"] is True
+    assert app.config["AUTH_RATE_LIMIT_WINDOW_SECONDS"] == 900
+    assert app.config["AUTH_RATE_LIMIT_BUCKET_TTL_HOURS"] == 48
+    assert app.config["AUTH_RATE_LIMIT_IDENTIFIER_THRESHOLDS"] == (5, 10, 20)
+    assert app.config["AUTH_RATE_LIMIT_IP_THRESHOLDS"] == (30, 60)
+    assert app.config["AUTH_RATE_LIMIT_COMBINED_THRESHOLDS"] == (10,)
+
+
+def test_rate_limit_thresholds_must_increase_monotonically() -> None:
+    with pytest.raises(ConfigurationError, match="IDENTIFIER_THRESHOLDS"):
+        create_app(
+            "testing",
+            {
+                "SECURITY_EVENT_HASH_KEY": VALID_SECURITY_EVENT_HASH_KEY,
+                "AUTH_RATE_LIMIT_IDENTIFIER_THRESHOLDS": (5, 5, 20),
+            },
+        )
+
+
+def test_rate_limit_max_failures_must_match_final_threshold() -> None:
+    with pytest.raises(ConfigurationError, match="IDENTIFIER_MAX_FAILURES"):
+        create_app(
+            "testing",
+            {
+                "SECURITY_EVENT_HASH_KEY": VALID_SECURITY_EVENT_HASH_KEY,
+                "AUTH_RATE_LIMIT_IDENTIFIER_THRESHOLDS": (5, 10, 15),
+            },
+        )
+
+
+def test_rate_limit_cooldown_must_not_exceed_scope_maximum() -> None:
+    with pytest.raises(ConfigurationError, match="IDENTIFIER_COOLDOWNS"):
+        create_app(
+            "testing",
+            {
+                "SECURITY_EVENT_HASH_KEY": VALID_SECURITY_EVENT_HASH_KEY,
+                "AUTH_RATE_LIMIT_IDENTIFIER_COOLDOWNS": (60, 300, 901),
+            },
+        )
+
+
+def test_rate_limit_ttl_must_exceed_window_and_maximum_cooldown() -> None:
+    with pytest.raises(ConfigurationError, match="BUCKET_TTL_HOURS"):
+        create_app(
+            "testing",
+            {
+                "SECURITY_EVENT_HASH_KEY": VALID_SECURITY_EVENT_HASH_KEY,
+                "AUTH_RATE_LIMIT_WINDOW_SECONDS": 3600,
+                "AUTH_RATE_LIMIT_BUCKET_TTL_HOURS": 1,
+            },
+        )
+
+
+def test_rate_limit_policy_can_be_overridden_from_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AUTH_RATE_LIMIT_WINDOW_SECONDS", "600")
+    monkeypatch.setenv("AUTH_RATE_LIMIT_BUCKET_TTL_HOURS", "24")
+    monkeypatch.setenv("AUTH_RATE_LIMIT_IDENTIFIER_MAX_FAILURES", "12")
+    monkeypatch.setenv("AUTH_RATE_LIMIT_IDENTIFIER_THRESHOLDS", "4,8,12")
+    monkeypatch.setenv("AUTH_RATE_LIMIT_IDENTIFIER_COOLDOWNS", "30,120,600")
+    monkeypatch.setenv("AUTH_RATE_LIMIT_IDENTIFIER_MAX_COOLDOWN_SECONDS", "600")
+
+    app = create_app("testing")
+
+    assert app.config["AUTH_RATE_LIMIT_WINDOW_SECONDS"] == 600
+    assert app.config["AUTH_RATE_LIMIT_BUCKET_TTL_HOURS"] == 24
+    assert app.config["AUTH_RATE_LIMIT_IDENTIFIER_THRESHOLDS"] == (4, 8, 12)
+    assert app.config["AUTH_RATE_LIMIT_IDENTIFIER_COOLDOWNS"] == (30, 120, 600)
+    assert app.config["AUTH_RATE_LIMIT_IDENTIFIER_MAX_COOLDOWN_SECONDS"] == 600
+
+
+def test_security_event_retention_defaults_are_loaded() -> None:
+    app = create_app(
+        "testing",
+        {"SECURITY_EVENT_HASH_KEY": VALID_SECURITY_EVENT_HASH_KEY},
+    )
+
+    assert app.config["SECURITY_EVENT_RETENTION_ENABLED"] is True
+    assert app.config["SECURITY_EVENT_SUCCESS_RETENTION_DAYS"] == 90
+    assert app.config["SECURITY_EVENT_FAILURE_RETENTION_DAYS"] == 180
+    assert app.config["SECURITY_EVENT_RETENTION_HOLD_MAX_DAYS"] == 365
+    assert app.config["SECURITY_EVENT_RETENTION_BATCH_SIZE"] == 2000
+    assert app.config["SECURITY_EVENT_RETENTION_MAX_BATCH_SIZE"] == 5000
+    assert app.config["SECURITY_EVENT_RETENTION_MAX_BATCHES"] == 20
+    assert app.config["SECURITY_EVENT_RETENTION_RUN_LOG_DAYS"] == 365
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "message"),
+    [
+        ("SECURITY_EVENT_SUCCESS_RETENTION_DAYS", 89, "SUCCESS_RETENTION"),
+        ("SECURITY_EVENT_SUCCESS_RETENTION_DAYS", 3651, "SUCCESS_RETENTION"),
+        ("SECURITY_EVENT_SUCCESS_RETENTION_DAYS", 10**9, "SUCCESS_RETENTION"),
+        ("SECURITY_EVENT_FAILURE_RETENTION_DAYS", 179, "FAILURE_RETENTION"),
+        ("SECURITY_EVENT_FAILURE_RETENTION_DAYS", 3651, "FAILURE_RETENTION"),
+        ("SECURITY_EVENT_FAILURE_RETENTION_DAYS", 10**9, "FAILURE_RETENTION"),
+        ("SECURITY_EVENT_RETENTION_MAX_DAYS", 100, "MAX_DAYS"),
+        ("SECURITY_EVENT_RETENTION_MAX_DAYS", 3651, "MAX_DAYS"),
+        ("SECURITY_EVENT_RETENTION_MAX_DAYS", 10**9, "MAX_DAYS"),
+        ("SECURITY_EVENT_RETENTION_HOLD_MAX_DAYS", 0, "HOLD_MAX_DAYS"),
+        ("SECURITY_EVENT_RETENTION_HOLD_MAX_DAYS", 3651, "HOLD_MAX_DAYS"),
+        ("SECURITY_EVENT_RETENTION_BATCH_SIZE", 5001, "BATCH_SIZE"),
+        ("SECURITY_EVENT_RETENTION_MAX_BATCH_SIZE", 0, "MAX_BATCH_SIZE"),
+        ("SECURITY_EVENT_RETENTION_MAX_BATCHES", 101, "MAX_BATCHES"),
+        ("SECURITY_EVENT_RETENTION_RUN_LOG_DAYS", 0, "RUN_LOG_DAYS"),
+    ],
+)
+def test_invalid_security_event_retention_config_is_rejected(
+    key: str,
+    value: int,
+    message: str,
+) -> None:
+    with pytest.raises(ConfigurationError, match=message):
+        create_app(
+            "testing",
+            {
+                "SECURITY_EVENT_HASH_KEY": VALID_SECURITY_EVENT_HASH_KEY,
+                key: value,
+            },
+        )
+
+
+def test_security_event_retention_minimum_bounds_are_accepted() -> None:
+    app = create_app(
+        "testing",
+        {
+            "SECURITY_EVENT_HASH_KEY": VALID_SECURITY_EVENT_HASH_KEY,
+            "SECURITY_EVENT_SUCCESS_RETENTION_DAYS": 90,
+            "SECURITY_EVENT_FAILURE_RETENTION_DAYS": 180,
+            "SECURITY_EVENT_RETENTION_MAX_DAYS": 180,
+            "SECURITY_EVENT_RETENTION_HOLD_MAX_DAYS": 180,
+        },
+    )
+
+    assert app.config["SECURITY_EVENT_RETENTION_MAX_DAYS"] == 180
+
+
+def test_security_event_retention_upper_bounds_are_accepted() -> None:
+    app = create_app(
+        "testing",
+        {
+            "SECURITY_EVENT_HASH_KEY": VALID_SECURITY_EVENT_HASH_KEY,
+            "SECURITY_EVENT_SUCCESS_RETENTION_DAYS": 3650,
+            "SECURITY_EVENT_FAILURE_RETENTION_DAYS": 3650,
+            "SECURITY_EVENT_RETENTION_MAX_DAYS": 3650,
+            "SECURITY_EVENT_RETENTION_HOLD_MAX_DAYS": 3650,
+        },
+    )
+
+    assert app.config["SECURITY_EVENT_SUCCESS_RETENTION_DAYS"] == 3650
+    assert app.config["SECURITY_EVENT_FAILURE_RETENTION_DAYS"] == 3650
+    assert app.config["SECURITY_EVENT_RETENTION_MAX_DAYS"] == 3650
+
+
+def test_security_event_retention_days_cannot_exceed_max_days() -> None:
+    with pytest.raises(ConfigurationError, match="MAX_DAYS"):
+        create_app(
+            "testing",
+            {
+                "SECURITY_EVENT_HASH_KEY": VALID_SECURITY_EVENT_HASH_KEY,
+                "SECURITY_EVENT_SUCCESS_RETENTION_DAYS": 400,
+                "SECURITY_EVENT_FAILURE_RETENTION_DAYS": 180,
+                "SECURITY_EVENT_RETENTION_MAX_DAYS": 365,
+            },
+        )
+
+
+def test_invalid_retention_database_url_is_rejected() -> None:
+    with pytest.raises(ConfigurationError, match="SECURITY_EVENT_RETENTION_DATABASE_URL"):
+        create_app(
+            "testing",
+            {
+                "SECURITY_EVENT_HASH_KEY": VALID_SECURITY_EVENT_HASH_KEY,
+                "SECURITY_EVENT_RETENTION_DATABASE_URL": "sqlite:///tmp/retention.db",
+            },
+        )

@@ -18,10 +18,12 @@ from app.models import AuditLog, SecurityEvent, User
 from app.models.security_event import (
     SECURITY_EVENT_LOGIN_FAILED,
     SECURITY_EVENT_LOGIN_SUCCEEDED,
+    SECURITY_EVENT_LOGIN_THROTTLED,
     SECURITY_EVENT_LOGOUT,
     SECURITY_OUTCOME_FAILURE,
     SECURITY_OUTCOME_SUCCESS,
     SECURITY_REASON_AUTHENTICATED,
+    SECURITY_REASON_IDENTIFIER_RATE_LIMITED,
     SECURITY_REASON_UNKNOWN_ACCOUNT,
     SECURITY_REASON_USER_REQUESTED,
 )
@@ -1498,3 +1500,48 @@ def test_security_event_timestamps_render_utc_for_database_timezone(
     assert "01 Jan 2026, 00:00:00 UTC" in detail_html
     assert "01 Jan 2026, 07:00:00 UTC" not in list_html
     assert "01 Jan 2026, 07:00:00 UTC" not in detail_html
+
+
+def test_login_throttled_event_renders_and_filters(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = _admin(make_user)
+    event = _add_event(
+        event_type=SECURITY_EVENT_LOGIN_THROTTLED,
+        outcome=SECURITY_OUTCOME_FAILURE,
+        reason_code=SECURITY_REASON_IDENTIFIER_RATE_LIMITED,
+        metadata={
+            "scope": "identifier",
+            "retry_after_seconds": 60,
+            "window_seconds": 900,
+            "failure_count": 5,
+        },
+    )
+    _silent_login(client, csrf_token, monkeypatch, email=admin.email)
+
+    list_html = _html(client.get("/admin/security-events"))
+    assert "Login throttled" in list_html
+    assert "Identifier rate limited" in list_html
+    assert f"#{event.id}" in list_html
+
+    reason_html = _html(client.get("/admin/security-events?reason=identifier_rate_limited"))
+    assert f"#{event.id}" in reason_html
+
+    type_html = _html(client.get("/admin/security-events?event_type=auth.login_throttled"))
+    assert f"#{event.id}" in type_html
+
+    detail_html = _html(client.get(f"/admin/security-events/{event.id}"))
+    assert "Login throttled" in detail_html
+    assert "Identifier rate limited" in detail_html
+    assert "Rate-limit scope" in detail_html
+    assert "Retry after (seconds)" in detail_html
+    assert "Window (seconds)" in detail_html
+    assert "Failure count" in detail_html
+    assert "60" in detail_html
+    assert "900" in detail_html
+    assert "5" in detail_html
+    assert "identifier_rate_limited" in detail_html

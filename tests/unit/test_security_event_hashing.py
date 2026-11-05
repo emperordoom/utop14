@@ -8,6 +8,7 @@ from flask import Flask
 from app.models.security_event import (
     SECURITY_EVENT_LOGIN_FAILED,
     SECURITY_EVENT_LOGIN_SUCCEEDED,
+    SECURITY_EVENT_LOGIN_THROTTLED,
 )
 from app.services.security_events import (
     SecurityEventValidationError,
@@ -132,3 +133,38 @@ def test_metadata_rejects_non_boolean_remember_flag() -> None:
 def test_metadata_rejects_unknown_event_type() -> None:
     with pytest.raises(SecurityEventValidationError):
         sanitize_metadata("auth.not_real", {})
+
+
+def test_throttle_metadata_allowlist_keeps_only_safe_primitives() -> None:
+    cleaned = sanitize_metadata(
+        SECURITY_EVENT_LOGIN_THROTTLED,
+        {
+            "scope": "identifier",
+            "retry_after_seconds": 60,
+            "window_seconds": 900,
+            "failure_count": 5,
+            "email": "user@example.com",
+            "ip": "203.0.113.9",
+            "password": "secret",
+        },
+    )
+
+    assert cleaned == {
+        "scope": "identifier",
+        "retry_after_seconds": 60,
+        "window_seconds": 900,
+        "failure_count": 5,
+    }
+
+
+def test_throttle_metadata_rejects_unknown_scope_and_boolean_counts() -> None:
+    with pytest.raises(SecurityEventValidationError):
+        sanitize_metadata(
+            SECURITY_EVENT_LOGIN_THROTTLED,
+            {"scope": "unknown"},
+        )
+    with pytest.raises(SecurityEventValidationError):
+        sanitize_metadata(
+            SECURITY_EVENT_LOGIN_THROTTLED,
+            {"failure_count": True},
+        )

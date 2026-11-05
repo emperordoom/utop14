@@ -46,6 +46,9 @@ CONSTRAINED_POOL_OPTIONS: Final = {
     "pool_timeout": 1,
 }
 RESET_TABLES: Final = (
+    "security_event_retention_holds",
+    "security_event_retention_runs",
+    "auth_rate_limits",
     "security_events",
     "audit_logs",
     "product_reviews",

@@ -10,6 +10,7 @@ from flask import render_template_string
 from app.models.security_event import (
     SECURITY_EVENT_LOGIN_FAILED,
     SECURITY_EVENT_LOGIN_SUCCEEDED,
+    SECURITY_EVENT_LOGIN_THROTTLED,
     SECURITY_EVENT_LOGOUT,
     SECURITY_OUTCOME_FAILURE,
     SECURITY_REASON_AUTHENTICATED,
@@ -419,3 +420,36 @@ def test_displayable_metadata_logout_and_unknown_event_types_are_empty() -> None
 def test_displayable_metadata_non_object_is_empty() -> None:
     assert displayable_metadata(SECURITY_EVENT_LOGIN_SUCCEEDED, []) == ()
     assert displayable_metadata(SECURITY_EVENT_LOGIN_SUCCEEDED, "password") == ()
+
+
+def test_displayable_metadata_login_throttled() -> None:
+    items = displayable_metadata(
+        SECURITY_EVENT_LOGIN_THROTTLED,
+        {
+            "scope": "identifier",
+            "retry_after_seconds": 60,
+            "window_seconds": 900,
+            "failure_count": 5,
+        },
+    )
+
+    assert items == (
+        ("Rate-limit scope", "Identifier"),
+        ("Retry after (seconds)", "60"),
+        ("Window (seconds)", "900"),
+        ("Failure count", "5"),
+    )
+
+
+def test_displayable_metadata_login_throttled_omits_invalid_values() -> None:
+    items = displayable_metadata(
+        SECURITY_EVENT_LOGIN_THROTTLED,
+        {
+            "scope": "unknown",
+            "retry_after_seconds": True,
+            "window_seconds": "900",
+            "failure_count": 5,
+        },
+    )
+
+    assert items == (("Failure count", "5"),)

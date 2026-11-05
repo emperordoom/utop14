@@ -5,6 +5,9 @@
   {%- elif event_type == "auth.login_failed" -%}
     {% set label = "Login failed" %}
     {% set modifier = "failure" %}
+  {%- elif event_type == "auth.login_throttled" -%}
+    {% set label = "Login throttled" %}
+    {% set modifier = "warning" %}
   {%- elif event_type == "auth.logout" -%}
     {% set label = "Logout" %}
     {% set modifier = "neutral" %}
@@ -42,6 +45,15 @@
   {%- elif reason_code == "invalid_password" -%}
     {% set label = "Invalid password" %}
     {% set modifier = "failure" %}
+  {%- elif reason_code == "ip_rate_limited" -%}
+    {% set label = "IP rate limited" %}
+    {% set modifier = "warning" %}
+  {%- elif reason_code == "identifier_rate_limited" -%}
+    {% set label = "Identifier rate limited" %}
+    {% set modifier = "warning" %}
+  {%- elif reason_code == "combined_rate_limited" -%}
+    {% set label = "Combined rate limited" %}
+    {% set modifier = "warning" %}
   {%- elif reason_code == "user_requested" -%}
     {% set label = "User requested" %}
     {% set modifier = "neutral" %}

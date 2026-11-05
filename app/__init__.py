@@ -107,10 +107,12 @@ def _register_models() -> None:
 
 def _register_cli(app: Flask) -> None:
     """Attach maintenance commands without importing them at module load time."""
-    from app.cli import catalog_cli, users_cli
+    from app.cli import auth_rate_limit_cli, catalog_cli, security_event_retention_cli, users_cli
 
     app.cli.add_command(catalog_cli)
     app.cli.add_command(users_cli)
+    app.cli.add_command(auth_rate_limit_cli)
+    app.cli.add_command(security_event_retention_cli)
 
 
 def _register_error_handlers(app: Flask) -> None:

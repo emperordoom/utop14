@@ -31,14 +31,18 @@ from app.extensions import db
 from app.models.security_event import (
     SECURITY_EVENT_LOGIN_FAILED,
     SECURITY_EVENT_LOGIN_SUCCEEDED,
+    SECURITY_EVENT_LOGIN_THROTTLED,
     SECURITY_EVENT_LOGOUT,
     SECURITY_EVENT_TYPES,
     SECURITY_MAX_EMAIL_LENGTH,
     SECURITY_OUTCOME_FAILURE,
     SECURITY_OUTCOME_SUCCESS,
     SECURITY_REASON_AUTHENTICATED,
+    SECURITY_REASON_COMBINED_RATE_LIMITED,
+    SECURITY_REASON_IDENTIFIER_RATE_LIMITED,
     SECURITY_REASON_INACTIVE_ACCOUNT,
     SECURITY_REASON_INVALID_PASSWORD,
+    SECURITY_REASON_IP_RATE_LIMITED,
     SECURITY_REASON_UNKNOWN_ACCOUNT,
     SECURITY_REASON_USER_REQUESTED,
     SecurityEvent,
@@ -66,6 +70,12 @@ _LOGIN_FAILURE_REASONS: Final = (
     SECURITY_REASON_INACTIVE_ACCOUNT,
     SECURITY_REASON_INVALID_PASSWORD,
 )
+_LOGIN_THROTTLE_REASONS: Final = (
+    SECURITY_REASON_IP_RATE_LIMITED,
+    SECURITY_REASON_IDENTIFIER_RATE_LIMITED,
+    SECURITY_REASON_COMBINED_RATE_LIMITED,
+)
+_RATE_LIMIT_SCOPES: Final = ("ip", "identifier", "combined")
 
 _MISSING_KEY_WARNING_LOCK: Final = Lock()
 _missing_key_warning_emitted = False
@@ -93,6 +103,12 @@ _ALLOWED_METADATA: Final[dict[str, dict[str, type]]] = {
         "remember_requested": bool,
     },
     SECURITY_EVENT_LOGIN_FAILED: {"auth_method": str},
+    SECURITY_EVENT_LOGIN_THROTTLED: {
+        "scope": str,
+        "retry_after_seconds": int,
+        "window_seconds": int,
+        "failure_count": int,
+    },
     SECURITY_EVENT_LOGOUT: {},
 }
 
@@ -185,10 +201,15 @@ def sanitize_metadata(event_type: str, metadata: dict[str, Any] | None) -> dict[
         if expected is bool:
             if not isinstance(value, bool):
                 raise SecurityEventValidationError("Invalid security event metadata value.")
+        elif expected is int:
+            if type(value) is not int:
+                raise SecurityEventValidationError("Invalid security event metadata value.")
         elif not isinstance(value, expected):
             raise SecurityEventValidationError("Invalid security event metadata value.")
         if key == "auth_method" and value not in AUTH_METHODS:
             raise SecurityEventValidationError("Unknown authentication method.")
+        if key == "scope" and value not in _RATE_LIMIT_SCOPES:
+            raise SecurityEventValidationError("Unknown rate-limit scope.")
         cleaned[key] = value
     return cleaned
 
@@ -304,6 +325,43 @@ def record_login_failed(
         current_app.logger.error(
             "Security event build failed for %s (%s).",
             SECURITY_EVENT_LOGIN_FAILED,
+            type(exc).__name__,
+        )
+        return
+    _persist(event)
+
+
+def record_login_throttled(
+    *,
+    identifier: str,
+    reason_code: str,
+    scope: str,
+    retry_after_seconds: int,
+    window_seconds: int,
+    failure_count: int,
+) -> None:
+    """Record one meaningful login throttle transition without raw credentials."""
+    if reason_code not in _LOGIN_THROTTLE_REASONS or scope not in _RATE_LIMIT_SCOPES:
+        return
+
+    try:
+        event = _build_event(
+            event_type=SECURITY_EVENT_LOGIN_THROTTLED,
+            outcome=SECURITY_OUTCOME_FAILURE,
+            reason_code=reason_code,
+            context=build_security_event_context(),
+            identifier_hash=hash_identifier(identifier),
+            metadata={
+                "scope": scope,
+                "retry_after_seconds": retry_after_seconds,
+                "window_seconds": window_seconds,
+                "failure_count": failure_count,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - auditing must never break auth
+        current_app.logger.error(
+            "Security event build failed for %s (%s).",
+            SECURITY_EVENT_LOGIN_THROTTLED,
             type(exc).__name__,
         )
         return

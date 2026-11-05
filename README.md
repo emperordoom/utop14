@@ -4,12 +4,12 @@ UTOP14 is a streetwear e-commerce platform built for Well Architected SOC 14.
 
 **Project status:**
 
-- Integrated into `main`: M1–M11.
-- Implemented and verified on `feature/admin-audit-log`, pending integration:
-  M12 Admin User Management, M13 Admin Audit Log, and M13.2 Audit Log
-  Hardening.
-- Current: M13.5 CI validation and final integration readiness review.
-- Pending and not started: M14 and later milestones.
+- See [`docs/PROJECT_ROADMAP.md`](docs/PROJECT_ROADMAP.md) for the durable
+  phase-by-phase status, checkpoint evidence, and outstanding blockers.
+- Development is in Phase 4 (independent approval and M14.3 integration).
+  Phase 3 is complete based on the M14.3.23 approval of `a8e9a9b6…`.
+  Production readiness is deferred and is not authorized by development
+  completion.
 
 ## Technology
 
@@ -140,6 +140,8 @@ environment take precedence. `.env` is ignored by Git.
 | `TEST_SECRET_KEY` | No | Optional test-only secret override |
 | `TRUSTED_PROXY_HOPS` | No | Number of trusted reverse-proxy hops for `X-Forwarded-For`; default `0` |
 | `SECURITY_EVENT_HASH_KEY` | Production | Dedicated HMAC-SHA256 key for authentication identifier hashes; at least 32 bytes, distinct from `SECRET_KEY`; optional in development/testing |
+| `AUTH_RATE_LIMIT_*` | No | PostgreSQL fixed-window login rate-limit policy and TTL; defaults documented in `.env.example` and the authentication rate-limiting section. |
+| `SECURITY_EVENT_RETENTION_*` | No | Per-type security-event retention, holds and bounded cleanup policy; defaults documented in `.env.example` and the retention section. |
 
 Startup validation fails with a clear `ConfigurationError` when `SECRET_KEY`
 or `DATABASE_URL` is missing or when a non-Psycopg database URL is supplied.
@@ -496,6 +498,10 @@ Current revision chain in source:
 - `3f7a2c9d1b64` — administrative audit log
 - `9b2d4e6f8a10` — authentication security events
 - `c4e7a1b9d2f6` — security event request ID index
+- `e1b7c4a9d2f3` — authentication rate-limit buckets
+- `b4d8e2f7a1c9` — login-throttled security event taxonomy
+- `d7c1a9e4b2f8` — security-event retention holds, run log and function
+- `e3b9f1c7a2d4` — retention hold lock trigger and function validation hardening
 
 ## Admin audit logging and trusted proxy
 
@@ -585,8 +591,10 @@ an arbitrary client-supplied identifier.
   stored as `0.0.0.0`; this is a sentinel, not a guaranteed real client address.
 - **F-06 — database privilege boundary:** the trigger blocks ordinary row-level
   UPDATE/DELETE, but table owners, superusers, `TRUNCATE`, and a compromised
-  privileged account remain outside its protection. Runtime DB roles are not
-  separated by this application.
+  privileged account remain outside its protection. M14.3.3/OPS-01 provides a
+  separate DDL/schema-owner, app, retention-owner, and runner role model with
+  ownership/verification scripts; the residual privileged-account boundary
+  remains.
 - **F-08 — JSONB validation:** PostgreSQL enforces JSON object type; flatness and
   sensitive-key exclusion are application-level controls. Direct privileged DB
   inserts are outside that allowlist.
@@ -658,6 +666,565 @@ The `security_events` table is indexed by request ID for incident correlation.
 A reason-code index is deferred until the M14.2 viewer defines its filters and
 the query pattern is measured.
 
+### Authentication rate limiting (M14.3.1/M14.3.2)
+
+M14.3.1 adds a PostgreSQL shared store for fixed-window authentication rate
+limiting. M14.3.2 wires the limiter into form login. Registration, password
+reset and other endpoints are not rate-limited by this milestone. No Redis or
+new rate-limiting dependency is used.
+
+Bucket keys are HMAC-SHA256 values derived from `SECURITY_EVENT_HASH_KEY` with
+the `utop14.auth_rate_limit.v1` domain and a scope-specific input. Raw email
+addresses, IP addresses, usernames, passwords and session values are never
+stored in `auth_rate_limits`.
+
+The default policy is:
+
+| Scope | Thresholds | Cooldowns | Maximum cooldown |
+| --- | --- | --- | --- |
+| Identifier | 5, 10, 20 failures | 60s, 300s, 900s | 900s |
+| IP | 30, 60 failures | 300s, 900s | 1,800s |
+| Combined IP + identifier | 10 failures | 300s | 900s |
+
+All scopes share a 900-second fixed window. A bucket row stores
+`window_start`, `failure_count`, optional `blocked_until` and `updated_at`.
+The counter and window rollover use PostgreSQL
+`INSERT ... ON CONFLICT ... DO UPDATE` in a short transaction. An active
+cooldown is not extended by further failed requests; after the window expires,
+the counter starts at one.
+
+The login flow validates CSRF/form input, derives all three bucket keys, checks
+cooldowns before user lookup, and returns a generic HTTP `429` with
+`Retry-After` when blocked. Password verification is not run for a throttled
+request. The response is non-cacheable and does not reveal whether the account
+exists. A successful login resets the identifier bucket but not the IP bucket.
+A rate-limit store failure is fail-open: authentication continues and a safe
+warning with request ID, scope and exception type is logged. No local fallback
+store or retry loop is used.
+
+A new `auth.login_throttled` security event records meaningful block
+transitions with reason codes `ip_rate_limited`, `identifier_rate_limited` or
+`combined_rate_limited`. Its metadata allowlist is `scope`,
+`retry_after_seconds`, `window_seconds` and `failure_count`. The event is
+written once per new block transition; requests that are already blocked do not
+create repeated events.
+
+Relevant environment variables are documented in `.env.example`. The
+`*_MAX_FAILURES` values must match the final entry in the corresponding
+threshold list. The TTL defaults to 48 hours and must exceed the window plus the
+scope's maximum cooldown.
+
+Stale buckets are deleted in bounded batches by the foundation service. The
+operational command is:
+
+```bash
+flask --app wsgi auth-rate-limit cleanup --batch-size 1000
+```
+
+The command deletes only rows whose `updated_at` is older than the cutoff
+(`updated_at < now - AUTH_RATE_LIMIT_BUCKET_TTL_HOURS`). A row exactly at the
+cutoff is retained. There is no scheduler or background worker; deployment must
+invoke the command through an approved cron/systemd/maintenance job. Cleanup
+never touches `security_events`, `audit_logs`, retention holds or retention run
+logs.
+
+Migration `e1b7c4a9d2f3` is additive. Its downgrade removes the
+`auth_rate_limits` table and all current rate-limit state; it does not modify
+security-event or audit-log history. Migration `b4d8e2f7a1c9` extends the
+security-event taxonomy for `auth.login_throttled`; downgrade removes those
+allowed values and requires existing throttled events to be archived first.
+
+### Security-event retention (M14.3.3)
+
+Retention applies only to the authentication `security_events` table. Admin
+`audit_logs` M13 remain permanent and are never purged by this job. The default
+policy is:
+
+| Event type | Retention |
+| --- | --- |
+| `auth.login_succeeded` | 90 days |
+| `auth.logout` | 90 days |
+| `auth.login_failed` | 180 days |
+| `auth.login_throttled` | 180 days |
+
+Retention uses UTC `created_at`, a fixed cutoff for one run, bounded batches,
+and an advisory lock. Event types outside this policy are never deleted.
+
+Investigative holds live in `security_event_retention_holds`. At most one hold
+row exists per event; an active hold (`expires_at > now()`) prevents deletion.
+Expired holds may be replaced. Every hold write takes a per-event advisory lock
+through the `security_event_retention_holds_lock` database trigger, which uses
+the same `(7381, security_event_id)` lock as the cleanup function. This applies
+to service calls and direct SQL, so a successful hold and a concurrent cleanup
+cannot delete the event. An UPDATE that moves a hold to another event locks
+both event ids in deterministic order. A direct UPDATE cannot expire or shorten
+an active hold, and hold duration is capped at 3650 days. The app role keeps
+UPDATE only to replace an already-expired hold. Holds and run-log rows are
+separate from `security_events` and are not deleted by retention.
+
+Retention configuration is bounded: `SECURITY_EVENT_SUCCESS_RETENTION_DAYS`
+must be 90–3650, `SECURITY_EVENT_FAILURE_RETENTION_DAYS` 180–3650, and
+`SECURITY_EVENT_RETENTION_MAX_DAYS` 1–3650 and at least the largest retention
+period. The database function independently rejects a NULL/unknown scope and a
+batch index outside 0–99.
+
+Retention runs are recorded in `security_event_retention_runs` with non-PII
+operational fields: run id, batch index, scope, cutoff, deleted count, status,
+error code, and timestamps. Run logs are retained for one year by default; their
+cleanup is a separate operational decision.
+
+The cleanup entry point is a `SECURITY DEFINER` function,
+`public.prune_security_events`, owned by `utop14_retention_owner`. It locks
+`search_path`, validates scope/cutoff/batch limits, excludes active holds, and
+deletes only rows older than the policy cutoff. The append-only trigger permits
+DELETE only when `current_user` is that owner. Application and runner roles
+cannot DELETE/UPDATE/TRUNCATE `security_events`. Role creation is deliberately
+outside migrations; see `scripts/security_event_retention_roles.sql` and verify
+with `scripts/security_event_retention_verify.sql`. The verify script uses
+`ON_ERROR_STOP` and raises on the first failed required assertion, so it exits
+non-zero; run it as a PostgreSQL superuser, not as `utop14_app`. A non-superuser
+schema owner cannot run the `SET ROLE` probes and fails the explicit
+verification preflight.
+
+M14.3.12 hardens the provisioning and verification gates:
+
+- Role memberships are **default-deny** for `utop14_app`,
+  `utop14_retention_owner`, and `utop14_retention_runner`. Verification fails on
+  any direct or transitive membership, regardless of `INHERIT`, `SET`, `ADMIN`,
+  predefined role, custom role, or nested path. The explicit allowlist is
+  empty; a membership may only be added after a documented review in both the
+  provisioning and verification scripts.
+- Provisioning removes every forward membership of a managed role and fails
+  closed on a reverse membership (another role can assume a managed role).
+- Verification inventories every non-system schema, user-defined
+  type/domain/enum/composite, extension, table, sequence, function, trigger,
+  and view. Only `public` and `plpgsql` are approved today; any other object
+  fails verification until the inventory is reviewed and updated.
+- The app has no `CREATE` or `USAGE` outside `public`, and no `CREATE` through
+  `PUBLIC` or a custom role.
+- The app has **no function `EXECUTE` at all**, including the
+  `security_event_retention_holds_lock` trigger helper. PostgreSQL checks
+  trigger-function `EXECUTE` when the trigger is created, not when it fires, so
+  app hold INSERT/UPDATE still works. `prune_security_events` remains
+  executable only by `utop14_retention_runner` (and its owner).
+- Provisioning is transactional, preflighted, and repeatable: guarded role
+  creation, explicit attribute reconciliation, migration-head check, object and
+  ownership inventory, dangerous-default-ACL check, and membership
+  reconciliation. A second run succeeds with identical non-owner ACLs and
+  ownership; a preflight failure rolls back and can be corrected and rerun.
+
+M14.3.14 closes the remaining direct-ACL verification gaps:
+
+- Verification inspects table ACLs, column ACLs (`pg_attribute.attacl`),
+  effective column privileges (`has_column_privilege`), sequence ACLs, function
+  ACLs, and `GRANT OPTION`. No explicit column-level grant is approved for
+  `utop14_app`, either retention role, or PUBLIC. Table-level grants legitimately
+  apply to every column and must match the approved table matrix; a
+  column-only grant on a table or column outside that matrix fails.
+- Database-level `CREATE` is revoked from the app, retention roles, and PUBLIC,
+  and verification fails if it reappears. Required CONNECT/TEMP privileges are
+  preserved.
+- PostgreSQL 17+ `MAINTAIN` is rejected for managed roles and PUBLIC. On
+  PostgreSQL 16 the MAINTAIN-specific check is skipped with an INFO notice.
+- Verification requires a PostgreSQL **superuser** because the runtime probes
+  use `SET ROLE`. A non-superuser schema owner or ordinary role fails the
+  explicit preflight; an inability to execute a probe is never reported as
+  PASS. The script sets `search_path = pg_catalog, public` and schema-qualifies
+  privilege checks so caller search paths cannot shadow application objects.
+- Provisioning sets `ALTER ROLE utop14_app SET search_path = public,
+  pg_catalog`, revokes database-level `CREATE`, and relies on the full table
+  grant reset to remove column ACLs and `MAINTAIN`. Postconditions cover
+  database CREATE, the app search_path, and the absence of non-owner column
+  ACLs.
+- Existing application connections and connection pools keep their old session
+  `search_path` until they reconnect; recycle pools after provisioning.
+
+M14.3.16 closes the parameter-ACL and persistent-GUC gaps:
+
+- Verification inspects `pg_parameter_acl` and `has_parameter_privilege` for
+  every parameter `SET` and `ALTER SYSTEM` grant. Managed roles and PUBLIC must
+  have no such grant and no GRANT OPTION. Effective privileges through PUBLIC or
+  a custom-role membership path are rejected; unrelated DBA/custom-role grants
+  are not treated as application privileges.
+- The project supports PostgreSQL 16+; if `pg_parameter_acl` or
+  `has_parameter_privilege` is unavailable, verification and provisioning fail
+  closed instead of silently skipping the check.
+- Persistent GUCs are checked catalog-wide, not by a short dangerous-name list:
+  - `utop14_app` role-level settings must be exactly
+    `search_path=public, pg_catalog` (one entry, no extras).
+  - Retention owner/runner must have no role-level or database-specific settings.
+  - `utop14_schema_owner` may have `search_path` only; any other persistent GUC
+    requires explicit DBA reconciliation.
+  - Database-specific settings for managed roles are rejected; provisioning
+    resets them with `ALTER ROLE ... IN DATABASE ... RESET ALL`.
+  - Database-wide/global settings that affect application sessions are rejected
+    with a DBA-reconciliation error; verification and provisioning never
+    silently modify unrelated roles.
+- Provisioning resets all persistent role-level and database-specific GUCs for
+  the managed roles, applies the approved app search_path, and revokes parameter
+  `SET`/`ALTER SYSTEM` grants for managed roles and PUBLIC (including dependent
+  grants via `CASCADE`). Postconditions cover parameter ACLs, role-level GUCs,
+  database-specific GUCs, database-wide GUCs, and the app search_path.
+- The disposable test includes direct, PUBLIC, GRANT OPTION, ALTER SYSTEM,
+  custom-role, role-level, database-specific, database-wide, hostile-schema, and
+  second-run provisioning cases.
+- PostgreSQL 16 parameter/GUC runtime behavior was not available for testing in
+  this environment; the catalog/function/syntax compatibility is inspected, but
+  only PostgreSQL 18.6 was runtime-tested.
+
+M14.3.18 closes the cross-database and cluster-level gaps:
+
+- Persistent GUC inspection is cluster-wide, not current-database-only:
+  - Every `pg_db_role_setting` row for `utop14_app`,
+    `utop14_retention_owner`, and `utop14_retention_runner` is inspected,
+    regardless of `setdatabase`; no managed-role database-specific setting is
+    approved in any database.
+  - Every `pg_db_role_setting` row for `utop14_schema_owner` is inspected;
+    `search_path` is allowed, anything else requires DBA reconciliation.
+  - Every `setrole = 0` row (database-wide and global) is inspected; any
+    database-wide setting fails closed because it can affect application
+    sessions in that database.
+  - Provisioning resets managed-role role-level settings and every
+    managed-role/database-specific setting in every non-template database; it
+    re-applies the approved app search_path and fails closed if a database
+    cannot be reconciled.
+- Schema-owner parameter ACLs are now default-deny: direct/effective
+  `SET`/`ALTER SYSTEM`, PUBLIC, GRANT OPTION, and membership paths are checked;
+  explicit schema-owner parameter grants are revoked by provisioning. A
+  superuser schema owner’s implicit privileges are treated as the trusted DBA
+  boundary, not an explicit ACL.
+- Sensitive cluster-level GUCs are checked through `pg_settings` and
+  `pg_file_settings`. Any sensitive setting in `postgresql.auto.conf`
+  (`shared_preload_libraries`, `session_preload_libraries`,
+  `local_preload_libraries`, `log_statement`, logging controls, `search_path`)
+  fails verification and provisioning, including pending-restart entries.
+  DBA-managed sources (`postgresql.conf`, command line, environment) are
+  reported as INFO for operational review; they are not app-writable.
+- The parameter/GUC catalog references introduced in M14.3.18 are
+  `pg_catalog`-qualified. M14.3.19 later showed that the rest of the verifier
+  still relied on the search path; see M14.3.20 below.
+- Provisioning failure injection covers a failure after cross-database resets:
+  the transaction rolls back the cross-database settings, and a rerun
+  reconciles them. PostgreSQL does not emit event-trigger DDL commands for
+  `ALTER ROLE`, so GUC-reset failure injection uses the post-reset GRANT failure
+  path and parameter REVOKE failure separately.
+- PostgreSQL 16 was not available for runtime testing; catalog/function/syntax
+  compatibility is statically inspected only. Only PostgreSQL 18.6 was
+  runtime-tested.
+
+M14.3.20 completes catalog qualification for the verifier, provisioner, and
+ownership template:
+
+- **M14.3.19 finding — temporary-catalog shadowing produced a false PASS.**
+  The scripts resolved several `pg_catalog` relations through the search path
+  (for example `FROM pg_class c`) and used unqualified `regclass` literals such
+  as `'pg_class'::regclass`. For relation and type names PostgreSQL searches
+  `pg_temp` **before** `pg_catalog`, so a session-local
+  `CREATE TEMP TABLE pg_class AS SELECT * FROM pg_catalog.pg_class` shadows the
+  catalog regardless of the `search_path` setting. A verifier session pre-loaded
+  that way returned exit 0 (false PASS) while `utop14_app` held `GRANT OPTION`
+  on `public.audit_logs`, and the app could then run
+  `GRANT SELECT ON public.audit_logs TO PUBLIC`.
+- `SET search_path = pg_catalog, public` does **not** prevent this, because the
+  temporary schema precedes `pg_catalog` for relation and type name lookup.
+  Function and operator lookup behave differently: `pg_temp` is only searched
+  for those when it is listed explicitly, so a temporary function cannot shadow
+  an unqualified ACL helper under the enforced path. Qualification is still
+  required, because the path is an explicit setting rather than a guarantee.
+- **Remediation.** Every system catalog relation, ACL/privilege helper, and
+  `regclass` literal in `scripts/security_event_retention_verify.sql`,
+  `scripts/security_event_retention_roles.sql`, and
+  `scripts/security_event_retention_ownership_template.sql` now carries an
+  explicit `pg_catalog.` qualifier, for example `FROM pg_catalog.pg_class c`,
+  `pg_catalog.has_table_privilege(...)`, and
+  `'pg_catalog.pg_class'::regclass`. Catalog object identity can no longer change
+  because a temporary or ordinary-schema object of the same name exists. SQL
+  keywords that look like functions (`COALESCE`, `CURRENT_USER`, `SESSION_USER`,
+  `CASE`, ...) are parsed as keywords, are not name-resolved, and cannot be
+  qualified.
+- **Regression coverage.** The disposable privilege test loads temporary copies
+  of `pg_class`, `pg_attribute`, `pg_proc`, `pg_namespace`, `pg_depend`,
+  `pg_type`, `pg_trigger`, and `pg_extension` into the verifier's own session
+  while `utop14_app` holds `GRANT OPTION`, and requires every run to exit
+  non-zero without the success marker. It also runs provisioning and the
+  ownership template with a shadowed `pg_class` and requires correct behavior
+  against the real catalog or a fail-closed abort, plus hostile ordinary-schema
+  and temporary-function variants.
+- **Schema-owner `search_path` rationale.** `utop14_schema_owner` may keep
+  `search_path` at role level and per database because it is the trusted DDL
+  boundary: it already owns the application schema and objects, so a
+  `search_path` value adds no capability. It remains default-deny for parameter
+  ACLs (`SET`/`ALTER SYSTEM`, PUBLIC, GRANT OPTION), so it cannot use
+  `search_path` to change session or cluster configuration, and provisioning
+  does not reset the schema-owner `search_path`.
+- **Cluster-wide provisioning scope.** Provisioning resets managed-role
+  role-level settings and every managed-role/database-specific setting in
+  **every non-template database in the cluster**, including databases that
+  belong to unrelated applications. The resets are catalog updates on
+  `pg_catalog.pg_db_role_setting` (no connection to the target database is
+  opened), so the blast radius is cluster-wide catalog state, not application
+  data. Run provisioning only against the cluster that hosts UTOP14, during a
+  change window, and expect `utop14_*` role settings to be removed from other
+  databases on that cluster.
+- Catalog qualification and its regression tests are local implementation
+  results. They are not independent security approval; a separate review is
+  still required before merge or production use.
+
+#### Cluster-level GUC audit procedure
+
+Run as a PostgreSQL superuser before relying on verification:
+
+```sql
+SELECT name, setting, source, sourcefile, pending_restart
+FROM pg_settings
+WHERE name IN (
+    'shared_preload_libraries', 'session_preload_libraries',
+    'local_preload_libraries', 'log_statement',
+    'log_min_duration_statement', 'log_min_error_statement',
+    'log_min_messages', 'log_destination', 'logging_collector',
+    'log_connections', 'log_disconnections', 'log_duration',
+    'log_hostname', 'log_line_prefix', 'log_statement_sample_rate',
+    'log_transaction_sample_rate', 'search_path'
+)
+ORDER BY name;
+
+SELECT sourcefile, name, setting, applied, error
+FROM pg_file_settings
+WHERE name IN (
+    'shared_preload_libraries', 'session_preload_libraries',
+    'local_preload_libraries', 'log_statement',
+    'log_min_duration_statement', 'log_min_error_statement',
+    'log_min_messages', 'log_destination', 'logging_collector',
+    'log_connections', 'log_disconnections', 'log_duration',
+    'log_hostname', 'log_line_prefix', 'log_statement_sample_rate',
+    'log_transaction_sample_rate', 'search_path'
+)
+ORDER BY sourcefile, name;
+```
+
+- A sensitive setting whose `sourcefile` ends in `postgresql.auto.conf` must be
+  reset with `ALTER SYSTEM RESET <name>;`. Reload with
+  `SELECT pg_reload_conf();` for reloadable settings; if `pending_restart` is
+  true or the setting has postmaster context, restart the cluster through the
+  approved operational process.
+- After reload/restart, re-run both queries and require the setting to be at its
+  approved/default value with `pending_restart = false`; then re-run
+  `security_event_retention_verify.sql`.
+- Settings sourced from `postgresql.conf`, the command line, environment, or
+  service configuration are DBA-managed. The verifier reports them as INFO;
+  review them against the approved operational baseline. Do not edit production
+  configuration files from this project.
+- The verifier does not claim to inspect settings it cannot see through
+  `pg_settings`/`pg_file_settings`; the audit above is the operational gate.
+
+
+### Production ownership model (OPS-01)
+
+The append-only and retention boundary depends on ownership separation. The
+following model is mandatory in production and must be verified on a disposable
+PostgreSQL cluster with a separate DDL role:
+
+- A dedicated DDL/schema owner (or DBA) runs every migration and owns the
+  database, application schema, every application table and sequence
+  (including `audit_logs`, `auth_rate_limits`, `security_events`, all catalog,
+  cart, order, payment and review tables), and the trigger/helper functions.
+- The application login role is DML-only. It is **not** the database owner,
+  schema owner, table owner, sequence owner, or function owner, and it has no
+  `CREATE` on the application schema or the application database. It has no
+  role memberships, no function `EXECUTE` (including trigger/helper functions),
+  no explicit column-level grants, no `GRANT OPTION`, no parameter `SET` or
+  `ALTER SYSTEM`, and no persistent GUC other than
+  `search_path=public, pg_catalog` in any database.
+- `utop14_retention_owner` remains NOLOGIN and owns only
+  `public.prune_security_events`. `utop14_retention_runner` remains separate and
+  has only function `EXECUTE` plus run-log append. Neither retention role has
+  database `CREATE`, explicit column grants, `GRANT OPTION`, parameter
+  `SET`/`ALTER SYSTEM`, or persistent GUC settings in any database.
+- `utop14_schema_owner` may have `search_path` only; any other role-level or
+  database-specific GUC requires explicit DBA reconciliation. Explicit
+  schema-owner parameter `SET`/`ALTER SYSTEM` grants are default-deny.
+- The app grant matrix is least-privilege and complete:
+  - `SELECT, INSERT` on `security_events`, `audit_logs`, and `order_items`
+    (append-only/immutable writes; no UPDATE/DELETE).
+  - `SELECT, INSERT, UPDATE` on `users`, catalog tables, carts, orders,
+    payments, payment proofs, product reviews, and retention holds.
+  - `SELECT, INSERT, UPDATE, DELETE` on `auth_rate_limits` (successful-login
+    reset and TTL cleanup), `cart_items`, and `product_images`.
+  - No app privileges on `security_event_retention_runs` (owner/runner only) or
+    `alembic_version` (migration metadata).
+  - `USAGE, SELECT` on every application sequence the app inserts into, and no
+    `UPDATE` on any sequence; the retention run sequence is owner/runner only.
+  - No `TRUNCATE`, `TRIGGER`, `REFERENCES`, or `MAINTAIN` on any application
+    table; no ownership; no function `EXECUTE`; no column-level grants; no
+    `GRANT OPTION`.
+- `PUBLIC` has no function `EXECUTE`, no `CREATE` on any non-system schema, no
+  database `CREATE`, no table/sequence privileges, no column privileges, and no
+  `GRANT OPTION`.
+
+`scripts/security_event_retention_ownership_template.sql` is a review-and-adapt
+DBA template that transfers all 18 application tables, all 16 sequences, and
+the trigger/helper functions to the schema owner; it is not run by migrations.
+It preflights the exact object inventory (including schemas, types, extensions,
+functions and triggers), runs in one transaction, and fails closed if a new
+migration object has not been added to the inventory. After the DBA applies it
+and runs the provisioning script, `scripts/security_event_retention_verify.sql`
+must exit 0 when run as a PostgreSQL superuser. The verification script
+inventories every schema, type, extension, table, sequence, function, trigger
+and view, enforces default-deny memberships, checks ownership and the complete
+app/owner/runner table, column, sequence and function ACL/EXECUTE matrices
+(including `GRANT OPTION`), checks database-level `CREATE` and PostgreSQL 17+
+`MAINTAIN`, checks `pg_parameter_acl` for `SET`/`ALTER SYSTEM` grants and
+GRANT OPTION for app/retention/schema-owner/PUBLIC, checks all role-level and
+database-specific GUCs in **every database** against the approved allowlist,
+checks database-wide/global settings in every database for DBA reconciliation,
+checks sensitive cluster-level settings in `pg_settings`/`pg_file_settings`
+(any `postgresql.auto.conf` entry fails), checks every non-system schema for
+app/retention `CREATE` and `USAGE`, and probes append-only boundaries. The
+ownership model is only considered verified when the disposable
+ownership/privilege test passes the rate-limit, audit, security-event,
+trigger-disable, ALTER, DELETE, TRUNCATE, membership, schema, type, column-ACL,
+database-CREATE, MAINTAIN, parameter-ACL, role-GUC, database-GUC,
+cluster-GUC, function-EXECUTE, provisioning-idempotency, cross-database and
+negative-grant probes.
+
+Provisioning requires PostgreSQL 16 or newer. Parameter ACLs use
+`pg_parameter_acl` and `has_parameter_privilege` (PostgreSQL 15+); if those are
+unavailable, provisioning and verification fail closed. The membership option
+columns `INHERIT`/`SET`/`ADMIN` are read through `to_jsonb` and a missing option
+is treated as `TRUE` on older catalogs, so they do not falsely pass an
+unverifiable membership. The scripts assume the role names
+`utop14_schema_owner`, `utop14_app`, `utop14_retention_owner`, and
+`utop14_retention_runner`; replace them consistently if the deployment uses
+different names.
+
+Provisioning and recovery:
+
+1. Run migrations as the schema/DDL owner, then the ownership template, then
+   `scripts/security_event_retention_roles.sql`, then the verify script as a
+   PostgreSQL superuser.
+2. The roles script is repeatable: a second run succeeds and produces the same
+   non-owner ACL and ownership state. It creates missing retention roles,
+   reconciles their `LOGIN`/`INHERIT`/privilege attributes, resets all
+   persistent role-level and database-specific GUCs for the managed roles in
+   every non-template database, sets the app `search_path` to
+   `public, pg_catalog`, revokes database-level `CREATE`, and revokes parameter
+   `SET`/`ALTER SYSTEM` grants for app/retention/schema-owner/PUBLIC. It never
+   reads or changes passwords.
+3. A forward membership of `utop14_app`, `utop14_retention_owner`, or
+   `utop14_retention_runner` is removed by provisioning and reported with
+   `REVOKED forbidden membership`. A reverse membership (another role can
+   assume a managed role) fails preflight; review it, run
+   `REVOKE <managed_role> FROM <other_role>`, then rerun.
+4. A role with `SUPERUSER`/`CREATEDB`/`CREATEROLE`/`REPLICATION`/`BYPASSRLS`
+   fails preflight; correct it with `ALTER ROLE ... NOSUPERUSER NOCREATEDB
+   NOCREATEROLE NOREPLICATION NOBYPASSRLS` and rerun. Preflight failure is
+   transactional: no partial grants remain.
+5. Database-wide GUCs, non-`search_path` schema-owner GUCs, and sensitive
+   `postgresql.auto.conf` settings are not modified automatically. Verification
+   and provisioning fail with a DBA-reconciliation message; follow the
+   cluster-level GUC audit procedure above, reset the setting, reload/restart
+   if required, then rerun.
+6. A pre-existing column-level grant, database `CREATE`, `MAINTAIN`, or
+   parameter privilege is removed by the roles script, including managed-role
+   settings in other databases. Verification fails if a forbidden grant or GUC
+   is reintroduced after provisioning. Recycle existing application connections
+   and pools after provisioning so they pick up the new `search_path`.
+7. Any new schema, extension, type/domain, table, sequence, function, trigger
+   or view must be reviewed and added to the ownership/provisioning inventory
+   before provisioning or verification will pass. Only `public` and `plpgsql`
+   are approved today.
+
+
+The hardening migration `e3b9f1c7a2d4` replaces the retention function. On a
+fresh install it runs before provisioning, while the function is still owned by
+the DDL role. If provisioning has already transferred the function to
+`utop14_retention_owner`, run the migration as the DBA/superuser (or temporarily
+transfer function ownership, run it, and re-run provisioning). A non-superuser
+DDL role cannot replace a function it does not own.
+
+#### Residual risks (RR-03/RR-04)
+
+These are explicitly accepted for this milestone; the hold and run-log designs
+are intentionally not expanded here.
+
+- **RR-03 — hold mutability.** The app role has `UPDATE` on holds because it
+  must replace an already-expired hold. It can therefore extend an active hold
+  up to 3650 days (repeatedly) and can change `reason`/`created_by` through a
+  direct UPDATE. This can delay retention and means forensic hold metadata is
+  not fully immutable. It is **not** a deletion bypass: the database trigger
+  rejects expiring or shortening an active hold, and the retention function
+  excludes active holds. If hold metadata must be tamper-evident, a future
+  milestone should make holds append-only or expose a SECURITY DEFINER hold API
+  with an immutable history.
+- **RR-04 — run-log writer.** `utop14_retention_runner` can append run-log rows,
+  including a synthetic row. It cannot UPDATE or DELETE run-log history. The
+  runner is treated as a trusted operational writer; protect its credential in
+  a secret manager and restrict the OS job account. Treat the run log as
+  operational telemetry, not a tamper-evident security audit trail.
+
+The application sequence privileges (including `security_events_id_seq`,
+`audit_logs_id_seq`, and all catalog/cart/order/payment/review sequences) are
+applied by `scripts/security_event_retention_roles.sql`, not by an Alembic
+migration. Grants are role provisioning, not schema DDL; keeping them outside
+migrations avoids coupling schema versioning to role existence and preserves
+the existing single Alembic head `e3b9f1c7a2d4`. All sequences remain owned by
+the schema/DDL owner.
+
+Deferred operational risks (documented, not silently fixed here):
+- Identifier-bucket throttling can be used for targeted login denial of
+  service; thresholds/cooldowns are configurable and should be monitored.
+- Rate-limit windows/cooldowns use application time; production requires
+  accurate synchronized clocks (NTP) or a future database-time change.
+- M14.2 F-02 (viewer query-string/access-log exposure) remains a production
+  blocker until M14.2.4 infrastructure review and remediation are complete.
+- Retention scheduler, rate-limit TTL cleanup, run-log cleanup, runner
+  credentials, monitoring, backup/restore, and the operational runbook are
+  deployment prerequisites.
+- Security-event IP/UA and identity snapshots are audit data and require an
+  explicit data-classification/privacy sign-off.
+
+The runner DSN is supplied through
+`SECURITY_EVENT_RETENTION_DATABASE_URL`, ideally from a secret manager. The
+manual command is:
+
+```bash
+flask --app wsgi security-event-retention run \
+  --batch-size 2000 --max-batches 20
+```
+
+Exit status: `0` success, `2` partial (batch budget reached), `3` advisory lock
+already held, `1` validation/store failure. There is no scheduler or background
+worker. Production must invoke the command from an approved cron/systemd timer
+using a non-login application account and a separately protected runner
+credential; never put the database password on the command line.
+
+Operational monitoring should track deleted rows, duration, success/partial/
+failure status, oldest event age against each cutoff, hold count, table size,
+dead tuples/index bloat, and consecutive failures. Alert on two consecutive
+failures, oldest event age beyond cutoff + 7 days, or repeated partial runs.
+
+Recommended deployment invocation:
+
+- Run as a dedicated unprivileged OS service account, not the web process user.
+- Load the runner DSN from a root-owned, mode-0600 environment file or secret
+  manager; never place it in the command line, shell history, or application
+  logs.
+- Use a systemd timer or cron entry that invokes
+  `flask --app wsgi security-event-retention run`.
+- Capture stdout/stderr to the selected operational log or journald. The
+  command prints only run_id, status, batch count and deleted count.
+- Alert after two consecutive non-zero exits, a persistent partial status, or
+  an oldest-event age beyond the relevant cutoff plus 7 days.
+- A partial run is safe to rerun: the next invocation uses a new fixed cutoff
+  and deletes the remaining eligible rows. A failed batch is rolled back and is
+  followed by a failed run-log row; do not treat it as success.
+- Manual execution must use the same runner credential and environment-loading
+  procedure.
+
+Superusers and sufficiently privileged table owners remain outside the
+database-level retention boundary. This is not absolute immutability.
+
+
 ### M14.2 admin security-event viewer
 
 The admin viewer is read-only and restricted to the `admin` role. The list page
@@ -688,24 +1255,27 @@ is changed by this repository milestone.
    least 32 bytes of UTF-8 key material.
 3. Ensure the key differs from `SECRET_KEY`.
 4. Never reuse the repository test key or any placeholder value.
-5. Apply both migrations from a controlled release job:
-   `9b2d4e6f8a10` and `c4e7a1b9d2f6`.
+5. Apply the security-event and rate-limit migrations from a controlled release
+   job: `9b2d4e6f8a10`, `c4e7a1b9d2f6`, `e1b7c4a9d2f3`,
+   `b4d8e2f7a1c9`, `d7c1a9e4b2f8`, and `e3b9f1c7a2d4`. Run migrations as the
+   dedicated DDL/schema owner, not as the application role. If the retention
+   function is already owned by `utop14_retention_owner`, run
+   `e3b9f1c7a2d4` as the DBA/superuser.
 6. The request-ID index migration is non-concurrent. If `security_events`
    already contains production traffic, schedule index creation in a maintenance
    window or use a separately reviewed concurrent-index procedure.
 7. Never downgrade `9b2d4e6f8a10` in production. Its downgrade drops the
    `security_events` table and destroys its history; do not run it without an
    approved backup and explicit authorization.
-8. M14.1 does not complete production security hardening. The following remain
-   deferred: rate limiting and lockout; retention and purge; an admin
-   security-event viewer; remember-cookie restoration and forced
-   session-invalidation events; password reset/recovery event integration; and
-   session anomaly detection.
+8. M14.1 does not complete production security hardening. Login rate limiting
+   is implemented in M14.3.1/M14.3.2; security-event retention is implemented in
+   M14.3.3. Permanent lockout, remember-cookie restoration, password reset/
+   recovery event integration, and session anomaly detection remain deferred.
 
-Password reset, account recovery, rate limiting, session-anomaly detection,
-remember-cookie restoration events, an admin security-event viewer and automatic
-retention purges are not part of M14.1. Retention is permanent until a separately
-approved archival policy exists.
+Password reset, account recovery, permanent lockout, session-anomaly detection,
+remember-cookie restoration events, and automatic scheduler-driven retention
+are not part of M14.1 or M14.3.2. M14.3.3 provides manual/bounded retention for
+`security_events`; M13 `audit_logs` remain permanent.
 
 ## Production notes
 
@@ -731,6 +1301,35 @@ approved archival policy exists.
 7. Review Nginx and Gunicorn access-log configuration so admin security-event
    query strings (`request_id`, `identifier_hash`, actor/subject IDs) are not
    recorded in production logs. See the M14.2 viewer privacy note above.
+8. Schedule the bounded authentication rate-limit cleanup command through an
+   approved maintenance job until a scheduler is introduced. Login throttling is
+   active in M14.3.2; deployment must also review rate-limit thresholds and
+   access-log privacy.
+9. Provision the dedicated retention roles from
+   `scripts/security_event_retention_roles.sql` with a superuser, verify with
+   `scripts/security_event_retention_verify.sql` as a PostgreSQL superuser, then
+   schedule `security-event-retention run` using a protected runner DSN. Never
+   run role provisioning from the application or a production migration.
+10. Enforce the OPS-01 ownership model: the DDL/schema owner owns the database,
+    schema, every application table and sequence, and trigger/helper functions;
+    `utop14_app` is DML-only, owns nothing, has no role memberships, no function
+    `EXECUTE`, no column-level grants, no `GRANT OPTION`, no database `CREATE`,
+    no parameter `SET`/`ALTER SYSTEM`, and no persistent GUC other than
+    `search_path=public, pg_catalog` in any database; `prune_security_events`
+    stays owned by `utop14_retention_owner`. The app must have the complete
+    least-privilege matrix, including `SELECT, INSERT` on `audit_logs` /
+    `security_events`, `SELECT, INSERT, UPDATE, DELETE` on `auth_rate_limits`,
+    and `USAGE, SELECT` on all application sequences it inserts into, but never
+    `TRUNCATE`/`TRIGGER`/`REFERENCES`/`MAINTAIN`, sequence UPDATE, schema or
+    database CREATE outside `public`, column-level grants, parameter ACLs, or
+    ownership. Apply `scripts/security_event_retention_ownership_template.sql`
+    only after DBA review, then run the provisioning and verification scripts.
+    Follow the cluster-level GUC audit procedure for `postgresql.auto.conf`.
+    Do not proceed to production if `security_event_retention_verify.sql` exits
+    non-zero or if the app can disable an append-only trigger, assume a role,
+    create objects in a non-application schema, create a schema, hold a column
+    privilege, set a parameter, or retain an unapproved role/database GUC in
+    any database.
 
 ## Milestone 7 scope
 
