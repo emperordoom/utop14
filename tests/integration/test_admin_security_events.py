@@ -138,6 +138,28 @@ def _html(response) -> str:
     return response.get_data(as_text=True)
 
 
+def _post_filters(client: FlaskClient, csrf_token: Callable[[str], str], **filters):
+    """Submit filters through the POST endpoint (never through the URL)."""
+    data: dict[str, object] = {"csrf_token": csrf_token("/admin/security-events")}
+    data.update(filters)
+    return client.post("/admin/security-events/filters", data=data)
+
+
+def _apply_filters(client: FlaskClient, csrf_token: Callable[[str], str], **filters) -> None:
+    response = _post_filters(client, csrf_token, **filters)
+    assert response.status_code == 303, response.status_code
+
+
+def _filtered(client: FlaskClient, csrf_token: Callable[[str], str], **filters) -> str:
+    _apply_filters(client, csrf_token, **filters)
+    return _html(client.get("/admin/security-events"))
+
+
+def _invalid_filters(client: FlaskClient, csrf_token: Callable[[str], str], **filters) -> str:
+    """Submit invalid filters and return the 200 validation page."""
+    return _html(_post_filters(client, csrf_token, **filters))
+
+
 @contextmanager
 def _captured_sql():
     statements: list[str] = []
@@ -618,7 +640,7 @@ def test_filter_by_event_type(
     _add_event(event_type=SECURITY_EVENT_LOGOUT, actor_email="type-logout@example.com")
     _silent_login(client, csrf_token, monkeypatch, email=admin.email)
 
-    html = _html(client.get("/admin/security-events?event_type=auth.login_failed"))
+    html = _filtered(client, csrf_token, event_type="auth.login_failed")
 
     assert "type-failure@example.com" in html
     assert "type-success@example.com" not in html
@@ -642,7 +664,7 @@ def test_filter_by_outcome(
     )
     _silent_login(client, csrf_token, monkeypatch, email=admin.email)
 
-    html = _html(client.get("/admin/security-events?outcome=failure"))
+    html = _filtered(client, csrf_token, outcome="failure")
 
     assert "outcome-failure@example.com" in html
     assert "outcome-success@example.com" not in html
@@ -665,7 +687,7 @@ def test_reason_filter_derives_event_type(
     _add_event(actor_email="reason-success@example.com")
     _silent_login(client, csrf_token, monkeypatch, email=admin.email)
 
-    html = _html(client.get("/admin/security-events?reason=unknown_account"))
+    html = _filtered(client, csrf_token, reason="unknown_account")
 
     assert "reason-unknown@example.com" in html
     assert "reason-success@example.com" not in html
@@ -697,7 +719,12 @@ def test_filter_by_inclusive_utc_date_range(
     )
     _silent_login(client, csrf_token, monkeypatch, email=admin.email)
 
-    html = _html(client.get("/admin/security-events?date_from=2026-11-02&date_to=2026-11-02"))
+    html = _filtered(
+        client,
+        csrf_token,
+        date_from="2026-11-02",
+        date_to="2026-11-02",
+    )
 
     assert "date-start@example.com" in html
     assert "date-end@example.com" in html
@@ -719,7 +746,12 @@ def test_filter_by_maximum_date(
     )
     _silent_login(client, csrf_token, monkeypatch, email=admin.email)
 
-    html = _html(client.get("/admin/security-events?date_from=9999-12-31&date_to=9999-12-31"))
+    html = _filtered(
+        client,
+        csrf_token,
+        date_from="9999-12-31",
+        date_to="9999-12-31",
+    )
 
     assert "max-date@example.com" in html
 
@@ -737,12 +769,12 @@ def test_filter_by_request_id_exact(
     _add_event(actor_email="request-other@example.com", request_id="d" * 32)
     _silent_login(client, csrf_token, monkeypatch, email=admin.email)
 
-    html = _html(client.get(f"/admin/security-events?request_id={request_id}"))
+    html = _filtered(client, csrf_token, request_id=request_id)
 
     assert "request-match@example.com" in html
     assert "request-other@example.com" not in html
 
-    invalid = _html(client.get("/admin/security-events?request_id=not-a-request"))
+    invalid = _invalid_filters(client, csrf_token, request_id="not-a-request")
     assert "Request ID" in invalid
     assert "No results" in invalid
 
@@ -760,13 +792,13 @@ def test_filter_by_identifier_hash_hides_hash_from_rows(
     _add_event(actor_email="hash-other@example.com", identifier_hash="f" * 64)
     _silent_login(client, csrf_token, monkeypatch, email=admin.email)
 
-    html = _html(client.get(f"/admin/security-events?identifier_hash={identifier_hash}"))
+    html = _filtered(client, csrf_token, identifier_hash=identifier_hash)
 
     assert "hash-match@example.com" in html
     assert "hash-other@example.com" not in html
     assert identifier_hash not in _table_body(html)
 
-    invalid = _html(client.get("/admin/security-events?identifier_hash=" + "E" * 64))
+    invalid = _invalid_filters(client, csrf_token, identifier_hash="E" * 64)
     assert "Identifier hash" in invalid
     assert "hash-match@example.com" not in invalid
 
@@ -794,15 +826,15 @@ def test_filter_by_actor_and_subject_user_ids(
     )
     _silent_login(client, csrf_token, monkeypatch, email=admin.email)
 
-    actor_html = _html(client.get(f"/admin/security-events?actor_user_id={admin.id}"))
+    actor_html = _filtered(client, csrf_token, actor_user_id=str(admin.id))
     assert "actor-match@example.com" in actor_html
     assert "actor-other@example.com" not in actor_html
 
-    subject_html = _html(client.get(f"/admin/security-events?subject_user_id={other.id}"))
+    subject_html = _filtered(client, csrf_token, subject_user_id=str(other.id))
     assert "subject-match@example.com" in subject_html
     assert "subject-other@example.com" not in subject_html
 
-    invalid = _html(client.get("/admin/security-events?actor_user_id=0"))
+    invalid = _invalid_filters(client, csrf_token, actor_user_id="0")
     assert "Actor user ID" in invalid
     assert "actor-match@example.com" not in invalid
 
@@ -818,7 +850,7 @@ def test_invalid_filter_does_not_drop_valid_filter_or_show_results(
     _add_event(actor_email="invalid-filter-marker@example.com")
     _silent_login(client, csrf_token, monkeypatch, email=admin.email)
 
-    html = _html(client.get("/admin/security-events?event_type=auth.logout&actor_user_id=0"))
+    html = _invalid_filters(client, csrf_token, event_type="auth.logout", actor_user_id="0")
 
     assert "Actor user ID" in html
     assert 'value="auth.logout" selected' in html
@@ -838,8 +870,11 @@ def test_incompatible_reason_and_event_type_fails_closed(
     _add_event(actor_email="conflict-marker@example.com")
     _silent_login(client, csrf_token, monkeypatch, email=admin.email)
 
-    html = _html(
-        client.get("/admin/security-events?event_type=auth.login_succeeded&reason=user_requested")
+    html = _invalid_filters(
+        client,
+        csrf_token,
+        event_type="auth.login_succeeded",
+        reason="user_requested",
     )
 
     assert "not compatible" in html
@@ -858,12 +893,15 @@ def test_invalid_dates_fail_closed(
     _add_event(actor_email="invalid-date-marker@example.com")
     _silent_login(client, csrf_token, monkeypatch, email=admin.email)
 
-    invalid_date = _html(client.get("/admin/security-events?date_from=not-a-date"))
+    invalid_date = _invalid_filters(client, csrf_token, date_from="not-a-date")
     assert "From date" in invalid_date
     assert "invalid-date-marker@example.com" not in invalid_date
 
-    reversed_range = _html(
-        client.get("/admin/security-events?date_from=2026-11-03&date_to=2026-11-01")
+    reversed_range = _invalid_filters(
+        client,
+        csrf_token,
+        date_from="2026-11-03",
+        date_to="2026-11-01",
     )
     assert "on or before" in reversed_range
     assert "invalid-date-marker@example.com" not in reversed_range
@@ -885,14 +923,17 @@ def test_filter_preservation_across_pages(
         )
     _silent_login(client, csrf_token, monkeypatch, email=admin.email)
 
-    first = _html(client.get("/admin/security-events?event_type=auth.logout&outcome=success"))
-    assert "page=2" in first
-    assert "event_type=auth.logout" in first
-    assert "outcome=success" in first
-
-    second = _html(
-        client.get("/admin/security-events?event_type=auth.logout&outcome=success&page=2")
+    first = _filtered(
+        client,
+        csrf_token,
+        event_type="auth.logout",
+        outcome="success",
     )
+    assert "page=2" in first
+    assert "event_type=auth.logout" not in first
+    assert "outcome=success" not in first
+
+    second = _html(client.get("/admin/security-events?page=2"))
     assert "filter-page-20@example.com" in second
     assert "filter-page-0@example.com" not in second
 
@@ -913,7 +954,7 @@ def test_invalid_filter_does_not_render_pagination(
         )
     _silent_login(client, csrf_token, monkeypatch, email=admin.email)
 
-    html = _html(client.get("/admin/security-events?event_type=invalid"))
+    html = _invalid_filters(client, csrf_token, event_type="invalid")
 
     assert "Select a valid event type." in html
     assert "invalid-page-0@example.com" not in html
@@ -934,12 +975,16 @@ def test_cache_control_is_private_no_store(
 
     for path in (
         "/admin/security-events",
-        "/admin/security-events?event_type=invalid",
         "/admin/security-events?page=999",
     ):
         response = client.get(path)
         assert response.status_code == 200
         assert response.headers["Cache-Control"] == "private, no-store"
+
+    legacy = client.get("/admin/security-events?event_type=invalid")
+    assert legacy.status_code == 303
+    assert legacy.headers["Cache-Control"] == "private, no-store"
+    assert "event_type" not in legacy.headers["Location"]
 
 
 def test_admin_route_sql_shape_and_authorization_order(
@@ -1154,10 +1199,13 @@ def test_admin_can_view_security_event_detail(
 
     related = html.split('class="security-event-related"', 1)[1].split("</article>", 1)[0]
     assert admin.email not in related
-    assert f"request_id={request_id}" in related
-    assert f"identifier_hash={identifier_hash}" in related
-    assert f"actor_user_id={admin.id}" in related
-    assert f"subject_user_id={admin.id}" in related
+    assert 'action="/admin/security-events/filters"' in related
+    assert 'name="request_id"' in related
+    assert 'name="identifier_hash"' in related
+    assert 'name="actor_user_id"' in related
+    assert 'name="subject_user_id"' in related
+    assert "?request_id=" not in related
+    assert "?identifier_hash=" not in related
 
 
 def test_detail_minimal_states(
@@ -1454,14 +1502,17 @@ def test_related_event_links_follow_and_fail_closed(
     related = html.split('class="security-event-related"', 1)[1].split("</article>", 1)[0]
     assert "related-actor@example.com" not in related
     assert "related-subject@example.com" not in related
-    assert f"request_id={request_id}" in related
-    assert f"identifier_hash={identifier_hash}" in related
-    assert f"actor_user_id={admin.id}" in related
-    assert f"subject_user_id={admin.id}" in related
+    assert 'action="/admin/security-events/filters"' in related
+    assert 'name="request_id"' in related
+    assert 'name="identifier_hash"' in related
+    assert 'name="actor_user_id"' in related
+    assert 'name="subject_user_id"' in related
+    assert "?request_id=" not in related
+    assert "?identifier_hash=" not in related
 
-    request_list = _html(client.get(f"/admin/security-events?request_id={request_id}"))
+    request_list = _filtered(client, csrf_token, request_id=request_id)
     assert "related-actor@example.com" in request_list
-    identifier_list = _html(client.get(f"/admin/security-events?identifier_hash={identifier_hash}"))
+    identifier_list = _filtered(client, csrf_token, identifier_hash=identifier_hash)
     assert "related-actor@example.com" in identifier_list
 
     malformed = _add_event(
@@ -1469,8 +1520,10 @@ def test_related_event_links_follow_and_fail_closed(
         request_id="bad",
     )
     malformed_html = _html(client.get(f"/admin/security-events/{malformed.id}"))
-    assert "request_id=bad" in malformed_html
-    malformed_list = _html(client.get("/admin/security-events?request_id=bad"))
+    assert "bad" in malformed_html
+    assert 'name="request_id"' in malformed_html
+    assert "?request_id=" not in malformed_html
+    malformed_list = _invalid_filters(client, csrf_token, request_id="bad")
     assert "Request ID" in malformed_list
     assert "malformed-related@example.com" not in malformed_list
 
@@ -1528,10 +1581,10 @@ def test_login_throttled_event_renders_and_filters(
     assert "Identifier rate limited" in list_html
     assert f"#{event.id}" in list_html
 
-    reason_html = _html(client.get("/admin/security-events?reason=identifier_rate_limited"))
+    reason_html = _filtered(client, csrf_token, reason="identifier_rate_limited")
     assert f"#{event.id}" in reason_html
 
-    type_html = _html(client.get("/admin/security-events?event_type=auth.login_throttled"))
+    type_html = _filtered(client, csrf_token, event_type="auth.login_throttled")
     assert f"#{event.id}" in type_html
 
     detail_html = _html(client.get(f"/admin/security-events/{event.id}"))

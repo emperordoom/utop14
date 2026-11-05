@@ -134,9 +134,9 @@ BEGIN
     END IF;
     -- Update this expected head only together with a reviewed migration.  A
     -- mismatched head must never silently provision a partially migrated DB.
-    IF v_head IS DISTINCT FROM 'e3b9f1c7a2d4' THEN
+    IF v_head IS DISTINCT FROM 'c4a9e2f7b1d8' THEN
         RAISE EXCEPTION
-            'FAIL: database migration head=% (expected e3b9f1c7a2d4); review and update this preflight after applying the approved migration',
+            'FAIL: database migration head=% (expected c4a9e2f7b1d8); review and update this preflight after applying the approved migration',
             v_head;
     END IF;
 END $$;
@@ -149,11 +149,12 @@ DECLARE
     expected_schemas text[] := ARRAY['public'];
     expected_extensions text[] := ARRAY['plpgsql'];
     expected_tables text[] := ARRAY[
-        'alembic_version', 'audit_logs', 'auth_rate_limits', 'cart_items',
-        'carts', 'categories', 'order_items', 'orders', 'payment_proofs',
-        'payments', 'product_images', 'product_reviews', 'product_variants',
-        'products', 'security_event_retention_holds',
-        'security_event_retention_runs', 'security_events', 'users'
+        'admin_security_event_filter_states', 'alembic_version', 'audit_logs',
+        'auth_rate_limits', 'cart_items', 'carts', 'categories',
+        'order_items', 'orders', 'payment_proofs', 'payments',
+        'product_images', 'product_reviews', 'product_variants', 'products',
+        'security_event_retention_holds', 'security_event_retention_runs',
+        'security_events', 'users'
     ];
     expected_sequences text[] := ARRAY[
         'audit_logs_id_seq', 'cart_items_id_seq', 'carts_id_seq',
@@ -737,6 +738,12 @@ GRANT SELECT, INSERT ON
     public.audit_logs,
     public.security_events,
     public.order_items
+    TO utop14_app;
+
+-- Server-side admin security-event filter state: the app owns the full
+-- lifecycle of its own short-lived rows (create, read, update, delete).
+GRANT SELECT, INSERT, UPDATE, DELETE ON
+    public.admin_security_event_filter_states
     TO utop14_app;
 
 -- Tables requiring DELETE:

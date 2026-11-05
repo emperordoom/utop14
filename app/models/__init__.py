@@ -7,6 +7,9 @@ this package never creates tables.
 
 from __future__ import annotations
 
+from app.models.admin_security_event_filter_state import (
+    AdminSecurityEventFilterState,
+)
 from app.models.audit_log import AuditLog
 from app.models.auth_rate_limit import AuthRateLimit
 from app.models.base import Base
@@ -27,6 +30,7 @@ from app.models.security_event_retention import (
 from app.models.user import User
 
 __all__ = [
+    "AdminSecurityEventFilterState",
     "AuditLog",
     "AuthRateLimit",
     "Base",

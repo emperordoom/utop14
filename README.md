@@ -502,6 +502,7 @@ Current revision chain in source:
 - `b4d8e2f7a1c9` — login-throttled security event taxonomy
 - `d7c1a9e4b2f8` — security-event retention holds, run log and function
 - `e3b9f1c7a2d4` — retention hold lock trigger and function validation hardening
+- `c4a9e2f7b1d8` — server-side admin security-event filter state
 
 ## Admin audit logging and trusted proxy
 
@@ -1167,7 +1168,7 @@ The application sequence privileges (including `security_events_id_seq`,
 applied by `scripts/security_event_retention_roles.sql`, not by an Alembic
 migration. Grants are role provisioning, not schema DDL; keeping them outside
 migrations avoids coupling schema versioning to role existence and preserves
-the existing single Alembic head `e3b9f1c7a2d4`. All sequences remain owned by
+the existing single Alembic head `c4a9e2f7b1d8`. All sequences remain owned by
 the schema/DDL owner.
 
 Deferred operational risks (documented, not silently fixed here):
@@ -1175,8 +1176,10 @@ Deferred operational risks (documented, not silently fixed here):
   service; thresholds/cooldowns are configurable and should be monitored.
 - Rate-limit windows/cooldowns use application time; production requires
   accurate synchronized clocks (NTP) or a future database-time change.
-- M14.2 F-02 (viewer query-string/access-log exposure) remains a production
-  blocker until M14.2.4 infrastructure review and remediation are complete.
+- M14.2 F-02 (viewer query-string/access-log exposure) is remediated in code by
+  M14.4.1: sensitive filters live in PostgreSQL and never appear in a URL. The
+  remaining production prerequisite is the Nginx/Gunicorn access-log review for
+  legacy or third-party query strings.
 - Retention scheduler, rate-limit TTL cleanup, run-log cleanup, runner
   credentials, monitoring, backup/restore, and the operational runbook are
   deployment prerequisites.
@@ -1233,20 +1236,47 @@ exclusively on an authorized event detail page. Detail pages use an explicit
 per-event metadata display allowlist, render the User-Agent as escaped text, and
 never traverse actor/subject relationships or join `users` or `audit_logs`.
 
-List and detail responses set `Cache-Control: private, no-store`; detail
-responses also set `Referrer-Policy: no-referrer`. Related-event navigation uses
-exact `request_id`, `identifier_hash`, `actor_user_id` or `subject_user_id`
-query parameters on the existing list endpoint, where the normal fail-closed
-filter validation still applies.
+List and detail responses set `Cache-Control: private, no-store`,
+`Referrer-Policy: no-referrer` and `X-Robots-Tag: noindex, nofollow`. The same
+three headers are applied to every `/admin/*` response, including `303`
+redirects and `400`/`403`/`404`/`405`/`429`/`500` responses.
 
-These response headers do not erase values from browser history, proxy logs or
-server access logs. Treat request IDs and identifier hashes in GET query strings
-as sensitive pseudonymous values: do not log query strings in application debug
-or error output, and do not add analytics or client telemetry for these URLs.
-Before production rollout, review the Nginx and Gunicorn access-log formats so
-that `/admin/security-events` requests do not record sensitive query strings.
-That infrastructure review is deferred to M14.2.4; no production configuration
-is changed by this repository milestone.
+#### Server-side security-event filter state (M14.4.1)
+
+Sensitive filter values (`identifier_hash`, `request_id`, and the other viewer
+filters) are never placed in a URL. The filter form POSTs to
+`/admin/security-events/filters`; the server validates the values, stores them
+in `admin_security_event_filter_states`, and returns `303` to
+`/admin/security-events`.
+
+- The browser holds only an opaque 256-bit token in the
+  `utop14_se_filter_state` cookie (`HttpOnly`, `SameSite=Lax`,
+  `Path=/admin/security-events`, `Secure` when the session cookie is secure).
+- PostgreSQL stores only the SHA-256 digest of that token, the owning
+  `admin_user_id`, and the validated JSONB payload. The raw token and the
+  filters never appear in an access log or URL.
+- Lookups require the digest, the authenticated admin id, and an unexpired
+  `expires_at`. Another admin's token is ignored exactly like a missing state.
+- The TTL is `ADMIN_SECURITY_EVENT_FILTER_TTL_MINUTES` (default 30, allowed
+  1–240). Expired states are rejected at lookup time even if cleanup has not
+  run.
+- `flask admin-security-event-filters cleanup --limit N` deletes expired states
+  in bounded batches. Security does not depend on this job; schedule it as an
+  operational follow-up.
+- Pagination carries only `?page=N`. Legacy URLs that contain filter parameters
+  are redirected to a clean URL without echoing the values.
+- Logout deletes the admin's stored states and clears the cookie. Multiple tabs
+  share one state because the cookie is per-browser-session; applying a filter
+  in one tab replaces the state seen by the other tabs on their next load.
+- The login `next` target is stripped of `identifier_hash` and `request_id`, so
+  an expired admin session cannot move sensitive filters into the login URL or
+  the post-login redirect.
+
+The application never logs the token or the filter payload. The code-level
+exposure is remediated here; **production deployment still requires** the
+Nginx/Gunicorn access-log review so that legacy or third-party query strings are
+not recorded. That infrastructure step is deferred and is not performed by this
+repository milestone.
 
 ### M14.1 deployment checklist
 
@@ -1257,9 +1287,9 @@ is changed by this repository milestone.
 4. Never reuse the repository test key or any placeholder value.
 5. Apply the security-event and rate-limit migrations from a controlled release
    job: `9b2d4e6f8a10`, `c4e7a1b9d2f6`, `e1b7c4a9d2f3`,
-   `b4d8e2f7a1c9`, `d7c1a9e4b2f8`, and `e3b9f1c7a2d4`. Run migrations as the
-   dedicated DDL/schema owner, not as the application role. If the retention
-   function is already owned by `utop14_retention_owner`, run
+   `b4d8e2f7a1c9`, `d7c1a9e4b2f8`, `e3b9f1c7a2d4`, and `c4a9e2f7b1d8`. Run
+   migrations as the dedicated DDL/schema owner, not as the application role. If
+   the retention function is already owned by `utop14_retention_owner`, run
    `e3b9f1c7a2d4` as the DBA/superuser.
 6. The request-ID index migration is non-concurrent. If `security_events`
    already contains production traffic, schedule index creation in a maintenance

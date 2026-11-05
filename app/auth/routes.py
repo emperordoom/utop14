@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from flask import (
     abort,
@@ -59,6 +59,10 @@ from app.services.profiles import (
     ProfileValidationError,
     update_profile,
 )
+from app.services.security_event_filter_state import (
+    clear_filter_state_cookie,
+    delete_filter_states_for_admin,
+)
 from app.services.security_events import (
     AUTH_METHOD_PASSWORD,
     AUTH_METHOD_REGISTRATION,
@@ -68,6 +72,19 @@ from app.services.security_events import (
 )
 
 _SAFE_NEXT_MAX_LENGTH = 2048
+_SENSITIVE_NEXT_PARAMS = frozenset({"identifier_hash", "request_id"})
+
+
+def _strip_sensitive_query(target: str) -> str:
+    """Remove sensitive filter parameters from a local redirect target."""
+    parsed = urlsplit(target)
+    if not parsed.query:
+        return target
+    pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    filtered = [(key, value) for key, value in pairs if key not in _SENSITIVE_NEXT_PARAMS]
+    if len(filtered) == len(pairs):
+        return target
+    return urlunsplit(("", "", parsed.path, urlencode(filtered), parsed.fragment))
 
 
 def _safe_next_url(target: str | None) -> str | None:
@@ -88,7 +105,7 @@ def _safe_next_url(target: str | None) -> str | None:
     parsed = urlsplit(candidate)
     if parsed.scheme or parsed.netloc:
         return None
-    return candidate
+    return _strip_sensitive_query(candidate)
 
 
 def _clear_session() -> None:
@@ -189,8 +206,18 @@ def login() -> ResponseReturnValue:
         return redirect(_safe_next_url(request.args.get("next")) or url_for("storefront.home"))
 
     form = LoginForm()
-    if not form.next.data:
-        form.next.data = request.args.get("next", "")
+    if request.method == "GET":
+        raw_next = request.args.get("next")
+        safe_next = _safe_next_url(raw_next)
+        if raw_next is not None and safe_next != raw_next and safe_next is not None:
+            # Drop sensitive filter parameters from the login URL itself before
+            # the page is rendered or the value is placed in a hidden field.
+            return redirect(url_for("auth.login", next=safe_next), code=303)
+        form.next.data = safe_next or ""
+    else:
+        # The posted target is validated again on the way out; sanitize it here
+        # so it is never rendered back with sensitive parameters.
+        form.next.data = _safe_next_url(form.next.data) or ""
 
     if form.validate_on_submit():
         identifier = form.email.data
@@ -272,13 +299,16 @@ def logout() -> ResponseReturnValue:
     # Capture identity before logout_user() turns current_user anonymous.
     user_id = current_user.id
     user_email = current_user.email
+    delete_filter_states_for_admin(user_id)
     logout_user()
     _clear_session()
     # Release the user_loader read transaction before event persistence.
     db.session.rollback()
     record_logout(user_id=user_id, email=user_email)
     flash("Signed out.", "info")
-    return redirect(url_for("storefront.home"))
+    response = redirect(url_for("storefront.home"))
+    clear_filter_state_cookie(response)
+    return response
 
 
 @auth_bp.get("/account")

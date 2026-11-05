@@ -313,12 +313,20 @@ class BaseConfig:
     SECURITY_EVENT_RETENTION_RUN_LOG_DAYS = 365
     SECURITY_EVENT_RETENTION_DATABASE_URL = ""
 
+    # Server-side admin security-event filter state.  The TTL is bounded so an
+    # operator cannot configure a state that never expires.
+    ADMIN_SECURITY_EVENT_FILTER_TTL_MINUTES = 30
+
     @classmethod
     def load(cls) -> dict[str, Any]:
         """Return the environment-dependent settings for this configuration."""
         settings = {
             "SECRET_KEY": _env_str("SECRET_KEY"),
             "SQLALCHEMY_DATABASE_URI": _env_str("DATABASE_URL"),
+            "ADMIN_SECURITY_EVENT_FILTER_TTL_MINUTES": _env_int(
+                "ADMIN_SECURITY_EVENT_FILTER_TTL_MINUTES",
+                default=30,
+            ),
             "AVATAR_STORAGE_PATH": _env_str("AVATAR_STORAGE_PATH"),
             "BANK_TRANSFER_BANK_NAME": _env_str("BANK_TRANSFER_BANK_NAME"),
             "BANK_TRANSFER_ACCOUNT_NAME": _env_str("BANK_TRANSFER_ACCOUNT_NAME"),
@@ -400,6 +408,10 @@ class TestingConfig(BaseConfig):
             "SECRET_KEY": _env_str("TEST_SECRET_KEY")
             or "utop14-testing-only-secret-not-for-production",
             "SQLALCHEMY_DATABASE_URI": _test_database_url(),
+            "ADMIN_SECURITY_EVENT_FILTER_TTL_MINUTES": _env_int(
+                "ADMIN_SECURITY_EVENT_FILTER_TTL_MINUTES",
+                default=30,
+            ),
             "BANK_TRANSFER_BANK_NAME": _env_str("BANK_TRANSFER_BANK_NAME"),
             "BANK_TRANSFER_ACCOUNT_NAME": _env_str("BANK_TRANSFER_ACCOUNT_NAME"),
             "BANK_TRANSFER_ACCOUNT_NUMBER": _env_str("BANK_TRANSFER_ACCOUNT_NUMBER"),
@@ -600,9 +612,19 @@ def validate_config(app: Flask) -> None:
     )
     _validate_rate_limit_config(app)
     _validate_retention_config(app)
+    _validate_admin_filter_state_config(app)
 
     if environment == "production":
         _validate_production(secret_key, app)
+
+
+def _validate_admin_filter_state_config(app: Flask) -> None:
+    """Validate the bounded TTL for server-side admin filter state."""
+    ttl = app.config.get("ADMIN_SECURITY_EVENT_FILTER_TTL_MINUTES")
+    if type(ttl) is not int or not 1 <= ttl <= 240:
+        raise ConfigurationError(
+            "ADMIN_SECURITY_EVENT_FILTER_TTL_MINUTES must be an integer between 1 and 240."
+        )
 
 
 def _validate_security_event_hash_key(

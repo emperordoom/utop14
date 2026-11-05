@@ -12,6 +12,10 @@ from app.catalog.seed import seed_catalog
 from app.extensions import db
 from app.models.user import ROLE_ADMIN, User
 from app.services.auth_rate_limit import RateLimitStoreError, delete_expired_buckets
+from app.services.security_event_filter_state import (
+    FilterStateError,
+    cleanup_expired_filter_states,
+)
 from app.services.security_event_retention import (
     RetentionLocked,
     RetentionRunError,
@@ -172,3 +176,25 @@ def run_security_event_retention_command(
     )
     if summary.status == "partial":
         raise click.exceptions.Exit(2)
+
+
+@click.group("admin-security-event-filters")
+def admin_security_event_filters_cli() -> None:
+    """Admin security-event filter-state maintenance commands."""
+
+
+@admin_security_event_filters_cli.command("cleanup")
+@click.option("--limit", type=int, default=1000, show_default=True)
+def cleanup_filter_states_command(limit: int) -> None:
+    """Delete expired server-side admin filter states in bounded batches.
+
+    Security does not depend on this job: expired states are rejected at lookup
+    time.  Run it from an operational scheduler as a follow-up.
+    """
+    if not 1 <= limit <= 10_000:
+        raise click.ClickException("--limit must be between 1 and 10000.")
+    try:
+        deleted = cleanup_expired_filter_states(limit=limit)
+    except FilterStateError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Deleted {deleted} expired security-event filter state(s).")

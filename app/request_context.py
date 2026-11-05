@@ -95,3 +95,13 @@ def init_request_context(app: Flask) -> None:
         if request_id:
             response.headers["X-Request-ID"] = request_id
         return response
+
+    @app.after_request
+    def _admin_security_headers(response):
+        """Apply conservative headers to every admin response, including errors."""
+        path = request.path or ""
+        if path == "/admin" or path.startswith("/admin/"):
+            response.headers["Cache-Control"] = "private, no-store"
+            response.headers["Referrer-Policy"] = "no-referrer"
+            response.headers["X-Robots-Tag"] = "noindex, nofollow"
+        return response
