@@ -85,6 +85,65 @@ BEGIN
        OR pg_has_role('utop14_retention_runner', 'utop14_retention_owner', 'member') THEN
         RAISE EXCEPTION 'FAIL: forbidden direct/transitive retention membership';
     END IF;
+
+    -- The app must not be able to become any role that owns a security or
+    -- retention object.  Check both inherited USAGE and SET-only membership,
+    -- which pg_has_role(..., 'SET') resolves through transitive membership.
+    FOR r IN
+        SELECT DISTINCT owner::text AS owner_role
+        FROM (
+            SELECT pg_get_userbyid(datdba)::text AS owner
+            FROM pg_database
+            WHERE datname = current_database()
+            UNION
+            SELECT nspowner::regrole::text
+            FROM pg_namespace
+            WHERE nspname = 'public'
+            UNION
+            SELECT tableowner::text
+            FROM pg_tables
+            WHERE schemaname = 'public'
+              AND tablename IN ('security_events',
+                                'security_event_retention_holds',
+                                'security_event_retention_runs')
+            UNION
+            SELECT pg_get_userbyid(c.relowner)::text
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = 'public'
+              AND c.relkind = 'S'
+              AND c.relname IN ('security_events_id_seq',
+                                'security_event_retention_holds_id_seq',
+                                'security_event_retention_runs_id_seq')
+            UNION
+            SELECT pg_get_userbyid(p.proowner)::text
+            FROM pg_proc p
+            JOIN pg_namespace n ON n.oid = p.pronamespace
+            WHERE n.nspname = 'public'
+              AND p.proname IN ('prune_security_events',
+                                'security_event_retention_holds_lock',
+                                'security_events_reject_mutation')
+        ) owners
+    LOOP
+        CONTINUE WHEN r.owner_role IS NULL OR r.owner_role = 'utop14_app';
+        IF pg_has_role('utop14_app'::name, r.owner_role::name, 'SET'::text)
+           OR pg_has_role('utop14_app'::name, r.owner_role::name, 'USAGE'::text) THEN
+            RAISE EXCEPTION
+                'FAIL: utop14_app can assume owner role % (SET/USAGE membership)',
+                r.owner_role;
+        END IF;
+        IF EXISTS (
+            SELECT 1
+            FROM pg_auth_members m
+            WHERE m.member = 'utop14_app'::regrole
+              AND m.roleid = r.owner_role::regrole
+        ) THEN
+            RAISE EXCEPTION
+                'FAIL: utop14_app has direct membership in owner role %',
+                r.owner_role;
+        END IF;
+    END LOOP;
+
     FOR r IN
         SELECT roleid::regrole::text AS granted_role
         FROM pg_auth_members
@@ -232,6 +291,55 @@ BEGIN
         RAISE EXCEPTION 'FAIL: retention owner has dangerous security_events privileges';
     END IF;
     RAISE NOTICE 'PASS: security_events privilege matrix';
+END $$;
+
+-- ---------------------------------------------------------------------------
+-- Sequence privileges for the M14.1 event writer and hold inserts
+-- ---------------------------------------------------------------------------
+DO $$
+DECLARE
+    v_owner text;
+BEGIN
+    IF NOT has_sequence_privilege('utop14_app', 'security_events_id_seq', 'USAGE') THEN
+        RAISE EXCEPTION 'FAIL: utop14_app lacks USAGE on security_events_id_seq';
+    END IF;
+    IF NOT has_sequence_privilege('utop14_app', 'security_events_id_seq', 'SELECT') THEN
+        RAISE EXCEPTION 'FAIL: utop14_app lacks SELECT on security_events_id_seq';
+    END IF;
+    IF has_sequence_privilege('utop14_app', 'security_events_id_seq', 'UPDATE') THEN
+        RAISE EXCEPTION 'FAIL: utop14_app has UPDATE on security_events_id_seq';
+    END IF;
+
+    SELECT pg_get_userbyid(c.relowner) INTO v_owner
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relkind = 'S'
+      AND c.relname = 'security_events_id_seq';
+    IF v_owner = 'utop14_app' THEN
+        RAISE EXCEPTION 'FAIL: utop14_app owns security_events_id_seq';
+    END IF;
+
+    IF NOT has_sequence_privilege(
+        'utop14_app', 'security_event_retention_holds_id_seq', 'USAGE'
+    ) THEN
+        RAISE EXCEPTION 'FAIL: utop14_app lacks USAGE on the hold sequence';
+    END IF;
+    IF has_sequence_privilege(
+        'utop14_app', 'security_event_retention_holds_id_seq', 'UPDATE'
+    ) THEN
+        RAISE EXCEPTION 'FAIL: utop14_app has UPDATE on the hold sequence';
+    END IF;
+
+    -- Only the retention owner/runner write run rows.
+    IF has_sequence_privilege(
+        'utop14_app', 'security_event_retention_runs_id_seq', 'USAGE'
+    ) OR has_sequence_privilege(
+        'utop14_app', 'security_event_retention_runs_id_seq', 'SELECT'
+    ) THEN
+        RAISE EXCEPTION 'FAIL: utop14_app has unnecessary run-log sequence privileges';
+    END IF;
+    RAISE NOTICE 'PASS: app sequence privileges and non-ownership';
 END $$;
 
 -- ---------------------------------------------------------------------------

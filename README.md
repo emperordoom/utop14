@@ -797,9 +797,12 @@ PostgreSQL cluster with a separate DDL role:
 - `utop14_retention_owner` remains NOLOGIN and owns only
   `public.prune_security_events`. `utop14_retention_runner` remains separate and
   has only function `EXECUTE` plus run-log append.
-- The app has `SELECT, INSERT` on `security_events` for the M14.1 writer, and
-  `SELECT, INSERT, UPDATE` on holds; it has no `DELETE`, `UPDATE`, or `TRUNCATE`
-  on events, no `DELETE` on holds, and no `TRIGGER`/`REFERENCES` on events.
+- The app has `SELECT, INSERT` on `security_events` and `USAGE, SELECT` on
+  `security_events_id_seq` for the M14.1 writer, and `SELECT, INSERT, UPDATE`
+  on holds; it has no `DELETE`, `UPDATE`, or `TRUNCATE` on events, no `DELETE`
+  on holds, no `UPDATE` on the event sequence, and no `TRIGGER`/`REFERENCES`
+  on events. The sequence stays owned by the schema/DDL owner; the app never
+  owns it.
 - `PUBLIC` has no function `EXECUTE` and no `CREATE` on the application schema.
 
 `scripts/security_event_retention_ownership_template.sql` is a review-and-adapt
@@ -815,6 +818,33 @@ the DDL role. If provisioning has already transferred the function to
 `utop14_retention_owner`, run the migration as the DBA/superuser (or temporarily
 transfer function ownership, run it, and re-run provisioning). A non-superuser
 DDL role cannot replace a function it does not own.
+
+#### Residual risks (RR-03/RR-04)
+
+These are explicitly accepted for this milestone; the hold and run-log designs
+are intentionally not expanded here.
+
+- **RR-03 — hold mutability.** The app role has `UPDATE` on holds because it
+  must replace an already-expired hold. It can therefore extend an active hold
+  up to 3650 days (repeatedly) and can change `reason`/`created_by` through a
+  direct UPDATE. This can delay retention and means forensic hold metadata is
+  not fully immutable. It is **not** a deletion bypass: the database trigger
+  rejects expiring or shortening an active hold, and the retention function
+  excludes active holds. If hold metadata must be tamper-evident, a future
+  milestone should make holds append-only or expose a SECURITY DEFINER hold API
+  with an immutable history.
+- **RR-04 — run-log writer.** `utop14_retention_runner` can append run-log rows,
+  including a synthetic row. It cannot UPDATE or DELETE run-log history. The
+  runner is treated as a trusted operational writer; protect its credential in
+  a secret manager and restrict the OS job account. Treat the run log as
+  operational telemetry, not a tamper-evident security audit trail.
+
+The sequence privilege for `security_events_id_seq` is applied by
+`scripts/security_event_retention_roles.sql`, not by an Alembic migration.
+Grants are role provisioning, not schema DDL; keeping them outside migrations
+avoids coupling schema versioning to role existence and preserves the existing
+single Alembic head `e3b9f1c7a2d4`. The sequence remains owned by the
+schema/DDL owner.
 
 The runner DSN is supplied through
 `SECURITY_EVENT_RETENTION_DATABASE_URL`, ideally from a secret manager. The
@@ -945,7 +975,9 @@ are not part of M14.1 or M14.3.2. M14.3.3 provides manual/bounded retention for
    provisioning from the application or a production migration.
 10. Enforce the OPS-01 ownership model: the DDL/schema owner owns the database,
     schema, tables and sequences; `utop14_app` is DML-only and owns nothing;
-    `prune_security_events` stays owned by `utop14_retention_owner`. Apply
+    `prune_security_events` stays owned by `utop14_retention_owner`. The app
+    must have `USAGE, SELECT` on `security_events_id_seq` (and the hold
+    sequence) but never sequence ownership or UPDATE. Apply
     `scripts/security_event_retention_ownership_template.sql` only after DBA
     review, then re-run the provisioning and verification scripts. Do not
     proceed to production if `security_event_retention_verify.sql` exits

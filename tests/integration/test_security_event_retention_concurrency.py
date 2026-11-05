@@ -96,6 +96,29 @@ def _role_dsn(port: int, role: str) -> str:
     return f"postgresql+psycopg://{role}@127.0.0.1:{port}/{DB}"
 
 
+def _verify(port: int) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "psql",
+            "-h",
+            "127.0.0.1",
+            "-p",
+            str(port),
+            "-U",
+            "postgres",
+            "-d",
+            DB,
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-f",
+            "scripts/security_event_retention_verify.sql",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
 def _insert_event(
     engine, *, event_type: str, outcome: str, reason: str, created_at: datetime
 ) -> int:
@@ -284,12 +307,136 @@ def test_disposable_ownership_and_hold_concurrency() -> None:
             except SQLAlchemyError:
                 pass
 
+        for target in (
+            "utop14_schema_owner",
+            "utop14_retention_owner",
+            "utop14_retention_runner",
+        ):
+            try:
+                with app_engine.begin() as conn:
+                    conn.execute(text(f"SET LOCAL ROLE {target}"))
+                raise AssertionError(f"app unexpectedly SET ROLE {target}")
+            except SQLAlchemyError:
+                pass
+
         try:
             with runner.begin() as conn:
                 conn.execute(text("DELETE FROM security_events WHERE false"))
             raise AssertionError("runner unexpectedly deleted events")
         except SQLAlchemyError:
             pass
+
+        # --- RR-01: actual app INSERT with sequence privileges ------------
+        app_insert = (
+            "INSERT INTO security_events "
+            "(event_type, outcome, reason_code, ip_address, user_agent, metadata) "
+            "VALUES ('auth.logout', 'success', 'user_requested', "
+            "'127.0.0.1', '', '{}'::jsonb) RETURNING id"
+        )
+        with app_engine.begin() as conn:
+            first_id = conn.execute(text(app_insert)).scalar_one()
+            second_id = conn.execute(text(app_insert)).scalar_one()
+        assert second_id > first_id > 0, (first_id, second_id)
+        with admin.connect() as conn:
+            persisted = conn.execute(
+                text("SELECT count(*) FROM security_events WHERE id IN (:a,:b)"),
+                {"a": first_id, "b": second_id},
+            ).scalar_one()
+            after_last = conn.execute(
+                text("SELECT last_value FROM security_events_id_seq")
+            ).scalar_one()
+        assert persisted == 2, persisted
+        assert after_last >= second_id, (after_last, second_id)
+
+        # The app must not own or alter the sequence.
+        for statement in (
+            "ALTER SEQUENCE security_events_id_seq OWNER TO utop14_app",
+            "ALTER SEQUENCE security_events_id_seq RESTART WITH 1",
+            "DROP SEQUENCE security_events_id_seq",
+        ):
+            try:
+                with app_engine.begin() as conn:
+                    conn.execute(text(statement))
+                raise AssertionError(f"app unexpectedly executed: {statement}")
+            except SQLAlchemyError:
+                pass
+
+        # Negative verification: revoke USAGE, prove FAIL and actual INSERT failure.
+        with admin.begin() as conn:
+            conn.execute(text("REVOKE USAGE ON SEQUENCE security_events_id_seq FROM utop14_app"))
+        revoked = _verify(port)
+        revoked_output = revoked.stdout + revoked.stderr
+        assert revoked.returncode != 0, revoked_output
+        assert "security_events_id_seq" in revoked_output, revoked_output
+        try:
+            with app_engine.begin() as conn:
+                conn.execute(text(app_insert))
+            raise AssertionError("app insert succeeded without sequence USAGE")
+        except SQLAlchemyError:
+            pass
+        with admin.begin() as conn:
+            conn.execute(
+                text("GRANT USAGE, SELECT ON SEQUENCE security_events_id_seq TO utop14_app")
+            )
+        assert _verify(port).returncode == 0
+
+        # --- RR-02: SET-only owner membership must fail verification -------
+        set_grant = _psql(
+            port,
+            "GRANT utop14_schema_owner TO utop14_app WITH SET TRUE, INHERIT FALSE",
+        )
+        assert set_grant.returncode == 0, set_grant.stderr
+        set_ok = False
+        conn = app_engine.connect()
+        trans = conn.begin()
+        try:
+            conn.execute(text("SET LOCAL ROLE utop14_schema_owner"))
+            conn.execute(
+                text(
+                    "ALTER TABLE public.security_events DISABLE TRIGGER security_events_append_only"
+                )
+            )
+            set_ok = True
+        except SQLAlchemyError:
+            set_ok = False
+        finally:
+            trans.rollback()
+            conn.close()
+        assert set_ok is True, "app could not SET ROLE to schema owner"
+        set_verify = _verify(port)
+        set_output = set_verify.stdout + set_verify.stderr
+        assert set_verify.returncode != 0, set_output
+        assert (
+            "owner role" in set_output or "SET/USAGE" in set_output or "membership" in set_output
+        ), set_output
+        revoke = _psql(port, "REVOKE utop14_schema_owner FROM utop14_app")
+        assert revoke.returncode == 0, revoke.stderr
+        assert _verify(port).returncode == 0
+
+        # --- RR-02: transitive SET-only membership must fail verification --
+        for statement in (
+            "CREATE ROLE utop14_membership_bridge NOLOGIN",
+            "GRANT utop14_schema_owner TO utop14_membership_bridge WITH SET TRUE, INHERIT FALSE",
+            "GRANT utop14_membership_bridge TO utop14_app WITH SET TRUE, INHERIT FALSE",
+        ):
+            result = _psql(port, statement)
+            assert result.returncode == 0, result.stderr
+        transitive = _verify(port)
+        transitive_output = transitive.stdout + transitive.stderr
+        assert transitive.returncode != 0, transitive_output
+        assert (
+            "owner role" in transitive_output
+            or "SET/USAGE" in transitive_output
+            or "membership" in transitive_output
+        ), transitive_output
+        for statement in (
+            "REVOKE utop14_membership_bridge FROM utop14_app",
+            "REVOKE utop14_schema_owner FROM utop14_membership_bridge",
+            "DROP ROLE utop14_membership_bridge",
+        ):
+            result = _psql(port, statement)
+            assert result.returncode == 0, result.stderr
+        assert _verify(port).returncode == 0
 
         # --- Function validation ------------------------------------------
         for statement, needle in (
@@ -586,6 +733,101 @@ def test_disposable_ownership_and_hold_concurrency() -> None:
                 ).scalar_one()
                 == 1
             )
+
+        # --- RR-07: concurrent hold moves A->B and B->A -------------------
+        move_a = _insert_event(
+            schema_owner,
+            event_type="auth.logout",
+            outcome="success",
+            reason="user_requested",
+            created_at=now - timedelta(days=120),
+        )
+        move_b = _insert_event(
+            schema_owner,
+            event_type="auth.logout",
+            outcome="success",
+            reason="user_requested",
+            created_at=now - timedelta(days=120),
+        )
+        with app_engine.begin() as conn:
+            move_hold_id = conn.execute(
+                text(
+                    "INSERT INTO security_event_retention_holds "
+                    "(security_event_id, reason, created_by, expires_at) "
+                    "VALUES (:id, 'concurrent-move', 'op', now() + interval '1 day') "
+                    "RETURNING id"
+                ),
+                {"id": move_a},
+            ).scalar_one()
+
+        move_barrier = threading.Barrier(2)
+        move_errors: dict[int, str] = {}
+
+        def move_hold(target: int) -> None:
+            move_barrier.wait(timeout=5)
+            try:
+                with app_engine.begin() as conn:
+                    conn.execute(text("SET LOCAL lock_timeout = '5s'"))
+                    conn.execute(
+                        text(
+                            "UPDATE security_event_retention_holds "
+                            "SET security_event_id=:target WHERE id=:hold_id"
+                        ),
+                        {"target": target, "hold_id": move_hold_id},
+                    )
+                    time.sleep(0.2)
+            except SQLAlchemyError as exc:
+                move_errors[target] = str(exc)
+
+        t_move_a = threading.Thread(target=move_hold, args=(move_b,))
+        t_move_b = threading.Thread(target=move_hold, args=(move_a,))
+        t_move_a.start()
+        t_move_b.start()
+        t_move_a.join(timeout=10)
+        t_move_b.join(timeout=10)
+        assert not t_move_a.is_alive() and not t_move_b.is_alive(), "hold move hung"
+        assert not move_errors, move_errors
+
+        with admin.connect() as conn:
+            final_holder = conn.execute(
+                text("SELECT security_event_id FROM security_event_retention_holds WHERE id=:id"),
+                {"id": move_hold_id},
+            ).scalar_one()
+            both_exist = conn.execute(
+                text("SELECT count(*) FROM security_events WHERE id IN (:a,:b)"),
+                {"a": move_a, "b": move_b},
+            ).scalar_one()
+        assert final_holder in (move_a, move_b), final_holder
+        assert both_exist == 2, both_exist
+
+        _prune(runner, scope="success_logout", cutoff=now - timedelta(days=90))
+        with admin.connect() as conn:
+            held_event = conn.execute(
+                text("SELECT security_event_id FROM security_event_retention_holds WHERE id=:id"),
+                {"id": move_hold_id},
+            ).scalar_one()
+            assert (
+                conn.execute(
+                    text("SELECT count(*) FROM security_events WHERE id=:id"),
+                    {"id": held_event},
+                ).scalar_one()
+                == 1
+            )
+            assert (
+                conn.execute(
+                    text("SELECT count(*) FROM security_events WHERE id IN (:a,:b)"),
+                    {"a": move_a, "b": move_b},
+                ).scalar_one()
+                == 1
+            )
+            orphan = conn.execute(
+                text(
+                    "SELECT count(*) FROM security_event_retention_holds h "
+                    "LEFT JOIN security_events e ON e.id = h.security_event_id "
+                    "WHERE e.id IS NULL"
+                )
+            ).scalar_one()
+            assert orphan == 0
 
         # --- Hold-first and cleanup-first races ---------------------------
         hold_first = _insert_event(

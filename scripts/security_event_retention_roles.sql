@@ -43,6 +43,10 @@ GRANT USAGE, SELECT ON SEQUENCE security_event_retention_runs_id_seq
 -- execution is granted to the app role.  INSERT on security_events is required
 -- by the M14.1 application event writer and is not a retention privilege.
 GRANT SELECT, INSERT ON security_events TO utop14_app;
+-- The M14.1 event writer relies on the SERIAL identity sequence for
+-- security_events.id.  The sequence stays owned by the schema/DDL owner; the
+-- app receives only USAGE/SELECT (never UPDATE or ownership).
+GRANT USAGE, SELECT ON SEQUENCE security_events_id_seq TO utop14_app;
 -- UPDATE is required to replace an already-expired hold.  The
 -- security_event_retention_holds_lock trigger rejects direct expiry or
 -- shortening of an active hold and serializes every hold write with cleanup.
