@@ -294,3 +294,83 @@ def test_valid_payment_ttl_integer_is_accepted() -> None:
     )
 
     assert app.config["PAYMENT_ATTEMPT_TTL_MINUTES"] == 30
+
+
+def test_rate_limit_defaults_are_loaded() -> None:
+    app = create_app(
+        "testing",
+        {
+            "SECURITY_EVENT_HASH_KEY": VALID_SECURITY_EVENT_HASH_KEY,
+        },
+    )
+
+    assert app.config["AUTH_RATE_LIMIT_ENABLED"] is True
+    assert app.config["AUTH_RATE_LIMIT_WINDOW_SECONDS"] == 900
+    assert app.config["AUTH_RATE_LIMIT_BUCKET_TTL_HOURS"] == 48
+    assert app.config["AUTH_RATE_LIMIT_IDENTIFIER_THRESHOLDS"] == (5, 10, 20)
+    assert app.config["AUTH_RATE_LIMIT_IP_THRESHOLDS"] == (30, 60)
+    assert app.config["AUTH_RATE_LIMIT_COMBINED_THRESHOLDS"] == (10,)
+
+
+def test_rate_limit_thresholds_must_increase_monotonically() -> None:
+    with pytest.raises(ConfigurationError, match="IDENTIFIER_THRESHOLDS"):
+        create_app(
+            "testing",
+            {
+                "SECURITY_EVENT_HASH_KEY": VALID_SECURITY_EVENT_HASH_KEY,
+                "AUTH_RATE_LIMIT_IDENTIFIER_THRESHOLDS": (5, 5, 20),
+            },
+        )
+
+
+def test_rate_limit_max_failures_must_match_final_threshold() -> None:
+    with pytest.raises(ConfigurationError, match="IDENTIFIER_MAX_FAILURES"):
+        create_app(
+            "testing",
+            {
+                "SECURITY_EVENT_HASH_KEY": VALID_SECURITY_EVENT_HASH_KEY,
+                "AUTH_RATE_LIMIT_IDENTIFIER_THRESHOLDS": (5, 10, 15),
+            },
+        )
+
+
+def test_rate_limit_cooldown_must_not_exceed_scope_maximum() -> None:
+    with pytest.raises(ConfigurationError, match="IDENTIFIER_COOLDOWNS"):
+        create_app(
+            "testing",
+            {
+                "SECURITY_EVENT_HASH_KEY": VALID_SECURITY_EVENT_HASH_KEY,
+                "AUTH_RATE_LIMIT_IDENTIFIER_COOLDOWNS": (60, 300, 901),
+            },
+        )
+
+
+def test_rate_limit_ttl_must_exceed_window_and_maximum_cooldown() -> None:
+    with pytest.raises(ConfigurationError, match="BUCKET_TTL_HOURS"):
+        create_app(
+            "testing",
+            {
+                "SECURITY_EVENT_HASH_KEY": VALID_SECURITY_EVENT_HASH_KEY,
+                "AUTH_RATE_LIMIT_WINDOW_SECONDS": 3600,
+                "AUTH_RATE_LIMIT_BUCKET_TTL_HOURS": 1,
+            },
+        )
+
+
+def test_rate_limit_policy_can_be_overridden_from_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AUTH_RATE_LIMIT_WINDOW_SECONDS", "600")
+    monkeypatch.setenv("AUTH_RATE_LIMIT_BUCKET_TTL_HOURS", "24")
+    monkeypatch.setenv("AUTH_RATE_LIMIT_IDENTIFIER_MAX_FAILURES", "12")
+    monkeypatch.setenv("AUTH_RATE_LIMIT_IDENTIFIER_THRESHOLDS", "4,8,12")
+    monkeypatch.setenv("AUTH_RATE_LIMIT_IDENTIFIER_COOLDOWNS", "30,120,600")
+    monkeypatch.setenv("AUTH_RATE_LIMIT_IDENTIFIER_MAX_COOLDOWN_SECONDS", "600")
+
+    app = create_app("testing")
+
+    assert app.config["AUTH_RATE_LIMIT_WINDOW_SECONDS"] == 600
+    assert app.config["AUTH_RATE_LIMIT_BUCKET_TTL_HOURS"] == 24
+    assert app.config["AUTH_RATE_LIMIT_IDENTIFIER_THRESHOLDS"] == (4, 8, 12)
+    assert app.config["AUTH_RATE_LIMIT_IDENTIFIER_COOLDOWNS"] == (30, 120, 600)
+    assert app.config["AUTH_RATE_LIMIT_IDENTIFIER_MAX_COOLDOWN_SECONDS"] == 600

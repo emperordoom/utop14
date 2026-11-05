@@ -101,6 +101,90 @@ def _env_int(name: str, *, default: int) -> int:
         raise ConfigurationError(f"{name} must be a positive integer.") from exc
 
 
+def _env_int_tuple(
+    name: str,
+    default: tuple[int, ...],
+    *,
+    minimum: int = 1,
+) -> tuple[int, ...]:
+    raw_value = os.getenv(name)
+    if raw_value is None or not raw_value.strip():
+        return default
+    parts = [part.strip() for part in raw_value.split(",") if part.strip()]
+    if not parts:
+        raise ConfigurationError(f"{name} must be a comma-separated list of integers.")
+    try:
+        values = tuple(int(part) for part in parts)
+    except ValueError as exc:
+        raise ConfigurationError(f"{name} must be a comma-separated list of integers.") from exc
+    if any(value < minimum for value in values):
+        raise ConfigurationError(f"{name} must contain only positive integers.")
+    return values
+
+
+def _rate_limit_settings() -> dict[str, object]:
+    """Return environment-backed rate-limit settings and approved defaults."""
+    return {
+        "AUTH_RATE_LIMIT_ENABLED": _env_bool("AUTH_RATE_LIMIT_ENABLED", default=True),
+        "AUTH_RATE_LIMIT_WINDOW_SECONDS": _env_int(
+            "AUTH_RATE_LIMIT_WINDOW_SECONDS",
+            default=900,
+        ),
+        "AUTH_RATE_LIMIT_BUCKET_TTL_HOURS": _env_int(
+            "AUTH_RATE_LIMIT_BUCKET_TTL_HOURS",
+            default=48,
+        ),
+        "AUTH_RATE_LIMIT_IDENTIFIER_MAX_FAILURES": _env_int(
+            "AUTH_RATE_LIMIT_IDENTIFIER_MAX_FAILURES",
+            default=20,
+        ),
+        "AUTH_RATE_LIMIT_IP_MAX_FAILURES": _env_int(
+            "AUTH_RATE_LIMIT_IP_MAX_FAILURES",
+            default=60,
+        ),
+        "AUTH_RATE_LIMIT_COMBINED_MAX_FAILURES": _env_int(
+            "AUTH_RATE_LIMIT_COMBINED_MAX_FAILURES",
+            default=10,
+        ),
+        "AUTH_RATE_LIMIT_IDENTIFIER_THRESHOLDS": _env_int_tuple(
+            "AUTH_RATE_LIMIT_IDENTIFIER_THRESHOLDS",
+            (5, 10, 20),
+        ),
+        "AUTH_RATE_LIMIT_IDENTIFIER_COOLDOWNS": _env_int_tuple(
+            "AUTH_RATE_LIMIT_IDENTIFIER_COOLDOWNS",
+            (60, 300, 900),
+        ),
+        "AUTH_RATE_LIMIT_IP_THRESHOLDS": _env_int_tuple(
+            "AUTH_RATE_LIMIT_IP_THRESHOLDS",
+            (30, 60),
+        ),
+        "AUTH_RATE_LIMIT_IP_COOLDOWNS": _env_int_tuple(
+            "AUTH_RATE_LIMIT_IP_COOLDOWNS",
+            (300, 900),
+        ),
+        "AUTH_RATE_LIMIT_COMBINED_THRESHOLDS": _env_int_tuple(
+            "AUTH_RATE_LIMIT_COMBINED_THRESHOLDS",
+            (10,),
+        ),
+        "AUTH_RATE_LIMIT_COMBINED_COOLDOWNS": _env_int_tuple(
+            "AUTH_RATE_LIMIT_COMBINED_COOLDOWNS",
+            (300,),
+        ),
+        "AUTH_RATE_LIMIT_IDENTIFIER_MAX_COOLDOWN_SECONDS": _env_int(
+            "AUTH_RATE_LIMIT_IDENTIFIER_MAX_COOLDOWN_SECONDS",
+            default=900,
+        ),
+        "AUTH_RATE_LIMIT_IP_MAX_COOLDOWN_SECONDS": _env_int(
+            "AUTH_RATE_LIMIT_IP_MAX_COOLDOWN_SECONDS",
+            default=1800,
+        ),
+        "AUTH_RATE_LIMIT_COMBINED_MAX_COOLDOWN_SECONDS": _env_int(
+            "AUTH_RATE_LIMIT_COMBINED_MAX_COOLDOWN_SECONDS",
+            default=900,
+        ),
+    }
+
+
 class BaseConfig:
     """Settings shared by every environment."""
 
@@ -153,10 +237,28 @@ class BaseConfig:
     # No raw unknown identifiers are stored when this is unset.
     SECURITY_EVENT_HASH_KEY = ""
 
+    # PostgreSQL-backed fixed-window authentication rate limiting.  Login is
+    # not wired to these values until M14.3.2; the foundation owns the policy.
+    AUTH_RATE_LIMIT_ENABLED = True
+    AUTH_RATE_LIMIT_WINDOW_SECONDS = 900
+    AUTH_RATE_LIMIT_BUCKET_TTL_HOURS = 48
+    AUTH_RATE_LIMIT_IDENTIFIER_MAX_FAILURES = 20
+    AUTH_RATE_LIMIT_IP_MAX_FAILURES = 60
+    AUTH_RATE_LIMIT_COMBINED_MAX_FAILURES = 10
+    AUTH_RATE_LIMIT_IDENTIFIER_THRESHOLDS = (5, 10, 20)
+    AUTH_RATE_LIMIT_IDENTIFIER_COOLDOWNS = (60, 300, 900)
+    AUTH_RATE_LIMIT_IP_THRESHOLDS = (30, 60)
+    AUTH_RATE_LIMIT_IP_COOLDOWNS = (300, 900)
+    AUTH_RATE_LIMIT_COMBINED_THRESHOLDS = (10,)
+    AUTH_RATE_LIMIT_COMBINED_COOLDOWNS = (300,)
+    AUTH_RATE_LIMIT_IDENTIFIER_MAX_COOLDOWN_SECONDS = 900
+    AUTH_RATE_LIMIT_IP_MAX_COOLDOWN_SECONDS = 1800
+    AUTH_RATE_LIMIT_COMBINED_MAX_COOLDOWN_SECONDS = 900
+
     @classmethod
     def load(cls) -> dict[str, Any]:
         """Return the environment-dependent settings for this configuration."""
-        return {
+        settings = {
             "SECRET_KEY": _env_str("SECRET_KEY"),
             "SQLALCHEMY_DATABASE_URI": _env_str("DATABASE_URL"),
             "AVATAR_STORAGE_PATH": _env_str("AVATAR_STORAGE_PATH"),
@@ -168,6 +270,8 @@ class BaseConfig:
             "TRUSTED_PROXY_HOPS": _env_int("TRUSTED_PROXY_HOPS", default=0),
             "SECURITY_EVENT_HASH_KEY": _env_str("SECURITY_EVENT_HASH_KEY"),
         }
+        settings.update(_rate_limit_settings())
+        return settings
 
 
 class DevelopmentConfig(BaseConfig):
@@ -233,7 +337,7 @@ class TestingConfig(BaseConfig):
 
     @classmethod
     def load(cls) -> dict[str, Any]:
-        return {
+        settings = {
             "SECRET_KEY": _env_str("TEST_SECRET_KEY")
             or "utop14-testing-only-secret-not-for-production",
             "SQLALCHEMY_DATABASE_URI": _test_database_url(),
@@ -245,6 +349,8 @@ class TestingConfig(BaseConfig):
             "TRUSTED_PROXY_HOPS": _env_int("TRUSTED_PROXY_HOPS", default=0),
             "SECURITY_EVENT_HASH_KEY": _env_str("SECURITY_EVENT_HASH_KEY"),
         }
+        settings.update(_rate_limit_settings())
+        return settings
 
 
 def _test_database_url() -> str:
@@ -432,6 +538,7 @@ def validate_config(app: Flask) -> None:
         app,
         required=environment == "production",
     )
+    _validate_rate_limit_config(app)
 
     if environment == "production":
         _validate_production(secret_key, app)
@@ -460,6 +567,80 @@ def _validate_security_event_hash_key(
         raise ConfigurationError("SECURITY_EVENT_HASH_KEY must not use a placeholder value.")
     if security_event_hash_key == secret_key:
         raise ConfigurationError("SECURITY_EVENT_HASH_KEY must be distinct from SECRET_KEY.")
+
+
+def _validate_rate_limit_config(app: Flask) -> None:
+    """Validate rate-limit policy without exposing secrets."""
+    enabled = app.config.get("AUTH_RATE_LIMIT_ENABLED")
+    if type(enabled) is not bool:
+        raise ConfigurationError("AUTH_RATE_LIMIT_ENABLED must be a boolean.")
+
+    window = app.config.get("AUTH_RATE_LIMIT_WINDOW_SECONDS")
+    ttl_hours = app.config.get("AUTH_RATE_LIMIT_BUCKET_TTL_HOURS")
+    if type(window) is not int or window <= 0:
+        raise ConfigurationError("AUTH_RATE_LIMIT_WINDOW_SECONDS must be a positive integer.")
+    if type(ttl_hours) is not int or ttl_hours <= 0:
+        raise ConfigurationError("AUTH_RATE_LIMIT_BUCKET_TTL_HOURS must be a positive integer.")
+
+    for (
+        label,
+        max_failures_key,
+        thresholds_key,
+        cooldowns_key,
+        max_cooldown_key,
+    ) in (
+        (
+            "identifier",
+            "AUTH_RATE_LIMIT_IDENTIFIER_MAX_FAILURES",
+            "AUTH_RATE_LIMIT_IDENTIFIER_THRESHOLDS",
+            "AUTH_RATE_LIMIT_IDENTIFIER_COOLDOWNS",
+            "AUTH_RATE_LIMIT_IDENTIFIER_MAX_COOLDOWN_SECONDS",
+        ),
+        (
+            "IP",
+            "AUTH_RATE_LIMIT_IP_MAX_FAILURES",
+            "AUTH_RATE_LIMIT_IP_THRESHOLDS",
+            "AUTH_RATE_LIMIT_IP_COOLDOWNS",
+            "AUTH_RATE_LIMIT_IP_MAX_COOLDOWN_SECONDS",
+        ),
+        (
+            "combined",
+            "AUTH_RATE_LIMIT_COMBINED_MAX_FAILURES",
+            "AUTH_RATE_LIMIT_COMBINED_THRESHOLDS",
+            "AUTH_RATE_LIMIT_COMBINED_COOLDOWNS",
+            "AUTH_RATE_LIMIT_COMBINED_MAX_COOLDOWN_SECONDS",
+        ),
+    ):
+        max_failures = app.config.get(max_failures_key)
+        thresholds = app.config.get(thresholds_key)
+        cooldowns = app.config.get(cooldowns_key)
+        max_cooldown = app.config.get(max_cooldown_key)
+
+        if type(max_failures) is not int or max_failures <= 0:
+            raise ConfigurationError(f"{max_failures_key} must be a positive integer.")
+        if not isinstance(thresholds, tuple) or not thresholds:
+            raise ConfigurationError(f"{thresholds_key} must be a non-empty integer list.")
+        if not isinstance(cooldowns, tuple) or len(cooldowns) != len(thresholds):
+            raise ConfigurationError(f"{cooldowns_key} must contain one duration per threshold.")
+        if any(type(value) is not int or value <= 0 for value in thresholds):
+            raise ConfigurationError(f"{thresholds_key} must contain only positive integers.")
+        if any(type(value) is not int or value <= 0 for value in cooldowns):
+            raise ConfigurationError(f"{cooldowns_key} must contain only positive integers.")
+        if any(thresholds[index] >= thresholds[index + 1] for index in range(len(thresholds) - 1)):
+            raise ConfigurationError(f"{thresholds_key} must increase monotonically.")
+        if thresholds[-1] != max_failures:
+            raise ConfigurationError(
+                f"{max_failures_key} must equal the final threshold in {thresholds_key}."
+            )
+        if type(max_cooldown) is not int or max_cooldown <= 0:
+            raise ConfigurationError(f"{max_cooldown_key} must be a positive integer.")
+        if any(value > max_cooldown for value in cooldowns):
+            raise ConfigurationError(f"{cooldowns_key} must not exceed {max_cooldown_key}.")
+        if ttl_hours * 3600 <= window + max_cooldown:
+            raise ConfigurationError(
+                "AUTH_RATE_LIMIT_BUCKET_TTL_HOURS must exceed the window plus "
+                f"{label} maximum cooldown."
+            )
 
 
 def _validate_production(secret_key: str, app: Flask) -> None:

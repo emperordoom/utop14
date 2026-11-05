@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from app.catalog.seed import seed_catalog
 from app.extensions import db
 from app.models.user import ROLE_ADMIN, User
+from app.services.auth_rate_limit import RateLimitStoreError, delete_expired_buckets
 
 
 @click.group("catalog")
@@ -85,3 +86,25 @@ def create_admin_command() -> None:
         raise click.ClickException("Unable to create the admin account.") from exc
 
     click.echo(f"Admin account created for {email}.")
+
+
+@click.group("auth-rate-limit")
+def auth_rate_limit_cli() -> None:
+    """Authentication rate-limit maintenance commands."""
+
+
+@auth_rate_limit_cli.command("cleanup")
+@click.option(
+    "--batch-size",
+    type=click.IntRange(1, 5000),
+    default=1000,
+    show_default=True,
+    help="Maximum number of expired buckets to delete in this invocation.",
+)
+def cleanup_rate_limits_command(batch_size: int) -> None:
+    """Delete one bounded batch of expired authentication rate-limit buckets."""
+    try:
+        deleted = delete_expired_buckets(batch_size=batch_size)
+    except RateLimitStoreError as exc:
+        raise click.ClickException("Rate-limit cleanup failed.") from exc
+    click.echo(f"Deleted {deleted} expired authentication rate-limit bucket(s).")

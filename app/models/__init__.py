@@ -8,6 +8,7 @@ this package never creates tables.
 from __future__ import annotations
 
 from app.models.audit_log import AuditLog
+from app.models.auth_rate_limit import AuthRateLimit
 from app.models.base import Base
 from app.models.cart import Cart, CartItem
 from app.models.category import Category
@@ -23,6 +24,7 @@ from app.models.user import User
 
 __all__ = [
     "AuditLog",
+    "AuthRateLimit",
     "Base",
     "Cart",
     "CartItem",

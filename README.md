@@ -140,6 +140,7 @@ environment take precedence. `.env` is ignored by Git.
 | `TEST_SECRET_KEY` | No | Optional test-only secret override |
 | `TRUSTED_PROXY_HOPS` | No | Number of trusted reverse-proxy hops for `X-Forwarded-For`; default `0` |
 | `SECURITY_EVENT_HASH_KEY` | Production | Dedicated HMAC-SHA256 key for authentication identifier hashes; at least 32 bytes, distinct from `SECRET_KEY`; optional in development/testing |
+| `AUTH_RATE_LIMIT_*` | No | PostgreSQL fixed-window rate-limit policy and TTL; defaults documented in `.env.example` and the M14.3.1 section. Login integration is deferred to M14.3.2. |
 
 Startup validation fails with a clear `ConfigurationError` when `SECRET_KEY`
 or `DATABASE_URL` is missing or when a non-Psycopg database URL is supplied.
@@ -496,6 +497,7 @@ Current revision chain in source:
 - `3f7a2c9d1b64` — administrative audit log
 - `9b2d4e6f8a10` — authentication security events
 - `c4e7a1b9d2f6` — security event request ID index
+- `e1b7c4a9d2f3` — authentication rate-limit buckets
 
 ## Admin audit logging and trusted proxy
 
@@ -658,6 +660,56 @@ The `security_events` table is indexed by request ID for incident correlation.
 A reason-code index is deferred until the M14.2 viewer defines its filters and
 the query pattern is measured.
 
+### Authentication rate-limit foundation (M14.3.1)
+
+M14.3.1 adds a PostgreSQL shared store for fixed-window authentication rate
+limiting. **Login is not wired to this store yet**; activation and response
+behavior belong to M14.3.2. No Redis or new rate-limiting dependency is used.
+
+Bucket keys are HMAC-SHA256 values derived from `SECURITY_EVENT_HASH_KEY` with
+the `utop14.auth_rate_limit.v1` domain and a scope-specific input. Raw email
+addresses, IP addresses, usernames, passwords and session values are never
+stored in `auth_rate_limits`.
+
+The default policy is:
+
+| Scope | Thresholds | Cooldowns | Maximum cooldown |
+| --- | --- | --- | --- |
+| Identifier | 5, 10, 20 failures | 60s, 300s, 900s | 900s |
+| IP | 30, 60 failures | 300s, 900s | 1,800s |
+| Combined IP + identifier | 10 failures | 300s | 900s |
+
+All scopes share a 900-second fixed window. A bucket row stores
+`window_start`, `failure_count`, optional `blocked_until` and `updated_at`.
+The counter and window rollover use PostgreSQL
+`INSERT ... ON CONFLICT ... DO UPDATE` in a short transaction. An active
+cooldown is not extended by further failed requests; after the window expires,
+the counter starts at one.
+
+Relevant environment variables are documented in `.env.example`. The
+`*_MAX_FAILURES` values must match the final entry in the corresponding
+threshold list. The TTL defaults to 48 hours and must exceed the window plus the
+scope's maximum cooldown.
+
+Stale buckets are deleted in bounded batches by the foundation service. The
+operational command is:
+
+```bash
+flask --app wsgi auth-rate-limit cleanup --batch-size 1000
+```
+
+The command deletes only rows whose `updated_at` is older than the cutoff
+(`updated_at < now - AUTH_RATE_LIMIT_BUCKET_TTL_HOURS`). A row exactly at the
+cutoff is retained. There is no scheduler or background worker in M14.3.1;
+deployment must invoke the command through an approved cron/systemd/maintenance
+job. Cleanup never touches `security_events`, `audit_logs`, retention holds or
+retention run logs.
+
+Migration `e1b7c4a9d2f3` is additive. Its downgrade removes the
+`auth_rate_limits` table and all current rate-limit state; it does not modify
+security-event or audit-log history. The table must exist before M14.3.2 uses
+the limiter.
+
 ### M14.2 admin security-event viewer
 
 The admin viewer is read-only and restricted to the `admin` role. The list page
@@ -731,6 +783,9 @@ approved archival policy exists.
 7. Review Nginx and Gunicorn access-log configuration so admin security-event
    query strings (`request_id`, `identifier_hash`, actor/subject IDs) are not
    recorded in production logs. See the M14.2 viewer privacy note above.
+8. Schedule the bounded authentication rate-limit cleanup command through an
+   approved maintenance job until a scheduler is introduced. M14.3.1 does not
+   activate login throttling; that integration is M14.3.2.
 
 ## Milestone 7 scope
 

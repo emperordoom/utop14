@@ -46,6 +46,7 @@ CONSTRAINED_POOL_OPTIONS: Final = {
     "pool_timeout": 1,
 }
 RESET_TABLES: Final = (
+    "auth_rate_limits",
     "security_events",
     "audit_logs",
     "product_reviews",
