@@ -501,6 +501,7 @@ Current revision chain in source:
 - `e1b7c4a9d2f3` — authentication rate-limit buckets
 - `b4d8e2f7a1c9` — login-throttled security event taxonomy
 - `d7c1a9e4b2f8` — security-event retention holds, run log and function
+- `e3b9f1c7a2d4` — retention hold lock trigger and function validation hardening
 
 ## Admin audit logging and trusted proxy
 
@@ -749,10 +750,21 @@ and an advisory lock. Event types outside this policy are never deleted.
 
 Investigative holds live in `security_event_retention_holds`. At most one hold
 row exists per event; an active hold (`expires_at > now()`) prevents deletion.
-Expired holds may be replaced. Hold creation takes a per-event advisory lock
-that the retention function uses, so a successful hold and a concurrent cleanup
-cannot delete the event. Holds and run-log rows are separate from
-`security_events` and are not deleted by retention.
+Expired holds may be replaced. Every hold write takes a per-event advisory lock
+through the `security_event_retention_holds_lock` database trigger, which uses
+the same `(7381, security_event_id)` lock as the cleanup function. This applies
+to service calls and direct SQL, so a successful hold and a concurrent cleanup
+cannot delete the event. An UPDATE that moves a hold to another event locks
+both event ids in deterministic order. A direct UPDATE cannot expire or shorten
+an active hold, and hold duration is capped at 3650 days. The app role keeps
+UPDATE only to replace an already-expired hold. Holds and run-log rows are
+separate from `security_events` and are not deleted by retention.
+
+Retention configuration is bounded: `SECURITY_EVENT_SUCCESS_RETENTION_DAYS`
+must be 90–3650, `SECURITY_EVENT_FAILURE_RETENTION_DAYS` 180–3650, and
+`SECURITY_EVENT_RETENTION_MAX_DAYS` 1–3650 and at least the largest retention
+period. The database function independently rejects a NULL/unknown scope and a
+batch index outside 0–99.
 
 Retention runs are recorded in `security_event_retention_runs` with non-PII
 operational fields: run id, batch index, scope, cutoff, deleted count, status,
@@ -766,7 +778,43 @@ deletes only rows older than the policy cutoff. The append-only trigger permits
 DELETE only when `current_user` is that owner. Application and runner roles
 cannot DELETE/UPDATE/TRUNCATE `security_events`. Role creation is deliberately
 outside migrations; see `scripts/security_event_retention_roles.sql` and verify
-with `scripts/security_event_retention_verify.sql`.
+with `scripts/security_event_retention_verify.sql`. The verify script uses
+`ON_ERROR_STOP` and raises on the first failed required assertion, so it exits
+non-zero; run it as the DBA/schema owner, not as `utop14_app`.
+
+### Production ownership model (OPS-01)
+
+The append-only and retention boundary depends on ownership separation. The
+following model is mandatory in production and must be verified on a disposable
+PostgreSQL cluster with a separate DDL role:
+
+- A dedicated DDL/schema owner (or DBA) runs every migration and owns the
+  database, application schema, `security_events`, retention tables and their
+  sequences, and the trigger/helper functions.
+- The application login role is DML-only. It is **not** the database owner,
+  schema owner, table owner, sequence owner, or function owner, and it has no
+  `CREATE` on the application schema.
+- `utop14_retention_owner` remains NOLOGIN and owns only
+  `public.prune_security_events`. `utop14_retention_runner` remains separate and
+  has only function `EXECUTE` plus run-log append.
+- The app has `SELECT, INSERT` on `security_events` for the M14.1 writer, and
+  `SELECT, INSERT, UPDATE` on holds; it has no `DELETE`, `UPDATE`, or `TRUNCATE`
+  on events, no `DELETE` on holds, and no `TRIGGER`/`REFERENCES` on events.
+- `PUBLIC` has no function `EXECUTE` and no `CREATE` on the application schema.
+
+`scripts/security_event_retention_ownership_template.sql` is a review-and-adapt
+DBA template for transferring ownership; it is not run by migrations. After the
+DBA applies it and re-runs the provisioning script,
+`scripts/security_event_retention_verify.sql` must exit 0. The ownership model
+is only considered verified when the disposable ownership test passes the
+trigger-disable, ALTER, DELETE, and TRUNCATE probes.
+
+The hardening migration `e3b9f1c7a2d4` replaces the retention function. On a
+fresh install it runs before provisioning, while the function is still owned by
+the DDL role. If provisioning has already transferred the function to
+`utop14_retention_owner`, run the migration as the DBA/superuser (or temporarily
+transfer function ownership, run it, and re-run provisioning). A non-superuser
+DDL role cannot replace a function it does not own.
 
 The runner DSN is supplied through
 `SECURITY_EVENT_RETENTION_DATABASE_URL`, ideally from a secret manager. The
@@ -842,7 +890,10 @@ is changed by this repository milestone.
 4. Never reuse the repository test key or any placeholder value.
 5. Apply the security-event and rate-limit migrations from a controlled release
    job: `9b2d4e6f8a10`, `c4e7a1b9d2f6`, `e1b7c4a9d2f3`,
-   `b4d8e2f7a1c9`, and `d7c1a9e4b2f8`.
+   `b4d8e2f7a1c9`, `d7c1a9e4b2f8`, and `e3b9f1c7a2d4`. Run migrations as the
+   dedicated DDL/schema owner, not as the application role. If the retention
+   function is already owned by `utop14_retention_owner`, run
+   `e3b9f1c7a2d4` as the DBA/superuser.
 6. The request-ID index migration is non-concurrent. If `security_events`
    already contains production traffic, schedule index creation in a maintenance
    window or use a separately reviewed concurrent-index procedure.
@@ -892,6 +943,13 @@ are not part of M14.1 or M14.3.2. M14.3.3 provides manual/bounded retention for
    `scripts/security_event_retention_verify.sql`, then schedule
    `security-event-retention run` using a protected runner DSN. Never run role
    provisioning from the application or a production migration.
+10. Enforce the OPS-01 ownership model: the DDL/schema owner owns the database,
+    schema, tables and sequences; `utop14_app` is DML-only and owns nothing;
+    `prune_security_events` stays owned by `utop14_retention_owner`. Apply
+    `scripts/security_event_retention_ownership_template.sql` only after DBA
+    review, then re-run the provisioning and verification scripts. Do not
+    proceed to production if `security_event_retention_verify.sql` exits
+    non-zero or if the app can disable the append-only trigger.
 
 ## Milestone 7 scope
 

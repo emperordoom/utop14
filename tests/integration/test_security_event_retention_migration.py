@@ -46,6 +46,22 @@ def _function_exists(name: str) -> bool:
     )
 
 
+def _trigger_exists(table: str, trigger: str) -> bool:
+    return bool(
+        db.session.execute(
+            text(
+                "SELECT EXISTS ("
+                "SELECT 1 FROM pg_trigger t "
+                "JOIN pg_class c ON c.oid = t.tgrelid "
+                "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                "WHERE n.nspname = 'public' AND c.relname = :table "
+                "AND t.tgname = :trigger AND NOT t.tgisinternal)"
+            ),
+            {"table": table, "trigger": trigger},
+        ).scalar()
+    )
+
+
 def test_retention_migration_upgrade_and_downgrade(app: Flask) -> None:
     config = _alembic_config()
     head = ScriptDirectory.from_config(config).get_current_head()
@@ -63,6 +79,40 @@ def test_retention_migration_upgrade_and_downgrade(app: Flask) -> None:
 
         command.upgrade(config, "head")
         db.session.remove()
+        assert _table_exists("security_event_retention_holds") is True
+        assert _table_exists("security_event_retention_runs") is True
+        assert (
+            _function_exists("prune_security_events(text, timestamptz, integer, uuid, integer)")
+            is True
+        )
+        assert (
+            _trigger_exists(
+                "security_event_retention_holds",
+                "security_event_retention_holds_lock",
+            )
+            is True
+        )
+        assert _function_exists("security_event_retention_holds_lock()") is True
+    finally:
+        command.upgrade(config, "head")
+        db.session.remove()
+
+
+def test_retention_hardening_downgrade_keeps_tables_and_retention_function(
+    app: Flask,
+) -> None:
+    config = _alembic_config()
+    try:
+        command.downgrade(config, "d7c1a9e4b2f8")
+        db.session.remove()
+        assert (
+            _trigger_exists(
+                "security_event_retention_holds",
+                "security_event_retention_holds_lock",
+            )
+            is False
+        )
+        assert _function_exists("security_event_retention_holds_lock()") is False
         assert _table_exists("security_event_retention_holds") is True
         assert _table_exists("security_event_retention_runs") is True
         assert (

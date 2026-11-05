@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from flask import Flask
 from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.extensions import db
 from app.models import (
@@ -26,6 +26,7 @@ from app.models.security_event_retention import (
 )
 from app.services.security_event_retention import (
     RetentionHoldExists,
+    RetentionRunError,
     RetentionValidationError,
     create_hold,
     retention_policy,
@@ -230,3 +231,72 @@ def test_retention_cli_requires_runner_dsn(app: Flask) -> None:
 
     assert result.exit_code == 1
     assert "SECURITY_EVENT_RETENTION_DATABASE_URL" in result.output
+
+
+class _FakeResult:
+    def scalar(self):
+        return True
+
+    def scalar_one(self):
+        raise SQLAlchemyError("batch failed")
+
+
+class _FakeConnection:
+    def execute(self, statement, params=None):
+        if "pg_try_advisory_lock" in str(statement) or "pg_advisory_unlock" in str(statement):
+            return _FakeResult()
+        raise SQLAlchemyError("batch failed")
+
+    def close(self) -> None:
+        return None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+
+class _FakeEngine:
+    def connect(self):
+        return _FakeConnection()
+
+    def begin(self):
+        return _FakeConnection()
+
+
+def test_failed_run_log_insert_is_normalized(
+    app: Flask,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services import security_event_retention as service
+
+    def fail_insert(*_args, **_kwargs):
+        raise SQLAlchemyError("run log insert failed")
+
+    monkeypatch.setattr(service, "_insert_run", fail_insert)
+
+    with pytest.raises(RetentionRunError, match="could not be logged"):
+        service.run_retention(_FakeEngine())
+
+
+def test_cli_normalizes_retention_run_error_without_traceback(
+    app: Flask,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.cli as cli_module
+
+    app.config["SECURITY_EVENT_RETENTION_DATABASE_URL"] = "postgresql+psycopg://user@127.0.0.1:1/db"
+
+    def fail_run(*_args, **_kwargs):
+        raise RetentionRunError("safe retention failure")
+
+    monkeypatch.setattr(cli_module, "run_retention", fail_run)
+
+    result = app.test_cli_runner().invoke(
+        args=["security-event-retention", "run"],
+    )
+
+    assert result.exit_code == 1
+    assert "safe retention failure" in result.output
+    assert "Traceback" not in result.output

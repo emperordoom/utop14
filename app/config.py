@@ -719,11 +719,17 @@ def _validate_retention_config(app: Flask) -> None:
     max_batches = app.config.get("SECURITY_EVENT_RETENTION_MAX_BATCHES")
     run_log_days = app.config.get("SECURITY_EVENT_RETENTION_RUN_LOG_DAYS")
 
-    if type(success_days) is not int or success_days < 90:
-        raise ConfigurationError("SECURITY_EVENT_SUCCESS_RETENTION_DAYS must be at least 90.")
-    if type(failure_days) is not int or failure_days < 180:
-        raise ConfigurationError("SECURITY_EVENT_FAILURE_RETENTION_DAYS must be at least 180.")
-    if type(max_days) is not int or max_days < max(success_days, failure_days):
+    if type(success_days) is not int or not 90 <= success_days <= 3650:
+        raise ConfigurationError(
+            "SECURITY_EVENT_SUCCESS_RETENTION_DAYS must be between 90 and 3650."
+        )
+    if type(failure_days) is not int or not 180 <= failure_days <= 3650:
+        raise ConfigurationError(
+            "SECURITY_EVENT_FAILURE_RETENTION_DAYS must be between 180 and 3650."
+        )
+    if type(max_days) is not int or not 1 <= max_days <= 3650:
+        raise ConfigurationError("SECURITY_EVENT_RETENTION_MAX_DAYS must be between 1 and 3650.")
+    if max_days < max(success_days, failure_days):
         raise ConfigurationError(
             "SECURITY_EVENT_RETENTION_MAX_DAYS must cover both retention periods."
         )

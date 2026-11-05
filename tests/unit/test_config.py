@@ -396,9 +396,16 @@ def test_security_event_retention_defaults_are_loaded() -> None:
     ("key", "value", "message"),
     [
         ("SECURITY_EVENT_SUCCESS_RETENTION_DAYS", 89, "SUCCESS_RETENTION"),
+        ("SECURITY_EVENT_SUCCESS_RETENTION_DAYS", 3651, "SUCCESS_RETENTION"),
+        ("SECURITY_EVENT_SUCCESS_RETENTION_DAYS", 10**9, "SUCCESS_RETENTION"),
         ("SECURITY_EVENT_FAILURE_RETENTION_DAYS", 179, "FAILURE_RETENTION"),
+        ("SECURITY_EVENT_FAILURE_RETENTION_DAYS", 3651, "FAILURE_RETENTION"),
+        ("SECURITY_EVENT_FAILURE_RETENTION_DAYS", 10**9, "FAILURE_RETENTION"),
         ("SECURITY_EVENT_RETENTION_MAX_DAYS", 100, "MAX_DAYS"),
+        ("SECURITY_EVENT_RETENTION_MAX_DAYS", 3651, "MAX_DAYS"),
+        ("SECURITY_EVENT_RETENTION_MAX_DAYS", 10**9, "MAX_DAYS"),
         ("SECURITY_EVENT_RETENTION_HOLD_MAX_DAYS", 0, "HOLD_MAX_DAYS"),
+        ("SECURITY_EVENT_RETENTION_HOLD_MAX_DAYS", 3651, "HOLD_MAX_DAYS"),
         ("SECURITY_EVENT_RETENTION_BATCH_SIZE", 5001, "BATCH_SIZE"),
         ("SECURITY_EVENT_RETENTION_MAX_BATCH_SIZE", 0, "MAX_BATCH_SIZE"),
         ("SECURITY_EVENT_RETENTION_MAX_BATCHES", 101, "MAX_BATCHES"),
@@ -416,6 +423,51 @@ def test_invalid_security_event_retention_config_is_rejected(
             {
                 "SECURITY_EVENT_HASH_KEY": VALID_SECURITY_EVENT_HASH_KEY,
                 key: value,
+            },
+        )
+
+
+def test_security_event_retention_minimum_bounds_are_accepted() -> None:
+    app = create_app(
+        "testing",
+        {
+            "SECURITY_EVENT_HASH_KEY": VALID_SECURITY_EVENT_HASH_KEY,
+            "SECURITY_EVENT_SUCCESS_RETENTION_DAYS": 90,
+            "SECURITY_EVENT_FAILURE_RETENTION_DAYS": 180,
+            "SECURITY_EVENT_RETENTION_MAX_DAYS": 180,
+            "SECURITY_EVENT_RETENTION_HOLD_MAX_DAYS": 180,
+        },
+    )
+
+    assert app.config["SECURITY_EVENT_RETENTION_MAX_DAYS"] == 180
+
+
+def test_security_event_retention_upper_bounds_are_accepted() -> None:
+    app = create_app(
+        "testing",
+        {
+            "SECURITY_EVENT_HASH_KEY": VALID_SECURITY_EVENT_HASH_KEY,
+            "SECURITY_EVENT_SUCCESS_RETENTION_DAYS": 3650,
+            "SECURITY_EVENT_FAILURE_RETENTION_DAYS": 3650,
+            "SECURITY_EVENT_RETENTION_MAX_DAYS": 3650,
+            "SECURITY_EVENT_RETENTION_HOLD_MAX_DAYS": 3650,
+        },
+    )
+
+    assert app.config["SECURITY_EVENT_SUCCESS_RETENTION_DAYS"] == 3650
+    assert app.config["SECURITY_EVENT_FAILURE_RETENTION_DAYS"] == 3650
+    assert app.config["SECURITY_EVENT_RETENTION_MAX_DAYS"] == 3650
+
+
+def test_security_event_retention_days_cannot_exceed_max_days() -> None:
+    with pytest.raises(ConfigurationError, match="MAX_DAYS"):
+        create_app(
+            "testing",
+            {
+                "SECURITY_EVENT_HASH_KEY": VALID_SECURITY_EVENT_HASH_KEY,
+                "SECURITY_EVENT_SUCCESS_RETENTION_DAYS": 400,
+                "SECURITY_EVENT_FAILURE_RETENTION_DAYS": 180,
+                "SECURITY_EVENT_RETENTION_MAX_DAYS": 365,
             },
         )
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import ipaddress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -81,9 +82,9 @@ def retention_policy() -> RetentionPolicy:
         or type(policy.batch_size) is not int
         or type(policy.max_batch_size) is not int
         or type(policy.max_batches) is not int
-        or policy.success_days < 90
-        or policy.failure_days < 180
-        or policy.hold_max_days <= 0
+        or not 90 <= policy.success_days <= 3650
+        or not 180 <= policy.failure_days <= 3650
+        or not 1 <= policy.hold_max_days <= 3650
         or not 1 <= policy.batch_size <= policy.max_batch_size
         or not 1 <= policy.max_batch_size <= 5000
         or not 1 <= policy.max_batches <= 100
@@ -297,18 +298,27 @@ def run_retention(
                             ).scalar_one()
                         )
                 except SQLAlchemyError as exc:
-                    _insert_run(
-                        engine,
-                        run_id=run_id,
-                        batch_index=total_batches,
-                        scope=scope,
-                        cutoff=cutoff,
-                        deleted_count=0,
-                        status=RETENTION_STATUS_FAILED,
-                        started_at=started_at,
-                        finished_at=_aware_now(),
-                        error_code=type(exc).__name__,
-                    )
+                    try:
+                        _insert_run(
+                            engine,
+                            run_id=run_id,
+                            batch_index=total_batches,
+                            scope=scope,
+                            cutoff=cutoff,
+                            deleted_count=0,
+                            status=RETENTION_STATUS_FAILED,
+                            started_at=started_at,
+                            finished_at=_aware_now(),
+                            error_code=type(exc).__name__,
+                        )
+                    except SQLAlchemyError:
+                        # The failed-run insert itself failed.  Keep the
+                        # original batch failure as the cause and expose only a
+                        # safe message to the CLI.
+                        raise RetentionRunError(
+                            "A security-event retention batch failed and the "
+                            "failure could not be logged."
+                        ) from exc
                     raise RetentionRunError("A security-event retention batch failed.") from exc
 
                 total_batches += 1
@@ -320,27 +330,37 @@ def run_retention(
                 break
 
         if total_batches >= max_batches and last_deleted >= batch_size:
-            _insert_run(
-                engine,
-                run_id=run_id,
-                batch_index=total_batches,
-                scope=current_scope,
-                cutoff=cutoffs[current_scope],
-                # Each successful batch already recorded its own deleted_count;
-                # the partial marker deletes nothing and must not double-count.
-                deleted_count=0,
-                status=RETENTION_STATUS_PARTIAL,
-                started_at=_aware_now(),
-                finished_at=_aware_now(),
-            )
+            try:
+                _insert_run(
+                    engine,
+                    run_id=run_id,
+                    batch_index=total_batches,
+                    scope=current_scope,
+                    cutoff=cutoffs[current_scope],
+                    # Each successful batch already recorded its own
+                    # deleted_count; the partial marker deletes nothing and must
+                    # not double-count.
+                    deleted_count=0,
+                    status=RETENTION_STATUS_PARTIAL,
+                    started_at=_aware_now(),
+                    finished_at=_aware_now(),
+                )
+            except SQLAlchemyError as exc:
+                raise RetentionRunError(
+                    "The retention run reached its batch budget but the partial "
+                    "status could not be logged."
+                ) from exc
             return RetentionRunSummary(run_id, total_deleted, total_batches, "partial")
 
         return RetentionRunSummary(run_id, total_deleted, total_batches, "success")
     finally:
         try:
-            lock_connection.execute(
-                text("SELECT pg_advisory_unlock(:key)"),
-                {"key": _ADVISORY_LOCK_KEY},
-            )
+            # Closing the connection releases any remaining session lock.  Do
+            # not let an unlock failure mask the primary outcome.
+            with contextlib.suppress(SQLAlchemyError):
+                lock_connection.execute(
+                    text("SELECT pg_advisory_unlock(:key)"),
+                    {"key": _ADVISORY_LOCK_KEY},
+                )
         finally:
             lock_connection.close()
