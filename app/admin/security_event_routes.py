@@ -102,9 +102,9 @@ def security_event_list() -> ResponseReturnValue:
     if _LEGACY_SENSITIVE_PARAMS.intersection(request.args):
         # Never reflect old sensitive query parameters; send the browser to a
         # clean URL.  The old values are not copied into the Location header.
-        response = redirect(_clean_list_url(), code=303)
-        clear_filter_state_cookie(response)
-        return response
+        # The active filter-state cookie is deliberately preserved: a legacy
+        # link must not reset the admin's current filter state.
+        return redirect(_clean_list_url(), code=303)
 
     token = request.cookies.get(FILTER_STATE_COOKIE)
     filters = (

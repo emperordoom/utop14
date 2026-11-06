@@ -1264,13 +1264,43 @@ in `admin_security_event_filter_states`, and returns `303` to
   in bounded batches. Security does not depend on this job; schedule it as an
   operational follow-up.
 - Pagination carries only `?page=N`. Legacy URLs that contain filter parameters
-  are redirected to a clean URL without echoing the values.
+  are redirected to a clean URL without echoing the values and **without
+  clearing an active filter-state cookie**; the previously applied filters
+  remain active after the redirect. Only the explicit clear-filter POST or
+  logout removes state.
 - Logout deletes the admin's stored states and clears the cookie. Multiple tabs
   share one state because the cookie is per-browser-session; applying a filter
   in one tab replaces the state seen by the other tabs on their next load.
 - The login `next` target is stripped of `identifier_hash` and `request_id`, so
   an expired admin session cannot move sensitive filters into the login URL or
   the post-login redirect.
+
+##### Trust boundary (accepted — M14.4.1.1 F-01)
+
+`admin_security_event_filter_states` is inside the **database application-role
+trust boundary**:
+
+1. The `utop14_app` role holds `SELECT, INSERT, UPDATE, DELETE` on the table.
+2. Per-admin authorization is enforced by the authenticated admin route and the
+   service-layer ownership check (`admin_user_id`), not by the database.
+3. The database does **not** provide row-level isolation between admins; there
+   is no RLS policy on the table.
+4. A compromised app role, SQL injection, or direct SQL with the app-role
+   credential can read and modify every admin's filter state.
+5. RLS keyed on a caller-controlled custom GUC is **not** a sufficient control
+   against app-role compromise, because the app role can set that GUC itself.
+6. The project therefore does **not** claim that filter state is protected from
+   app-role compromise.
+7. Per-user database roles or a trusted external authorization broker would be
+   an architectural change; they are not part of this milestone.
+8. This accepted boundary does not change the privileges of M13 `audit_logs`,
+   M14.1 `security_events`, the M14.3 retention owner/runner, or the
+   schema-owner/DBA trust boundary.
+
+The stored filter payload contains the same identifier hashes, request IDs and
+security-event metadata that the app role can already read from
+`security_events`; the additional metadata is the admin-to-filter correlation.
+That correlation is accepted under the existing single-application-role model.
 
 The application never logs the token or the filter payload. The code-level
 exposure is remediated here; **production deployment still requires** the

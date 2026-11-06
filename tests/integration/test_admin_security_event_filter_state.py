@@ -41,6 +41,11 @@ PASSWORD = "ValidPass123"
 SENSITIVE_HASH = "a" * 64
 SENSITIVE_REQUEST_ID = "b" * 32
 
+# Accepted trust boundary (M14.4.1.1 F-01): the application role holds
+# SELECT/INSERT/UPDATE/DELETE on admin_security_event_filter_states and there is
+# no database-level row isolation.  Cross-admin authorization is enforced at the
+# route and service layers; these tests do not claim database isolation.
+
 
 def _admin(make_user: Callable[..., User], email: str = "filter-admin@example.com") -> User:
     return make_user(email=email, full_name="Filter Admin", role=ROLE_ADMIN)
@@ -300,6 +305,41 @@ def test_legacy_query_parameters_are_never_reflected(
     body = response.get_data(as_text=True)
     assert SENSITIVE_HASH not in body
     assert SENSITIVE_REQUEST_ID not in body
+
+
+def test_legacy_redirect_preserves_active_filter_state(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    make_user: Callable[..., User],
+) -> None:
+    """F-02: a legacy link must not reset the admin's active filter state."""
+    admin = _admin(make_user)
+    _add_event(actor_email="legacy-match@example.com")
+    _add_event(actor_email="legacy-other@example.com", identifier_hash="c" * 64)
+    _login(client, csrf_token, admin.email)
+    assert _apply(client, csrf_token, identifier_hash=SENSITIVE_HASH).status_code == 303
+
+    response = client.get(
+        "/admin/security-events",
+        query_string={
+            "identifier_hash": SENSITIVE_HASH,
+            "request_id": SENSITIVE_REQUEST_ID,
+        },
+    )
+    assert response.status_code == 303
+    assert response.headers["Location"] == "/admin/security-events"
+    assert FILTER_STATE_COOKIE not in response.headers.get("Set-Cookie", "")
+    assert SENSITIVE_HASH not in response.get_data(as_text=True)
+    assert SENSITIVE_REQUEST_ID not in response.get_data(as_text=True)
+
+    cookie = client.get_cookie(FILTER_STATE_COOKIE, path="/admin/security-events")
+    assert cookie is not None
+    assert len(cookie.value) == 43
+
+    html = client.get("/admin/security-events").get_data(as_text=True)
+    assert "legacy-match@example.com" in html
+    assert "legacy-other@example.com" not in html
 
 
 def test_another_admin_cannot_use_the_token(
