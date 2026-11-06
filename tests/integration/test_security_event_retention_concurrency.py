@@ -4057,6 +4057,54 @@ def test_disposable_ownership_and_hold_concurrency() -> None:
         assert historical.status == "partial", historical
         assert historical.executed_by == "legacy", historical
         assert marker_count == 1, marker_count
+
+        # F-03: real retention advisory-lock contention on a disposable cluster.
+        retention_lock_key = 0x55544F50313433
+        with admin.connect() as conn:
+            runs_before_lock = conn.execute(
+                text("SELECT count(*) FROM security_event_retention_runs")
+            ).scalar_one()
+        holder = runner.connect()
+        try:
+            holder.execute(
+                text("SELECT pg_advisory_lock(:key)"),
+                {"key": retention_lock_key},
+            )
+            with app.app_context():
+                lock_cli = app.test_cli_runner().invoke(
+                    args=["security-event-retention", "run"],
+                )
+            assert lock_cli.exit_code == 3, (lock_cli.output, lock_cli.exception)
+            assert "already running" in lock_cli.output
+            assert "Traceback" not in lock_cli.output
+            with admin.connect() as conn:
+                runs_after_lock = conn.execute(
+                    text("SELECT count(*) FROM security_event_retention_runs")
+                ).scalar_one()
+            assert runs_after_lock == runs_before_lock, (
+                runs_before_lock,
+                runs_after_lock,
+            )
+        finally:
+            holder.execute(
+                text("SELECT pg_advisory_unlock(:key)"),
+                {"key": retention_lock_key},
+            )
+            holder.close()
+
+        # The lock must be genuinely released after the contention test.
+        with runner.connect() as probe:
+            assert (
+                probe.execute(
+                    text("SELECT pg_try_advisory_lock(:key)"),
+                    {"key": retention_lock_key},
+                ).scalar_one()
+                is True
+            )
+            probe.execute(
+                text("SELECT pg_advisory_unlock(:key)"),
+                {"key": retention_lock_key},
+            )
     finally:
         try:
             if (data_dir / "postmaster.pid").exists():

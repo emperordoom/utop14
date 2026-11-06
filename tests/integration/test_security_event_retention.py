@@ -529,3 +529,22 @@ def test_cli_malformed_runner_dsn_is_safe(app: Flask) -> None:
         or "Unable to connect to the retention database." in result.output
     )
     assert sentinel not in result.output
+
+
+def test_cli_create_engine_value_error_is_safe(app: Flask) -> None:
+    sentinel = "review-sentinel-invalid-port"
+    app.config["SECURITY_EVENT_RETENTION_DATABASE_URL"] = (
+        f"postgresql+psycopg://runner:{sentinel}@127.0.0.1:notaport/utop14_test"
+    )
+
+    result = app.test_cli_runner().invoke(
+        args=["security-event-retention", "run"],
+    )
+
+    assert result.exit_code == 1
+    assert "Unable to configure the retention database connection." in result.output
+    assert sentinel not in result.output
+    assert "notaport" not in result.output
+    assert "127.0.0.1" not in result.output
+    assert "postgresql+psycopg" not in result.output
+    assert db.session.scalar(select(func.count(SecurityEventRetentionRun.id))) == 0

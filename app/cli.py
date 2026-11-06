@@ -138,7 +138,7 @@ def _retention_engine():
         )
     try:
         return create_engine(database_url, pool_pre_ping=True)
-    except SQLAlchemyError as exc:
+    except (SQLAlchemyError, ValueError) as exc:
         raise click.ClickException(
             "Unable to configure the retention database connection."
         ) from exc

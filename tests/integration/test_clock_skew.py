@@ -162,3 +162,4 @@ def test_naive_database_timestamp_is_normalized(app: Flask) -> None:
 
     assert result is not None
     assert result.database_time.tzinfo is not None
+    assert result.database_time.utcoffset() == timedelta(0)

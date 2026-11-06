@@ -1292,6 +1292,20 @@ cutoff and security-event timestamps share a clock. In that configuration,
 clock alignment must be verified independently for each cluster. Keep NTP
 configured and monitored on both the application hosts and the PostgreSQL hosts.
 
+If a separate retention cluster is unavoidable, use this operational procedure:
+
+1. Keep same-cluster as the recommended and preferred configuration.
+2. A DBA/operator compares the clocks independently with `SELECT now()` on the
+   application database and on the retention runner cluster, within the same
+   measurement window and accounting for query round-trip time.
+3. Record both readings and verify the difference is within the agreed
+   operational tolerance; do not treat `check-clock` as evidence for the
+   runner cluster.
+4. Verify and monitor NTP on the application hosts and on **both** PostgreSQL
+   hosts; alert on drift or failed time synchronization.
+5. Repeat the comparison after cluster failover, time-service changes, or
+   abnormal retention/event timing.
+
 The runner DSN is supplied through
 `SECURITY_EVENT_RETENTION_DATABASE_URL`, ideally from a secret manager. The
 manual command is:
