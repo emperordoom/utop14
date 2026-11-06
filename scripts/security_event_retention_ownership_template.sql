@@ -53,11 +53,12 @@ DECLARE
     expected_schemas text[] := ARRAY['public'];
     expected_extensions text[] := ARRAY['plpgsql'];
     expected_tables text[] := ARRAY[
-        'alembic_version', 'audit_logs', 'auth_rate_limits', 'cart_items',
-        'carts', 'categories', 'order_items', 'orders', 'payment_proofs',
-        'payments', 'product_images', 'product_reviews', 'product_variants',
-        'products', 'security_event_retention_holds',
-        'security_event_retention_runs', 'security_events', 'users'
+        'admin_security_event_filter_states', 'alembic_version', 'audit_logs',
+        'auth_rate_limits', 'cart_items', 'carts', 'categories',
+        'order_items', 'orders', 'payment_proofs', 'payments',
+        'product_images', 'product_reviews', 'product_variants', 'products',
+        'security_event_retention_holds', 'security_event_retention_runs',
+        'security_events', 'users'
     ];
     expected_sequences text[] := ARRAY[
         'audit_logs_id_seq', 'cart_items_id_seq', 'carts_id_seq',
@@ -384,6 +385,7 @@ ALTER SCHEMA public OWNER TO <schema_owner>;
 -- 2. Complete application table ownership inventory.
 --    Alembic metadata is included so the app cannot own it either.
 ALTER TABLE public.alembic_version OWNER TO <schema_owner>;
+ALTER TABLE public.admin_security_event_filter_states OWNER TO <schema_owner>;
 ALTER TABLE public.users OWNER TO <schema_owner>;
 ALTER TABLE public.audit_logs OWNER TO <schema_owner>;
 ALTER TABLE public.security_events OWNER TO <schema_owner>;

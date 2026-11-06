@@ -508,11 +508,12 @@ DECLARE
     expected_schemas text[] := ARRAY['public'];
     expected_extensions text[] := ARRAY['plpgsql'];
     expected_tables text[] := ARRAY[
-        'alembic_version', 'audit_logs', 'auth_rate_limits', 'cart_items',
-        'carts', 'categories', 'order_items', 'orders', 'payment_proofs',
-        'payments', 'product_images', 'product_reviews', 'product_variants',
-        'products', 'security_event_retention_holds',
-        'security_event_retention_runs', 'security_events', 'users'
+        'admin_security_event_filter_states', 'alembic_version', 'audit_logs',
+        'auth_rate_limits', 'cart_items', 'carts', 'categories',
+        'order_items', 'orders', 'payment_proofs', 'payments',
+        'product_images', 'product_reviews', 'product_variants', 'products',
+        'security_event_retention_holds', 'security_event_retention_runs',
+        'security_events', 'users'
     ];
     expected_sequences text[] := ARRAY[
         'audit_logs_id_seq', 'cart_items_id_seq', 'carts_id_seq',
@@ -1051,6 +1052,7 @@ BEGIN
 
     FOR r IN
         SELECT * FROM (VALUES
+            ('admin_security_event_filter_states', ARRAY['SELECT','INSERT','UPDATE','DELETE']::text[]),
             ('alembic_version', ARRAY[]::text[]),
             ('audit_logs', ARRAY['SELECT','INSERT']::text[]),
             ('auth_rate_limits', ARRAY['SELECT','INSERT','UPDATE','DELETE']::text[]),
@@ -1137,6 +1139,7 @@ BEGIN
             VALUES
                 ('alembic_version', ARRAY[]::text[], ARRAY[]::text[], ARRAY[]::text[]),
                 ('audit_logs', ARRAY['SELECT','INSERT']::text[], ARRAY[]::text[], ARRAY[]::text[]),
+                ('admin_security_event_filter_states', ARRAY['SELECT','INSERT','UPDATE','DELETE']::text[], ARRAY[]::text[], ARRAY[]::text[]),
                 ('auth_rate_limits', ARRAY['SELECT','INSERT','UPDATE','DELETE']::text[], ARRAY[]::text[], ARRAY[]::text[]),
                 ('cart_items', ARRAY['SELECT','INSERT','UPDATE','DELETE']::text[], ARRAY[]::text[], ARRAY[]::text[]),
                 ('carts', ARRAY['SELECT','INSERT','UPDATE']::text[], ARRAY[]::text[], ARRAY[]::text[]),
@@ -1250,6 +1253,7 @@ BEGIN
     -- every column; a column-only grant on another table/column fails.
     FOR r IN
         SELECT table_name, allowed FROM (VALUES
+            ('admin_security_event_filter_states', ARRAY[]::text[]),
             ('alembic_version', ARRAY[]::text[]),
             ('audit_logs', ARRAY[]::text[]),
             ('auth_rate_limits', ARRAY[]::text[]),
@@ -1304,6 +1308,7 @@ BEGIN
 
     FOR r IN
         SELECT table_name, allowed FROM (VALUES
+            ('admin_security_event_filter_states', ARRAY[]::text[]),
             ('alembic_version', ARRAY[]::text[]),
             ('audit_logs', ARRAY[]::text[]),
             ('auth_rate_limits', ARRAY[]::text[]),
@@ -1412,6 +1417,7 @@ BEGIN
                    ELSE ARRAY[]::text[]
                END AS allowed
         FROM pg_catalog.unnest(ARRAY[
+            'admin_security_event_filter_states',
             'alembic_version','audit_logs','auth_rate_limits','cart_items',
             'carts','categories','order_items','orders','payment_proofs',
             'payments','product_images','product_reviews','product_variants',
@@ -1439,6 +1445,7 @@ BEGIN
                    ELSE ARRAY[]::text[]
                END AS allowed
         FROM pg_catalog.unnest(ARRAY[
+            'admin_security_event_filter_states',
             'alembic_version','audit_logs','auth_rate_limits','cart_items',
             'carts','categories','order_items','orders','payment_proofs',
             'payments','product_images','product_reviews','product_variants',

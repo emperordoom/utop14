@@ -189,28 +189,32 @@
         {% if event.request_id or event.identifier_hash or event.actor_user_id or event.subject_user_id %}
           <div class="security-event-related">
             {% if event.request_id %}
-              <a
-                class="button button--ghost"
-                href="{{ url_for('admin.security_event_list', request_id=event.request_id) }}"
-              >Same request</a>
+              <form method="post" action="{{ url_for('admin.security_event_filter_apply') }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="request_id" value="{{ event.request_id }}">
+                <button class="button button--ghost" type="submit">Same request</button>
+              </form>
             {% endif %}
             {% if event.identifier_hash %}
-              <a
-                class="button button--ghost"
-                href="{{ url_for('admin.security_event_list', identifier_hash=event.identifier_hash) }}"
-              >Same identifier</a>
+              <form method="post" action="{{ url_for('admin.security_event_filter_apply') }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="identifier_hash" value="{{ event.identifier_hash }}">
+                <button class="button button--ghost" type="submit">Same identifier</button>
+              </form>
             {% endif %}
             {% if event.actor_user_id %}
-              <a
-                class="button button--ghost"
-                href="{{ url_for('admin.security_event_list', actor_user_id=event.actor_user_id) }}"
-              >Actor events</a>
+              <form method="post" action="{{ url_for('admin.security_event_filter_apply') }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="actor_user_id" value="{{ event.actor_user_id }}">
+                <button class="button button--ghost" type="submit">Actor events</button>
+              </form>
             {% endif %}
             {% if event.subject_user_id %}
-              <a
-                class="button button--ghost"
-                href="{{ url_for('admin.security_event_list', subject_user_id=event.subject_user_id) }}"
-              >Subject events</a>
+              <form method="post" action="{{ url_for('admin.security_event_filter_apply') }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="subject_user_id" value="{{ event.subject_user_id }}">
+                <button class="button button--ghost" type="submit">Subject events</button>
+              </form>
             {% endif %}
           </div>
         {% else %}
