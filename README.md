@@ -1187,11 +1187,21 @@ protocol functions and runner privileges change together:
    INSERT a run row or use the sequence.
 7. Restart the retention timer.
 
-The migration is forward-only. Downgrade refuses while any run-log history
-exists and, even when empty, only restores the previous schema; production
-rollback is restore-from-backup, never deletion of security events or run-log
-history. A snapshot of the pre-deployment run log is the operational recovery
-artifact.
+Migration `f5d2b8c3e1a6` has a **limited schema-only downgrade**, not a pure
+forward-only path. The downgrade:
+
+- runs only when `security_event_retention_runs` is empty; any run-log history
+  makes it fail closed;
+- restores the previous `prune_security_events` function, including its legacy
+  ability to write a success row without the two-phase begin/abandon protocol;
+- drops the `executed_by` column and the new protocol functions;
+- must never be used as a production rollback procedure;
+- must never be forced by deleting or merging historical retention run-log rows.
+
+Production rollback is **restore-from-backup** using a verified backup taken
+before deployment. A snapshot of the pre-deployment run log is the operational
+recovery artifact. The limited downgrade exists only for disposable/empty
+schema-cycle testing and controlled local recovery.
 
 The hardening migration `e3b9f1c7a2d4` and the run-log integrity migration
 `f5d2b8c3e1a6` replace retention functions. On a fresh install they run before
@@ -1273,6 +1283,14 @@ and is reported by `security-event-retention check-clock`; it never changes a
 clock, a session timezone, or fails the application/retention run. If the
 diagnostic database is unavailable, the command reports that safely and exits
 successfully.
+
+The diagnostic currently reads `db.engine`, i.e. the application database. The
+runner DSN (`SECURITY_EVENT_RETENTION_DATABASE_URL`) **must point to the same
+PostgreSQL cluster/time source as the application database**. If the runner DSN
+points to a different cluster, `check-clock` does not prove that the retention
+cutoff and security-event timestamps share a clock. In that configuration,
+clock alignment must be verified independently for each cluster. Keep NTP
+configured and monitored on both the application hosts and the PostgreSQL hosts.
 
 The runner DSN is supplied through
 `SECURITY_EVENT_RETENTION_DATABASE_URL`, ideally from a secret manager. The

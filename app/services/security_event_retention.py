@@ -353,19 +353,30 @@ def run_retention(
     total_batches = 0
     last_deleted = 0
 
-    lock_connection = engine.connect()
     try:
-        acquired = lock_connection.execute(
-            text("SELECT pg_try_advisory_lock(:key)"),
-            {"key": _ADVISORY_LOCK_KEY},
-        ).scalar()
-        if not acquired:
-            raise RetentionLocked("Another security-event retention run is active.")
+        lock_connection = engine.connect()
+    except SQLAlchemyError as exc:
+        raise RetentionRunError("Unable to connect to the retention database.") from exc
 
-        # One authoritative reference for this run.  ``now()`` is the
-        # transaction start time in PostgreSQL and therefore stays constant for
-        # every batch that uses this cutoff.
-        reference = _database_now(lock_connection)
+    try:
+        try:
+            acquired = lock_connection.execute(
+                text("SELECT pg_try_advisory_lock(:key)"),
+                {"key": _ADVISORY_LOCK_KEY},
+            ).scalar()
+            if not acquired:
+                raise RetentionLocked("Another security-event retention run is active.")
+
+            # One authoritative reference for this run.  ``now()`` is the
+            # transaction start time in PostgreSQL and therefore stays constant
+            # for every batch that uses this cutoff.
+            reference = _database_now(lock_connection)
+        except SQLAlchemyError as exc:
+            # Initial connection/advisory-lock/clock failures must not expose
+            # driver details (host, DSN or credentials) and must not create a
+            # synthetic failed run-log row.
+            raise RetentionRunError("Unable to initialize the retention run.") from exc
+
         cutoffs = {
             RETENTION_SCOPE_SUCCESS: reference - timedelta(days=policy.success_days),
             RETENTION_SCOPE_FAILURE: reference - timedelta(days=policy.failure_days),

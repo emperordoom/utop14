@@ -6,7 +6,7 @@ import click
 from email_validator import EmailNotValidError, validate_email
 from flask import current_app
 from sqlalchemy import create_engine, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.catalog.seed import seed_catalog
 from app.extensions import db
@@ -136,7 +136,12 @@ def _retention_engine():
         raise click.ClickException(
             "SECURITY_EVENT_RETENTION_DATABASE_URL is required for retention runs."
         )
-    return create_engine(database_url, pool_pre_ping=True)
+    try:
+        return create_engine(database_url, pool_pre_ping=True)
+    except SQLAlchemyError as exc:
+        raise click.ClickException(
+            "Unable to configure the retention database connection."
+        ) from exc
 
 
 @security_event_retention_cli.command("check-clock")

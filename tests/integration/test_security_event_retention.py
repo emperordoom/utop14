@@ -22,10 +22,12 @@ from app.models.security_event import (
 )
 from app.models.security_event_retention import (
     RETENTION_SCOPE_FAILURE,
+    RETENTION_STATUS_STARTED,
     RETENTION_STATUS_SUCCESS,
 )
 from app.services.security_event_retention import (
     RetentionHoldExists,
+    RetentionLocked,
     RetentionRunError,
     RetentionValidationError,
     create_hold,
@@ -302,6 +304,75 @@ class _FakeEngine:
         return _FakeConnection(fail_abandon=self._fail_abandon, deletes=self._deletes)
 
 
+class _ConnectFailureEngine:
+    def __init__(self, error: SQLAlchemyError):
+        self._error = error
+
+    def connect(self):
+        raise self._error
+
+
+class _InitialFailureConnection:
+    def __init__(self, fail_on: str):
+        self._fail_on = fail_on
+
+    def execute(self, statement, params=None):
+        sql = str(statement)
+        if self._fail_on in sql:
+            raise SQLAlchemyError("sensitive driver detail")
+        if "pg_try_advisory_lock" in sql:
+            return _FakeResult(scalar_value=True)
+        if "SELECT now()" in sql:
+            return _FakeResult(scalar_one_value=datetime.now(UTC))
+        if "pg_advisory_unlock" in sql:
+            return _FakeResult()
+        raise SQLAlchemyError("unexpected statement")
+
+    def close(self) -> None:
+        return None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+
+class _InitialFailureEngine:
+    def __init__(self, fail_on: str):
+        self._fail_on = fail_on
+
+    def connect(self):
+        return _InitialFailureConnection(self._fail_on)
+
+    def begin(self):
+        return _InitialFailureConnection(self._fail_on)
+
+
+def test_initial_connect_failure_is_safe(app: Flask) -> None:
+    from app.services import security_event_retention as service
+
+    error = SQLAlchemyError("sensitive postgresql://user:secret@db-host/utop14")
+    with pytest.raises(RetentionRunError) as exc_info:
+        service.run_retention(_ConnectFailureEngine(error))
+
+    message = str(exc_info.value)
+    assert "Unable to connect" in message
+    assert "postgresql" not in message.lower()
+    assert "secret" not in message.lower()
+    assert "db-host" not in message.lower()
+
+
+@pytest.mark.parametrize("fail_on", ["pg_try_advisory_lock", "SELECT now()"])
+def test_initial_retention_query_failure_is_safe(app: Flask, fail_on: str) -> None:
+    from app.services import security_event_retention as service
+
+    with pytest.raises(RetentionRunError, match="Unable to initialize") as exc_info:
+        service.run_retention(_InitialFailureEngine(fail_on))
+
+    assert "sensitive driver detail" not in str(exc_info.value)
+
+
 def test_run_retention_success_uses_one_db_cutoff_per_scope(app: Flask) -> None:
     from app.services import security_event_retention as service
 
@@ -363,3 +434,98 @@ def test_cli_normalizes_retention_run_error_without_traceback(
     assert result.exit_code == 1
     assert "safe retention failure" in result.output
     assert "Traceback" not in result.output
+
+
+def test_cli_initial_database_error_does_not_leak_credentials(app: Flask) -> None:
+    sentinel = "review-sentinel-password-123"
+    app.config["SECURITY_EVENT_RETENTION_DATABASE_URL"] = (
+        f"postgresql+psycopg://runner:{sentinel}@127.0.0.1:1/utop14_test"
+    )
+
+    result = app.test_cli_runner().invoke(
+        args=["security-event-retention", "run"],
+    )
+
+    assert result.exit_code == 1
+    assert sentinel not in result.output
+    assert "postgresql+psycopg" not in result.output
+    assert "127.0.0.1" not in result.output
+    assert "Unable to connect" in result.output
+    assert db.session.scalar(select(func.count(SecurityEventRetentionRun.id))) == 0
+
+
+def test_cli_orphan_detection_finds_started_run(app: Flask) -> None:
+    app.config["SECURITY_EVENT_RETENTION_DATABASE_URL"] = app.config["SQLALCHEMY_DATABASE_URI"]
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(days=100)
+    old_run = SecurityEventRetentionRun(
+        run_id="orphan-old-run",
+        batch_index=0,
+        scope=RETENTION_SCOPE_FAILURE,
+        cutoff=cutoff,
+        deleted_count=0,
+        status=RETENTION_STATUS_STARTED,
+        executed_by="test-suite",
+        started_at=now - timedelta(hours=2),
+        finished_at=None,
+    )
+    recent_run = SecurityEventRetentionRun(
+        run_id="orphan-recent-run",
+        batch_index=1,
+        scope=RETENTION_SCOPE_FAILURE,
+        cutoff=cutoff,
+        deleted_count=0,
+        status=RETENTION_STATUS_STARTED,
+        executed_by="test-suite",
+        started_at=now - timedelta(minutes=5),
+        finished_at=None,
+    )
+    db.session.add_all([old_run, recent_run])
+    db.session.commit()
+
+    result = app.test_cli_runner().invoke(
+        args=["security-event-retention", "orphans", "--older-than-minutes", "60"],
+    )
+
+    assert result.exit_code == 0
+    assert "orphan-old-run" in result.output
+    assert "orphan-recent-run" not in result.output
+
+
+def test_cli_lock_contention_keeps_exit_code_three(
+    app: Flask,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.cli as cli_module
+
+    app.config["SECURITY_EVENT_RETENTION_DATABASE_URL"] = app.config["SQLALCHEMY_DATABASE_URI"]
+
+    def locked(*_args, **_kwargs):
+        raise RetentionLocked("another run is active")
+
+    monkeypatch.setattr(cli_module, "run_retention", locked)
+
+    result = app.test_cli_runner().invoke(
+        args=["security-event-retention", "run"],
+    )
+
+    assert result.exit_code == 3
+    assert "already running" in result.output
+
+
+def test_cli_malformed_runner_dsn_is_safe(app: Flask) -> None:
+    sentinel = "review-sentinel-malformed-dsn"
+    app.config["SECURITY_EVENT_RETENTION_DATABASE_URL"] = (
+        f"postgresql+psycopg://runner:{sentinel}@["
+    )
+
+    result = app.test_cli_runner().invoke(
+        args=["security-event-retention", "run"],
+    )
+
+    assert result.exit_code == 1
+    assert (
+        "Unable to configure the retention database connection." in result.output
+        or "Unable to connect to the retention database." in result.output
+    )
+    assert sentinel not in result.output
