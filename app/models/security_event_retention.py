@@ -12,6 +12,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    UniqueConstraint,
     func,
     text,
 )
@@ -25,10 +26,15 @@ RETENTION_SCOPES: tuple[str, ...] = (
     RETENTION_SCOPE_SUCCESS,
     RETENTION_SCOPE_FAILURE,
 )
+RETENTION_STATUS_STARTED: str = "started"
 RETENTION_STATUS_SUCCESS: str = "success"
+# ``partial`` is retained only for historical rows.  New runs report an
+# exhausted batch budget through the CLI exit code and metrics instead of a
+# synthetic partial run-log row.
 RETENTION_STATUS_PARTIAL: str = "partial"
 RETENTION_STATUS_FAILED: str = "failed"
 RETENTION_STATUSES: tuple[str, ...] = (
+    RETENTION_STATUS_STARTED,
     RETENTION_STATUS_SUCCESS,
     RETENTION_STATUS_PARTIAL,
     RETENTION_STATUS_FAILED,
@@ -85,7 +91,7 @@ class SecurityEventRetentionRun(Base):
             name="security_event_retention_run_scope_valid",
         ),
         CheckConstraint(
-            "status IN ('success', 'partial', 'failed')",
+            "status IN ('started', 'success', 'partial', 'failed')",
             name="security_event_retention_run_status_valid",
         ),
         CheckConstraint(
@@ -95,6 +101,11 @@ class SecurityEventRetentionRun(Base):
         CheckConstraint(
             "batch_index >= 0",
             name="security_event_retention_run_batch_nonnegative",
+        ),
+        UniqueConstraint(
+            "run_id",
+            "batch_index",
+            name="security_event_retention_run_batch_unique",
         ),
         Index(
             "ix_security_event_retention_runs_run_id",
@@ -116,6 +127,10 @@ class SecurityEventRetentionRun(Base):
     )
     deleted_count: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False)
+    # ``session_user`` as observed inside the SECURITY DEFINER function.  This
+    # identifies the database credential that executed the batch (for example
+    # ``utop14_retention_runner``), not a human or OS job name.
+    executed_by: Mapped[str] = mapped_column(String(63), nullable=False)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

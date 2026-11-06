@@ -227,6 +227,10 @@ def _retention_settings() -> dict[str, object]:
         "SECURITY_EVENT_RETENTION_DATABASE_URL": _env_str(
             "SECURITY_EVENT_RETENTION_DATABASE_URL",
         ),
+        "CLOCK_SKEW_WARNING_SECONDS": _env_int(
+            "CLOCK_SKEW_WARNING_SECONDS",
+            default=120,
+        ),
     }
 
 
@@ -312,6 +316,7 @@ class BaseConfig:
     SECURITY_EVENT_RETENTION_MAX_BATCHES = 20
     SECURITY_EVENT_RETENTION_RUN_LOG_DAYS = 365
     SECURITY_EVENT_RETENTION_DATABASE_URL = ""
+    CLOCK_SKEW_WARNING_SECONDS = 120
 
     # Server-side admin security-event filter state.  The TTL is bounded so an
     # operator cannot configure a state that never expires.
@@ -778,6 +783,12 @@ def _validate_retention_config(app: Flask) -> None:
     if retention_url and not retention_url.startswith(_POSTGRES_PSYCOPG_SCHEME):
         raise ConfigurationError(
             "SECURITY_EVENT_RETENTION_DATABASE_URL must use the PostgreSQL Psycopg 3 driver."
+        )
+
+    skew_seconds = app.config.get("CLOCK_SKEW_WARNING_SECONDS")
+    if type(skew_seconds) is not int or not 1 <= skew_seconds <= 86_400:
+        raise ConfigurationError(
+            "CLOCK_SKEW_WARNING_SECONDS must be an integer between 1 and 86400."
         )
 
 

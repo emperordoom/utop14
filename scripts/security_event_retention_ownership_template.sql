@@ -70,7 +70,9 @@ DECLARE
         'users_id_seq'
     ];
     expected_functions text[] := ARRAY[
+        'public.abandon_retention_run(uuid, integer, text)',
         'public.audit_logs_reject_mutation()',
+        'public.begin_retention_run(text, timestamptz, uuid, integer)',
         'public.security_events_reject_mutation()',
         'public.security_event_retention_holds_lock()',
         'public.prune_security_events(text, timestamptz, integer, uuid, integer)'
@@ -197,7 +199,8 @@ BEGIN
     JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
     WHERE n.nspname = 'public'
       AND NOT (p.proname = ANY (ARRAY[
-          'audit_logs_reject_mutation', 'prune_security_events',
+          'abandon_retention_run', 'audit_logs_reject_mutation',
+          'begin_retention_run', 'prune_security_events',
           'security_event_retention_holds_lock', 'security_events_reject_mutation'
       ]))
       AND NOT EXISTS (
@@ -431,6 +434,7 @@ ALTER FUNCTION public.security_events_reject_mutation() OWNER TO <schema_owner>;
 ALTER FUNCTION public.security_event_retention_holds_lock() OWNER TO <schema_owner>;
 
 -- 5. Do NOT transfer the SECURITY DEFINER retention entry point:
+--    public.begin_retention_run, public.abandon_retention_run and
 --    public.prune_security_events must stay owned by
 --    utop14_retention_owner.  Role provisioning sets this ownership explicitly.
 
@@ -616,9 +620,12 @@ BEGIN
                 AND d.deptype = 'e'
           )
     LOOP
-        IF r.proname = 'prune_security_events' THEN
+        IF r.proname IN (
+            'abandon_retention_run', 'begin_retention_run', 'prune_security_events'
+        ) THEN
             IF r.owner NOT IN ('<schema_owner>', 'utop14_retention_owner') THEN
-                RAISE EXCEPTION 'FAIL: postcondition prune owner=%', r.owner;
+                RAISE EXCEPTION 'FAIL: postcondition retention function % owner=%',
+                    r.proname, r.owner;
             END IF;
         ELSIF r.owner IS DISTINCT FROM '<schema_owner>' THEN
             RAISE EXCEPTION 'FAIL: postcondition helper function % owner=%',

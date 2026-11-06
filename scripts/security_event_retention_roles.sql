@@ -24,9 +24,11 @@
 --     grants or GRANT OPTION, no parameter SET/ALTER SYSTEM, no role
 --     memberships, and only the approved search_path GUC.
 --   * utop14_retention_owner: NOLOGIN; owns the SECURITY DEFINER retention
---     function; can read/delete events, read holds, append run rows.
---   * utop14_retention_runner: LOGIN; only the retention function entry point
---     plus run-log append/read.
+--     functions; can read/delete events, read holds, and read/insert/update
+--     run rows.
+--   * utop14_retention_runner: LOGIN; only the retention function entry points
+--     plus read-only run-log telemetry.  It cannot insert run rows directly or
+--     use the run-log sequence.
 -- Do not put passwords in command-line arguments or this file.  This script
 -- never reads or changes role passwords.
 --
@@ -134,9 +136,9 @@ BEGIN
     END IF;
     -- Update this expected head only together with a reviewed migration.  A
     -- mismatched head must never silently provision a partially migrated DB.
-    IF v_head IS DISTINCT FROM 'c4a9e2f7b1d8' THEN
+    IF v_head IS DISTINCT FROM 'f5d2b8c3e1a6' THEN
         RAISE EXCEPTION
-            'FAIL: database migration head=% (expected c4a9e2f7b1d8); review and update this preflight after applying the approved migration',
+            'FAIL: database migration head=% (expected f5d2b8c3e1a6); review and update this preflight after applying the approved migration',
             v_head;
     END IF;
 END $$;
@@ -169,6 +171,8 @@ DECLARE
         'public.audit_logs_reject_mutation()',
         'public.security_events_reject_mutation()',
         'public.security_event_retention_holds_lock()',
+        'public.begin_retention_run(text, timestamptz, uuid, integer)',
+        'public.abandon_retention_run(uuid, integer, text)',
         'public.prune_security_events(text, timestamptz, integer, uuid, integer)'
     ];
     expected_triggers text[] := ARRAY[
@@ -282,7 +286,8 @@ BEGIN
     JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
     WHERE n.nspname = 'public'
       AND NOT (p.proname = ANY (ARRAY[
-          'audit_logs_reject_mutation', 'prune_security_events',
+          'abandon_retention_run', 'audit_logs_reject_mutation',
+          'begin_retention_run', 'prune_security_events',
           'security_event_retention_holds_lock', 'security_events_reject_mutation'
       ]))
       AND NOT EXISTS (
@@ -307,11 +312,13 @@ BEGIN
                 AND d.deptype = 'e'
           )
     LOOP
-        IF r.proname = 'prune_security_events' THEN
+        IF r.proname IN (
+            'abandon_retention_run', 'begin_retention_run', 'prune_security_events'
+        ) THEN
             -- Before the first provisioning run the migration/DDL role owns
             -- the function; after a successful run the retention owner does.
             IF r.owner NOT IN ('utop14_schema_owner', 'utop14_retention_owner') THEN
-                RAISE EXCEPTION 'FAIL: prune_security_events owner=%', r.owner;
+                RAISE EXCEPTION 'FAIL: retention function % owner=%', r.proname, r.owner;
             END IF;
         ELSIF r.owner IS DISTINCT FROM 'utop14_schema_owner' THEN
             RAISE EXCEPTION 'FAIL: helper function % owner=%', r.proname, r.owner;
@@ -825,26 +832,46 @@ REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public
 
 GRANT SELECT, DELETE ON public.security_events TO utop14_retention_owner;
 GRANT SELECT ON public.security_event_retention_holds TO utop14_retention_owner;
-GRANT SELECT, INSERT ON public.security_event_retention_runs TO utop14_retention_owner;
+GRANT SELECT, INSERT, UPDATE ON public.security_event_retention_runs
+    TO utop14_retention_owner;
 GRANT USAGE, SELECT ON SEQUENCE public.security_event_retention_runs_id_seq
     TO utop14_retention_owner;
 
-GRANT SELECT, INSERT ON public.security_event_retention_runs TO utop14_retention_runner;
-GRANT USAGE, SELECT ON SEQUENCE public.security_event_retention_runs_id_seq
-    TO utop14_retention_runner;
+-- The runner reads run-log telemetry but cannot append rows or use the
+-- sequence.  Run rows are created and updated only by the SECURITY DEFINER
+-- functions owned by utop14_retention_owner.
+GRANT SELECT ON public.security_event_retention_runs TO utop14_retention_runner;
 
--- The function must be owned by the retention owner so the append-only trigger
--- can identify the only permitted DELETE execution context.  The runner can
--- execute only this entry point.
+-- The retention functions must be owned by the retention owner so the
+-- append-only/state protocol runs with a fixed, non-login principal.  The
+-- runner can execute only these entry points.
 ALTER FUNCTION
     public.prune_security_events(text, timestamptz, integer, uuid, integer)
+    OWNER TO utop14_retention_owner;
+ALTER FUNCTION
+    public.begin_retention_run(text, timestamptz, uuid, integer)
+    OWNER TO utop14_retention_owner;
+ALTER FUNCTION
+    public.abandon_retention_run(uuid, integer, text)
     OWNER TO utop14_retention_owner;
 
 REVOKE ALL ON FUNCTION
     public.prune_security_events(text, timestamptz, integer, uuid, integer)
     FROM PUBLIC;
+REVOKE ALL ON FUNCTION
+    public.begin_retention_run(text, timestamptz, uuid, integer)
+    FROM PUBLIC;
+REVOKE ALL ON FUNCTION
+    public.abandon_retention_run(uuid, integer, text)
+    FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION
     public.prune_security_events(text, timestamptz, integer, uuid, integer)
+    TO utop14_retention_runner;
+GRANT EXECUTE ON FUNCTION
+    public.begin_retention_run(text, timestamptz, uuid, integer)
+    TO utop14_retention_runner;
+GRANT EXECUTE ON FUNCTION
+    public.abandon_retention_run(uuid, integer, text)
     TO utop14_retention_runner;
 
 -- Trigger/helper functions are trigger-only and not SECURITY DEFINER.  PUBLIC
@@ -903,6 +930,46 @@ BEGIN
     ) THEN
         RAISE EXCEPTION
             'FAIL: postcondition app has retention function EXECUTE';
+    END IF;
+    IF pg_catalog.has_function_privilege(
+        'utop14_app',
+        'public.begin_retention_run(text, timestamptz, uuid, integer)',
+        'EXECUTE'
+    ) OR pg_catalog.has_function_privilege(
+        'utop14_app',
+        'public.abandon_retention_run(uuid, integer, text)',
+        'EXECUTE'
+    ) THEN
+        RAISE EXCEPTION
+            'FAIL: postcondition app has run-log protocol function EXECUTE';
+    END IF;
+    IF NOT pg_catalog.has_function_privilege(
+        'utop14_retention_runner',
+        'public.begin_retention_run(text, timestamptz, uuid, integer)',
+        'EXECUTE'
+    ) OR NOT pg_catalog.has_function_privilege(
+        'utop14_retention_runner',
+        'public.abandon_retention_run(uuid, integer, text)',
+        'EXECUTE'
+    ) OR NOT pg_catalog.has_function_privilege(
+        'utop14_retention_runner',
+        'public.prune_security_events(text, timestamptz, integer, uuid, integer)',
+        'EXECUTE'
+    ) THEN
+        RAISE EXCEPTION
+            'FAIL: postcondition retention runner lacks protocol function EXECUTE';
+    END IF;
+    IF pg_catalog.has_table_privilege(
+        'utop14_retention_runner',
+        'public.security_event_retention_runs',
+        'INSERT'
+    ) OR pg_catalog.has_sequence_privilege(
+        'utop14_retention_runner',
+        'public.security_event_retention_runs_id_seq',
+        'USAGE'
+    ) THEN
+        RAISE EXCEPTION
+            'FAIL: postcondition retention runner can write run-log rows or use the sequence';
     END IF;
     IF pg_catalog.has_schema_privilege('utop14_app', 'public', 'CREATE') THEN
         RAISE EXCEPTION 'FAIL: postcondition app has schema CREATE';

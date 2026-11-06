@@ -142,6 +142,7 @@ environment take precedence. `.env` is ignored by Git.
 | `SECURITY_EVENT_HASH_KEY` | Production | Dedicated HMAC-SHA256 key for authentication identifier hashes; at least 32 bytes, distinct from `SECRET_KEY`; optional in development/testing |
 | `AUTH_RATE_LIMIT_*` | No | PostgreSQL fixed-window login rate-limit policy and TTL; defaults documented in `.env.example` and the authentication rate-limiting section. |
 | `SECURITY_EVENT_RETENTION_*` | No | Per-type security-event retention, holds and bounded cleanup policy; defaults documented in `.env.example` and the retention section. |
+| `CLOCK_SKEW_WARNING_SECONDS` | No | Advisory app/database clock-skew threshold in seconds (1–86400); default `120`, warning only. |
 
 Startup validation fails with a clear `ConfigurationError` when `SECRET_KEY`
 or `DATABASE_URL` is missing or when a non-Psycopg database URL is supplied.
@@ -503,6 +504,7 @@ Current revision chain in source:
 - `d7c1a9e4b2f8` — security-event retention holds, run log and function
 - `e3b9f1c7a2d4` — retention hold lock trigger and function validation hardening
 - `c4a9e2f7b1d8` — server-side admin security-event filter state
+- `f5d2b8c3e1a6` — DB-time retention run-log integrity (B-03/B-05)
 
 ## Admin audit logging and trusted proxy
 
@@ -748,20 +750,26 @@ policy is:
 | `auth.login_failed` | 180 days |
 | `auth.login_throttled` | 180 days |
 
-Retention uses UTC `created_at`, a fixed cutoff for one run, bounded batches,
-and an advisory lock. Event types outside this policy are never deleted.
+Retention uses the PostgreSQL clock for every decision. New security events get
+`created_at` from the column's `now()` default; the retention run reads
+`SELECT now()` once and reuses that single cutoff for every scope and batch.
+The retention function keeps PostgreSQL-time guards and excludes active holds
+with `expires_at > now()`. Event types outside this policy are never deleted.
 
 Investigative holds live in `security_event_retention_holds`. At most one hold
 row exists per event; an active hold (`expires_at > now()`) prevents deletion.
-Expired holds may be replaced. Every hold write takes a per-event advisory lock
-through the `security_event_retention_holds_lock` database trigger, which uses
-the same `(7381, security_event_id)` lock as the cleanup function. This applies
-to service calls and direct SQL, so a successful hold and a concurrent cleanup
-cannot delete the event. An UPDATE that moves a hold to another event locks
-both event ids in deterministic order. A direct UPDATE cannot expire or shorten
-an active hold, and hold duration is capped at 3650 days. The app role keeps
-UPDATE only to replace an already-expired hold. Holds and run-log rows are
-separate from `security_events` and are not deleted by retention.
+Expired holds may be replaced. Hold creation accepts a relative duration, and
+PostgreSQL generates `created_at`/`expires_at` from database time; callers do
+not supply an arbitrary absolute expiry. Every hold write takes a per-event
+advisory lock through the `security_event_retention_holds_lock` database
+trigger, which uses the same `(7381, security_event_id)` lock as the cleanup
+function. This applies to service calls and direct SQL, so a successful hold and
+a concurrent cleanup cannot delete the event. An UPDATE that moves a hold to
+another event locks both event ids in deterministic order. A direct UPDATE
+cannot expire or shorten an active hold, and hold duration is capped at 3650
+days. The app role keeps UPDATE only to replace an already-expired hold. Holds
+and run-log rows are separate from `security_events` and are not deleted by
+retention.
 
 Retention configuration is bounded: `SECURITY_EVENT_SUCCESS_RETENTION_DAYS`
 must be 90–3650, `SECURITY_EVENT_FAILURE_RETENTION_DAYS` 180–3650, and
@@ -771,17 +779,39 @@ batch index outside 0–99.
 
 Retention runs are recorded in `security_event_retention_runs` with non-PII
 operational fields: run id, batch index, scope, cutoff, deleted count, status,
-error code, and timestamps. Run logs are retained for one year by default; their
-cleanup is a separate operational decision.
+executed-by principal, error code, and database-generated start/finish
+timestamps. Run logs are retained for one year by default; their cleanup is a
+separate operational decision.
+
+Each batch uses an explicit two-phase protocol. `begin_retention_run` commits a
+`started` row with `executed_by = session_user`, `deleted_count = 0` and
+`started_at = clock_timestamp()`. `prune_security_events` locks that run row
+with `SELECT ... FOR UPDATE`, verifies the caller principal, `started` state,
+scope and exact cutoff, deletes eligible events, and marks the same row
+`success` with the actual count in the same transaction. `abandon_retention_run`
+can change only a `started` row owned by the same `session_user` to `failed`
+with an allowlisted error code. The only permitted transitions are
+`started → success` and `started → failed`. There is no generic
+`log_run(status, deleted_count)` entry point, and the runner cannot INSERT run
+rows directly or use the run sequence.
+
+`executed_by` identifies the database principal (normally
+`utop14_retention_runner`), not a human or an OS job name. A process that dies
+after `begin` leaves a `started` row; `flask --app wsgi
+security-event-retention orphans --older-than-minutes N` lists these orphaned
+rows for monitoring. The old synthetic `partial` row is no longer written; an
+exhausted batch budget is reported with exit code `2` and a metric, while
+historical `partial` rows remain untouched.
 
 The cleanup entry point is a `SECURITY DEFINER` function,
 `public.prune_security_events`, owned by `utop14_retention_owner`. It locks
-`search_path`, validates scope/cutoff/batch limits, excludes active holds, and
-deletes only rows older than the policy cutoff. The append-only trigger permits
-DELETE only when `current_user` is that owner. Application and runner roles
-cannot DELETE/UPDATE/TRUNCATE `security_events`. Role creation is deliberately
-outside migrations; see `scripts/security_event_retention_roles.sql` and verify
-with `scripts/security_event_retention_verify.sql`. The verify script uses
+`search_path` to `pg_catalog, public`, schema-qualifies application objects,
+validates scope/cutoff/batch limits, excludes active holds, and deletes only
+rows older than the policy cutoff. The append-only trigger permits DELETE only
+when `current_user` is that owner. Application and runner roles cannot
+DELETE/UPDATE/TRUNCATE `security_events`. Role creation is deliberately outside
+migrations; see `scripts/security_event_retention_roles.sql` and verify with
+`scripts/security_event_retention_verify.sql`. The verify script uses
 `ON_ERROR_STOP` and raises on the first failed required assertion, so it exits
 non-zero; run it as a PostgreSQL superuser, not as `utop14_app`. A non-superuser
 schema owner cannot run the `SET ROLE` probes and fails the explicit
@@ -806,8 +836,9 @@ M14.3.12 hardens the provisioning and verification gates:
 - The app has **no function `EXECUTE` at all**, including the
   `security_event_retention_holds_lock` trigger helper. PostgreSQL checks
   trigger-function `EXECUTE` when the trigger is created, not when it fires, so
-  app hold INSERT/UPDATE still works. `prune_security_events` remains
-  executable only by `utop14_retention_runner` (and its owner).
+  app hold INSERT/UPDATE still works. `begin_retention_run`,
+  `abandon_retention_run`, and `prune_security_events` remain executable only by
+  `utop14_retention_runner` (and their owner).
 - Provisioning is transactional, preflighted, and repeatable: guarded role
   creation, explicit attribute reconciliation, migration-head check, object and
   ownership inventory, dangerous-default-ACL check, and membership
@@ -1036,11 +1067,15 @@ PostgreSQL cluster with a separate DDL role:
   no explicit column-level grants, no `GRANT OPTION`, no parameter `SET` or
   `ALTER SYSTEM`, and no persistent GUC other than
   `search_path=public, pg_catalog` in any database.
-- `utop14_retention_owner` remains NOLOGIN and owns only
-  `public.prune_security_events`. `utop14_retention_runner` remains separate and
-  has only function `EXECUTE` plus run-log append. Neither retention role has
-  database `CREATE`, explicit column grants, `GRANT OPTION`, parameter
-  `SET`/`ALTER SYSTEM`, or persistent GUC settings in any database.
+- `utop14_retention_owner` remains NOLOGIN and owns
+  `public.begin_retention_run`, `public.abandon_retention_run`, and
+  `public.prune_security_events`. It has `SELECT, INSERT, UPDATE` on the run log
+  and `USAGE, SELECT` on the run sequence. `utop14_retention_runner` remains
+  separate, has only run-log `SELECT` for telemetry, and has neither INSERT on
+  the run log nor any sequence privilege; it can only `EXECUTE` the three
+  protocol functions. Neither retention role has database `CREATE`, explicit
+  column grants, `GRANT OPTION`, parameter `SET`/`ALTER SYSTEM`, or persistent
+  GUC settings in any database.
 - `utop14_schema_owner` may have `search_path` only; any other role-level or
   database-specific GUC requires explicit DBA reconciliation. Explicit
   schema-owner parameter `SET`/`ALTER SYSTEM` grants are default-deny.
@@ -1054,7 +1089,7 @@ PostgreSQL cluster with a separate DDL role:
   - No app privileges on `security_event_retention_runs` (owner/runner only) or
     `alembic_version` (migration metadata).
   - `USAGE, SELECT` on every application sequence the app inserts into, and no
-    `UPDATE` on any sequence; the retention run sequence is owner/runner only.
+    `UPDATE` on any sequence; the retention run sequence is owner-only.
   - No `TRUNCATE`, `TRIGGER`, `REFERENCES`, or `MAINTAIN` on any application
     table; no ownership; no function `EXECUTE`; no column-level grants; no
     `GRANT OPTION`.
@@ -1136,12 +1171,45 @@ Provisioning and recovery:
    are approved today.
 
 
-The hardening migration `e3b9f1c7a2d4` replaces the retention function. On a
-fresh install it runs before provisioning, while the function is still owned by
-the DDL role. If provisioning has already transferred the function to
-`utop14_retention_owner`, run the migration as the DBA/superuser (or temporarily
-transfer function ownership, run it, and re-run provisioning). A non-superuser
-DDL role cannot replace a function it does not own.
+M14.5.1.1 deployment requires a maintenance window because the run-log schema,
+protocol functions and runner privileges change together:
+
+1. Back up the database and verify a restore point.
+2. Stop the retention timer and any manual retention invocation.
+3. Apply migration `f5d2b8c3e1a6` as the DBA/superuser if the functions are
+   already owned by `utop14_retention_owner`.
+4. Run `scripts/security_event_retention_roles.sql` (it also updates the
+   expected Alembic head to `f5d2b8c3e1a6`).
+5. Run `scripts/security_event_retention_verify.sql` as a superuser; deploy only
+   on exit 0.
+6. Deploy the application/CLI code and run a small smoke retention run; confirm
+   a `success` row with the runner principal and confirm the runner cannot
+   INSERT a run row or use the sequence.
+7. Restart the retention timer.
+
+Migration `f5d2b8c3e1a6` has a **limited schema-only downgrade**, not a pure
+forward-only path. The downgrade:
+
+- runs only when `security_event_retention_runs` is empty; any run-log history
+  makes it fail closed;
+- restores the previous `prune_security_events` function, including its legacy
+  ability to write a success row without the two-phase begin/abandon protocol;
+- drops the `executed_by` column and the new protocol functions;
+- must never be used as a production rollback procedure;
+- must never be forced by deleting or merging historical retention run-log rows.
+
+Production rollback is **restore-from-backup** using a verified backup taken
+before deployment. A snapshot of the pre-deployment run log is the operational
+recovery artifact. The limited downgrade exists only for disposable/empty
+schema-cycle testing and controlled local recovery.
+
+The hardening migration `e3b9f1c7a2d4` and the run-log integrity migration
+`f5d2b8c3e1a6` replace retention functions. On a fresh install they run before
+provisioning, while the functions are still owned by the DDL role. If
+provisioning has already transferred them to `utop14_retention_owner`, run the
+migration as the DBA/superuser (or temporarily transfer function ownership, run
+it, and re-run provisioning). A non-superuser DDL role cannot replace a function
+it does not own.
 
 #### Residual risks (RR-03/RR-04)
 
@@ -1157,25 +1225,30 @@ are intentionally not expanded here.
   excludes active holds. If hold metadata must be tamper-evident, a future
   milestone should make holds append-only or expose a SECURITY DEFINER hold API
   with an immutable history.
-- **RR-04 — run-log writer.** `utop14_retention_runner` can append run-log rows,
-  including a synthetic row. It cannot UPDATE or DELETE run-log history. The
-  runner is treated as a trusted operational writer; protect its credential in
-  a secret manager and restrict the OS job account. Treat the run log as
-  operational telemetry, not a tamper-evident security audit trail.
+- **RR-04 — run-log writer (remediated).** `utop14_retention_runner` no longer
+  has direct INSERT on the run log or USAGE on its sequence, and success is only
+  written by `prune_security_events` after a real delete in the same
+  transaction. The remaining trusted boundary is the runner credential itself:
+  it can begin a `started` row (an orphan if the process dies) and call the
+  protocol functions. Protect its credential in a secret manager and restrict
+  the OS job account. Treat the run log as operational telemetry, not a
+  tamper-evident security audit trail.
 
 The application sequence privileges (including `security_events_id_seq`,
 `audit_logs_id_seq`, and all catalog/cart/order/payment/review sequences) are
 applied by `scripts/security_event_retention_roles.sql`, not by an Alembic
 migration. Grants are role provisioning, not schema DDL; keeping them outside
 migrations avoids coupling schema versioning to role existence and preserves
-the existing single Alembic head `c4a9e2f7b1d8`. All sequences remain owned by
+the existing single Alembic head `f5d2b8c3e1a6`. All sequences remain owned by
 the schema/DDL owner.
 
 Deferred operational risks (documented, not silently fixed here):
 - Identifier-bucket throttling can be used for targeted login denial of
   service; thresholds/cooldowns are configurable and should be monitored.
-- Rate-limit windows/cooldowns use application time; production requires
-  accurate synchronized clocks (NTP) or a future database-time change.
+- Rate-limit windows/cooldowns, payment/order expiry and admin filter-state TTL
+  use application time; production requires accurate synchronized clocks (NTP)
+  on every application node. Security-event creation, retention cutoffs, holds
+  and run timestamps use the PostgreSQL clock.
 - M14.2 F-02 (viewer query-string/access-log exposure) is remediated in code by
   M14.4.1: sensitive filters live in PostgreSQL and never appear in a URL. The
   remaining production prerequisite is the Nginx/Gunicorn access-log review for
@@ -1186,6 +1259,53 @@ Deferred operational risks (documented, not silently fixed here):
 - Security-event IP/UA and identity snapshots are audit data and require an
   explicit data-classification/privacy sign-off.
 
+#### Time sources (M14.5.1.1)
+
+| Domain | Authoritative clock | Notes |
+| --- | --- | --- |
+| New `security_events.created_at` | PostgreSQL `now()` column default | No application timestamp is supplied. Historical timestamps are unchanged. |
+| Retention cutoff | PostgreSQL `SELECT now()`, once per run | The same value is used for both scopes and every batch. |
+| Retention hold `created_at`/`expires_at` | PostgreSQL `now()` plus a validated relative duration | Callers no longer submit an absolute expiry. |
+| Hold active/eligibility check | PostgreSQL `now()` | Used by the service, trigger and retention function. |
+| Run `started_at`/`finished_at` | PostgreSQL `clock_timestamp()` | Measures actual execution time rather than transaction start. |
+| Rate-limit window/cooldown | Application UTC time | Not changed by this milestone; requires NTP on every app node. |
+| Payment/order/manual-transfer expiry | Application UTC time | Requires NTP; outside the retention boundary. |
+| Admin filter-state TTL | Application UTC time | Requires NTP; independent of retention. |
+
+`now()`/`CURRENT_TIMESTAMP` is the transaction start time. It is deliberately
+used for the retention cutoff so a long batch cannot drift. `clock_timestamp()`
+moves with real time and is used only for run duration timestamps.
+`statement_timestamp()` is not used for retention decisions.
+
+The `CLOCK_SKEW_WARNING_SECONDS` diagnostic (default 120, allowed 1–86400)
+compares application UTC with `SELECT now()`. A threshold breach logs a warning
+and is reported by `security-event-retention check-clock`; it never changes a
+clock, a session timezone, or fails the application/retention run. If the
+diagnostic database is unavailable, the command reports that safely and exits
+successfully.
+
+The diagnostic currently reads `db.engine`, i.e. the application database. The
+runner DSN (`SECURITY_EVENT_RETENTION_DATABASE_URL`) **must point to the same
+PostgreSQL cluster/time source as the application database**. If the runner DSN
+points to a different cluster, `check-clock` does not prove that the retention
+cutoff and security-event timestamps share a clock. In that configuration,
+clock alignment must be verified independently for each cluster. Keep NTP
+configured and monitored on both the application hosts and the PostgreSQL hosts.
+
+If a separate retention cluster is unavoidable, use this operational procedure:
+
+1. Keep same-cluster as the recommended and preferred configuration.
+2. A DBA/operator compares the clocks independently with `SELECT now()` on the
+   application database and on the retention runner cluster, within the same
+   measurement window and accounting for query round-trip time.
+3. Record both readings and verify the difference is within the agreed
+   operational tolerance; do not treat `check-clock` as evidence for the
+   runner cluster.
+4. Verify and monitor NTP on the application hosts and on **both** PostgreSQL
+   hosts; alert on drift or failed time synchronization.
+5. Repeat the comparison after cluster failover, time-service changes, or
+   abnormal retention/event timing.
+
 The runner DSN is supplied through
 `SECURITY_EVENT_RETENTION_DATABASE_URL`, ideally from a secret manager. The
 manual command is:
@@ -1193,18 +1313,25 @@ manual command is:
 ```bash
 flask --app wsgi security-event-retention run \
   --batch-size 2000 --max-batches 20
+
+# Advisory diagnostics:
+flask --app wsgi security-event-retention check-clock
+flask --app wsgi security-event-retention orphans --older-than-minutes 60
 ```
 
 Exit status: `0` success, `2` partial (batch budget reached), `3` advisory lock
 already held, `1` validation/store failure. There is no scheduler or background
 worker. Production must invoke the command from an approved cron/systemd timer
 using a non-login application account and a separately protected runner
-credential; never put the database password on the command line.
+credential; never put the database password on the command line. The
+`check-clock` and `orphans` commands are operational diagnostics and do not
+change the run exit contract.
 
-Operational monitoring should track deleted rows, duration, success/partial/
-failure status, oldest event age against each cutoff, hold count, table size,
-dead tuples/index bloat, and consecutive failures. Alert on two consecutive
-failures, oldest event age beyond cutoff + 7 days, or repeated partial runs.
+Operational monitoring should track deleted rows, duration, success/failure
+status, oldest event age against each cutoff, hold count, table size, dead
+tuples/index bloat, consecutive failures, and `started` run rows older than the
+orphan threshold. Alert on two consecutive failures, oldest event age beyond
+cutoff + 7 days, repeated partial runs, or orphaned `started` rows.
 
 Recommended deployment invocation:
 
@@ -1219,8 +1346,10 @@ Recommended deployment invocation:
 - Alert after two consecutive non-zero exits, a persistent partial status, or
   an oldest-event age beyond the relevant cutoff plus 7 days.
 - A partial run is safe to rerun: the next invocation uses a new fixed cutoff
-  and deletes the remaining eligible rows. A failed batch is rolled back and is
-  followed by a failed run-log row; do not treat it as success.
+  and deletes the remaining eligible rows. A failed batch is rolled back and its
+  `started` row is marked `failed` in a separate transaction; do not treat it as
+  success. If the failure cannot be logged, the row stays `started` and appears
+  in the orphan diagnostic.
 - Manual execution must use the same runner credential and environment-loading
   procedure.
 
@@ -1317,10 +1446,11 @@ repository milestone.
 4. Never reuse the repository test key or any placeholder value.
 5. Apply the security-event and rate-limit migrations from a controlled release
    job: `9b2d4e6f8a10`, `c4e7a1b9d2f6`, `e1b7c4a9d2f3`,
-   `b4d8e2f7a1c9`, `d7c1a9e4b2f8`, `e3b9f1c7a2d4`, and `c4a9e2f7b1d8`. Run
-   migrations as the dedicated DDL/schema owner, not as the application role. If
-   the retention function is already owned by `utop14_retention_owner`, run
-   `e3b9f1c7a2d4` as the DBA/superuser.
+   `b4d8e2f7a1c9`, `d7c1a9e4b2f8`, `e3b9f1c7a2d4`, `c4a9e2f7b1d8`, and
+   `f5d2b8c3e1a6`. Run migrations as the dedicated DDL/schema owner, not as the
+   application role. If the retention functions are already owned by
+   `utop14_retention_owner`, run the retention-function migrations as the
+   DBA/superuser.
 6. The request-ID index migration is non-concurrent. If `security_events`
    already contains production traffic, schedule index creation in a maintenance
    window or use a separately reviewed concurrent-index procedure.

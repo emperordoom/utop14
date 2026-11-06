@@ -525,7 +525,8 @@ DECLARE
         'users_id_seq'
     ];
     expected_functions text[] := ARRAY[
-        'audit_logs_reject_mutation', 'prune_security_events',
+        'abandon_retention_run', 'audit_logs_reject_mutation',
+        'begin_retention_run', 'prune_security_events',
         'security_event_retention_holds_lock', 'security_events_reject_mutation'
     ];
     expected_triggers text[] := ARRAY[
@@ -667,6 +668,18 @@ BEGIN
             JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
             WHERE n.nspname = 'public' AND p.proname = fn
               AND p.pronargs = 5 AND p.prokind = 'f';
+        ELSIF fn = 'begin_retention_run' THEN
+            SELECT pg_catalog.count(*) INTO v_count
+            FROM pg_catalog.pg_proc p
+            JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+            WHERE n.nspname = 'public' AND p.proname = fn
+              AND p.pronargs = 4 AND p.prokind = 'f';
+        ELSIF fn = 'abandon_retention_run' THEN
+            SELECT pg_catalog.count(*) INTO v_count
+            FROM pg_catalog.pg_proc p
+            JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+            WHERE n.nspname = 'public' AND p.proname = fn
+              AND p.pronargs = 3 AND p.prokind = 'f';
         ELSE
             SELECT pg_catalog.count(*) INTO v_count
             FROM pg_catalog.pg_proc p
@@ -804,9 +817,11 @@ BEGIN
                 AND d.deptype = 'e'
           )
     LOOP
-        IF r.proname = 'prune_security_events' THEN
+        IF r.proname IN (
+            'abandon_retention_run', 'begin_retention_run', 'prune_security_events'
+        ) THEN
             IF r.owner IS DISTINCT FROM 'utop14_retention_owner' THEN
-                RAISE EXCEPTION 'FAIL: prune_security_events owner=%', r.owner;
+                RAISE EXCEPTION 'FAIL: retention function % owner=%', r.proname, r.owner;
             END IF;
         ELSIF r.owner IS DISTINCT FROM 'utop14_schema_owner' THEN
             RAISE EXCEPTION 'FAIL: helper function % owner=%', r.proname, r.owner;
@@ -1153,7 +1168,7 @@ BEGIN
                 ('product_variants', ARRAY['SELECT','INSERT','UPDATE']::text[], ARRAY[]::text[], ARRAY[]::text[]),
                 ('products', ARRAY['SELECT','INSERT','UPDATE']::text[], ARRAY[]::text[], ARRAY[]::text[]),
                 ('security_event_retention_holds', ARRAY['SELECT','INSERT','UPDATE']::text[], ARRAY['SELECT']::text[], ARRAY[]::text[]),
-                ('security_event_retention_runs', ARRAY[]::text[], ARRAY['SELECT','INSERT']::text[], ARRAY['SELECT','INSERT']::text[]),
+                ('security_event_retention_runs', ARRAY[]::text[], ARRAY['SELECT','INSERT','UPDATE']::text[], ARRAY['SELECT']::text[]),
                 ('security_events', ARRAY['SELECT','INSERT']::text[], ARRAY['SELECT','DELETE']::text[], ARRAY[]::text[]),
                 ('users', ARRAY['SELECT','INSERT','UPDATE']::text[], ARRAY[]::text[], ARRAY[]::text[])
         )
@@ -1269,7 +1284,7 @@ BEGIN
             ('product_variants', ARRAY[]::text[]),
             ('products', ARRAY[]::text[]),
             ('security_event_retention_holds', ARRAY['SELECT']::text[]),
-            ('security_event_retention_runs', ARRAY['SELECT','INSERT']::text[]),
+            ('security_event_retention_runs', ARRAY['SELECT','INSERT','UPDATE']::text[]),
             ('security_events', ARRAY['SELECT','DELETE']::text[]),
             ('users', ARRAY[]::text[])
         ) AS t(table_name, allowed)
@@ -1324,7 +1339,7 @@ BEGIN
             ('product_variants', ARRAY[]::text[]),
             ('products', ARRAY[]::text[]),
             ('security_event_retention_holds', ARRAY[]::text[]),
-            ('security_event_retention_runs', ARRAY['SELECT','INSERT']::text[]),
+            ('security_event_retention_runs', ARRAY['SELECT']::text[]),
             ('security_events', ARRAY[]::text[]),
             ('users', ARRAY[]::text[])
         ) AS t(table_name, allowed)
@@ -1413,7 +1428,7 @@ BEGIN
                CASE table_name
                    WHEN 'security_events' THEN ARRAY['SELECT','DELETE']::text[]
                    WHEN 'security_event_retention_holds' THEN ARRAY['SELECT']::text[]
-                   WHEN 'security_event_retention_runs' THEN ARRAY['SELECT','INSERT']::text[]
+                   WHEN 'security_event_retention_runs' THEN ARRAY['SELECT','INSERT','UPDATE']::text[]
                    ELSE ARRAY[]::text[]
                END AS allowed
         FROM pg_catalog.unnest(ARRAY[
@@ -1441,7 +1456,7 @@ BEGIN
     FOR r IN
         SELECT table_name,
                CASE table_name
-                   WHEN 'security_event_retention_runs' THEN ARRAY['SELECT','INSERT']::text[]
+                   WHEN 'security_event_retention_runs' THEN ARRAY['SELECT']::text[]
                    ELSE ARRAY[]::text[]
                END AS allowed
         FROM pg_catalog.unnest(ARRAY[
@@ -1478,7 +1493,8 @@ DECLARE
 BEGIN
     FOR r IN
         SELECT seq_name,
-               (seq_name = 'security_event_retention_runs_id_seq') AS allowed
+               (seq_name = 'security_event_retention_runs_id_seq') AS owner_allowed,
+               FALSE AS runner_allowed
         FROM pg_catalog.unnest(ARRAY[
             'audit_logs_id_seq','cart_items_id_seq','carts_id_seq',
             'categories_id_seq','order_items_id_seq','orders_id_seq',
@@ -1494,18 +1510,17 @@ BEGIN
             IF pg_catalog.has_sequence_privilege(
                 'utop14_retention_owner', pg_catalog.format('public.%I', r.seq_name), p
             )
-               <> (r.allowed AND p IN ('USAGE','SELECT')) THEN
+               <> (r.owner_allowed AND p IN ('USAGE','SELECT')) THEN
                 RAISE EXCEPTION
                     'FAIL: retention owner sequence % on % expected=%',
-                    p, r.seq_name, (r.allowed AND p IN ('USAGE','SELECT'));
+                    p, r.seq_name, (r.owner_allowed AND p IN ('USAGE','SELECT'));
             END IF;
             IF pg_catalog.has_sequence_privilege(
                 'utop14_retention_runner', pg_catalog.format('public.%I', r.seq_name), p
-            )
-               <> (r.allowed AND p IN ('USAGE','SELECT')) THEN
+            ) THEN
                 RAISE EXCEPTION
-                    'FAIL: retention runner sequence % on % expected=%',
-                    p, r.seq_name, (r.allowed AND p IN ('USAGE','SELECT'));
+                    'FAIL: retention runner unexpectedly has sequence % on %',
+                    p, r.seq_name;
             END IF;
         END LOOP;
     END LOOP;
@@ -1556,14 +1571,17 @@ BEGIN
                     'FAIL: unexpected app sequence privilege % on %',
                     r.privilege_type, r.seq_name;
             END IF;
-        ELSIF r.grantee IN ('utop14_retention_owner',
-                            'utop14_retention_runner') THEN
+        ELSIF r.grantee = 'utop14_retention_owner' THEN
             IF r.seq_name <> 'security_event_retention_runs_id_seq'
                OR NOT (r.privilege_type = ANY (ARRAY['USAGE','SELECT'])) THEN
                 RAISE EXCEPTION
                     'FAIL: unexpected retention sequence privilege % on % to %',
                     r.privilege_type, r.seq_name, r.grantee;
             END IF;
+        ELSIF r.grantee = 'utop14_retention_runner' THEN
+            RAISE EXCEPTION
+                'FAIL: retention runner unexpectedly has sequence privilege % on %',
+                r.privilege_type, r.seq_name;
         ELSE
             RAISE EXCEPTION
                 'FAIL: unexpected sequence grantee % with privilege % on %',
@@ -1609,21 +1627,30 @@ BEGIN
                 AND d.deptype = 'e'
           )
     LOOP
-        IF r.proname = 'prune_security_events' THEN
-            IF r.pronargs <> 5 OR r.prokind <> 'f' THEN
-                RAISE EXCEPTION 'FAIL: prune_security_events signature is invalid';
-            END IF;            IF r.owner IS DISTINCT FROM 'utop14_retention_owner' THEN
-                RAISE EXCEPTION 'FAIL: prune_security_events owner=%', r.owner;
+        IF r.proname IN (
+            'abandon_retention_run', 'begin_retention_run', 'prune_security_events'
+        ) THEN
+            IF (r.proname = 'prune_security_events' AND r.pronargs <> 5)
+               OR (r.proname = 'begin_retention_run' AND r.pronargs <> 4)
+               OR (r.proname = 'abandon_retention_run' AND r.pronargs <> 3)
+               OR r.prokind <> 'f' THEN
+                RAISE EXCEPTION
+                    'FAIL: retention function % signature is invalid', r.proname;
+            END IF;
+            IF r.owner IS DISTINCT FROM 'utop14_retention_owner' THEN
+                RAISE EXCEPTION 'FAIL: retention function % owner=%', r.proname, r.owner;
             END IF;
             IF r.prosecdef IS NOT TRUE THEN
-                RAISE EXCEPTION 'FAIL: prune_security_events is not SECURITY DEFINER';
+                RAISE EXCEPTION 'FAIL: retention function % is not SECURITY DEFINER', r.proname;
             END IF;
             IF r.proconfig IS NULL
                OR NOT EXISTS (
                    SELECT 1 FROM pg_catalog.unnest(r.proconfig) c
                    WHERE c LIKE 'search_path=pg_catalog%'
                ) THEN
-                RAISE EXCEPTION 'FAIL: prune_security_events search_path is not locked to pg_catalog';
+                RAISE EXCEPTION
+                    'FAIL: retention function % search_path is not locked to pg_catalog',
+                    r.proname;
             END IF;
             v_expected := ARRAY['utop14_retention_owner',
                                 'utop14_retention_runner'];
@@ -1685,11 +1712,13 @@ BEGIN
         IF pg_catalog.has_function_privilege('utop14_app'::name, r.oid, 'EXECUTE') THEN
             RAISE EXCEPTION 'FAIL: utop14_app has EXECUTE on function %', r.proname;
         END IF;
-        IF r.proname = 'prune_security_events' THEN
+        IF r.proname IN (
+            'abandon_retention_run', 'begin_retention_run', 'prune_security_events'
+        ) THEN
             IF NOT pg_catalog.has_function_privilege(
                 'utop14_retention_runner'::name, r.oid, 'EXECUTE'
             ) THEN
-                RAISE EXCEPTION 'FAIL: runner lacks prune_security_events EXECUTE';
+                RAISE EXCEPTION 'FAIL: runner lacks % EXECUTE', r.proname;
             END IF;
         ELSE
             IF pg_catalog.has_function_privilege(

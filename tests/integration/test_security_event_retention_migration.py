@@ -133,6 +133,7 @@ def test_retention_downgrade_refuses_existing_run_history(app: Flask) -> None:
         cutoff=now,
         deleted_count=0,
         status=RETENTION_STATUS_SUCCESS,
+        executed_by="test-suite",
         started_at=now,
         finished_at=now,
     )
