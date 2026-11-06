@@ -99,14 +99,24 @@ def test_function_rejects_null_batch_index(app: Flask) -> None:
 
 @pytest.mark.parametrize("index", [0, 99])
 def test_function_accepts_valid_batch_index_boundaries(app: Flask, index: int) -> None:
+    run_id = f"00000000-0000-0000-0000-0000000000{index:02d}"
+    db.session.execute(
+        text(
+            "SELECT public.begin_retention_run("
+            "'success_logout', now() - interval '100 days', "
+            "CAST(:run_id AS uuid), :index)"
+        ),
+        {"run_id": run_id, "index": index},
+    )
+    db.session.commit()
     try:
         db.session.execute(
             text(
                 "SELECT public.prune_security_events("
                 "'success_logout', now() - interval '100 days', 10, "
-                "'00000000-0000-0000-0000-000000000000'::uuid, :index)"
+                "CAST(:run_id AS uuid), :index)"
             ),
-            {"index": index},
+            {"run_id": run_id, "index": index},
         )
         db.session.commit()
     except DBAPIError as error:

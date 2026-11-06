@@ -482,7 +482,32 @@ def _insert_event(
         ).scalar_one()
 
 
+def _begin(
+    engine,
+    *,
+    scope: str,
+    cutoff: datetime,
+    run_id: str | None = None,
+    batch: int = 0,
+) -> str:
+    resolved_run_id = run_id or str(uuid.uuid4())
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "SELECT public.begin_retention_run(:scope, :cutoff, CAST(:run_id AS uuid), :batch)"
+            ),
+            {
+                "scope": scope,
+                "cutoff": cutoff,
+                "run_id": resolved_run_id,
+                "batch": batch,
+            },
+        )
+    return resolved_run_id
+
+
 def _prune(engine, *, scope: str, cutoff: datetime, batch: int = 100) -> int:
+    run_id = _begin(engine, scope=scope, cutoff=cutoff)
     with engine.begin() as conn:
         return int(
             conn.execute(
@@ -494,7 +519,7 @@ def _prune(engine, *, scope: str, cutoff: datetime, batch: int = 100) -> int:
                     "scope": scope,
                     "cutoff": cutoff,
                     "batch": batch,
-                    "run_id": str(uuid.uuid4()),
+                    "run_id": run_id,
                 },
             ).scalar_one()
         )
@@ -1615,7 +1640,8 @@ def test_disposable_ownership_and_hold_concurrency() -> None:
         assert _verify(port).returncode == 0
 
         run_columns = (
-            "id, run_id, batch_index, scope, cutoff, deleted_count, status, started_at, finished_at"
+            "id, run_id, batch_index, scope, cutoff, deleted_count, status, "
+            "executed_by, started_at, finished_at"
         )
         result = _psql(
             port,
@@ -1628,11 +1654,11 @@ def test_disposable_ownership_and_hold_concurrency() -> None:
                 text(
                     "INSERT INTO public.security_event_retention_runs "
                     "(id, run_id, batch_index, scope, cutoff, deleted_count, "
-                    "status, started_at, finished_at) "
+                    "status, executed_by, started_at, finished_at) "
                     "VALUES (999998, "
                     "'11111111-1111-1111-1111-111111111111', 0, "
                     "'success_logout', now() - interval '100 days', 0, "
-                    "'success', now(), now())"
+                    "'success', 'utop14_app', now(), now())"
                 )
             )
         with admin.connect() as conn:
@@ -2962,24 +2988,41 @@ def test_disposable_ownership_and_hold_concurrency() -> None:
             except SQLAlchemyError as exc:
                 assert needle in str(exc), (needle, str(exc))
 
+        valid_run_id = "00000000-0000-0000-0000-000000000000"
+        valid_cutoff = now - timedelta(days=100)
+        _begin(
+            runner,
+            scope="success_logout",
+            cutoff=valid_cutoff,
+            run_id=valid_run_id,
+            batch=0,
+        )
         with runner.begin() as conn:
             assert (
                 conn.execute(
                     text(
                         "SELECT public.prune_security_events('success_logout', "
-                        "now() - interval '100 days', 10, "
-                        "'00000000-0000-0000-0000-000000000000'::uuid, 0)"
-                    )
+                        ":cutoff, 10, CAST(:run_id AS uuid), 0)"
+                    ),
+                    {"cutoff": valid_cutoff, "run_id": valid_run_id},
                 ).scalar_one()
                 == 0
             )
+        _begin(
+            runner,
+            scope="success_logout",
+            cutoff=valid_cutoff,
+            run_id=valid_run_id,
+            batch=99,
+        )
+        with runner.begin() as conn:
             assert (
                 conn.execute(
                     text(
                         "SELECT public.prune_security_events('success_logout', "
-                        "now() - interval '100 days', 10, "
-                        "'00000000-0000-0000-0000-000000000000'::uuid, 99)"
-                    )
+                        ":cutoff, 10, CAST(:run_id AS uuid), 99)"
+                    ),
+                    {"cutoff": valid_cutoff, "run_id": valid_run_id},
                 ).scalar_one()
                 == 0
             )
@@ -3376,6 +3419,11 @@ def test_disposable_ownership_and_hold_concurrency() -> None:
         cleanup_first_hold_ok: dict[str, bool] = {}
 
         def cleanup_first_cleanup() -> None:
+            cleanup_run_id = _begin(
+                runner,
+                scope="success_logout",
+                cutoff=now - timedelta(days=90),
+            )
             with runner.begin() as conn:
                 conn.execute(text("SELECT pg_advisory_xact_lock(7381, :id)"), {"id": cleanup_first})
                 cleanup_locked.set()
@@ -3387,7 +3435,7 @@ def test_disposable_ownership_and_hold_concurrency() -> None:
                     ),
                     {
                         "cutoff": now - timedelta(days=90),
-                        "run_id": str(uuid.uuid4()),
+                        "run_id": cleanup_run_id,
                     },
                 )
 
@@ -3523,6 +3571,492 @@ def test_disposable_ownership_and_hold_concurrency() -> None:
         )
         assert result.returncode == 0, result.stderr
         assert _verify(port).returncode == 0
+
+        # --- M14.5.1.1: two-phase run-log and privilege protocol ----------
+        # Historical rows stay untouched and remain readable.
+        with admin.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO security_event_retention_runs "
+                    "(run_id, batch_index, scope, cutoff, deleted_count, status, "
+                    "executed_by, started_at, finished_at) "
+                    "VALUES ('m14511-legacy-partial', 0, 'success_logout', "
+                    "now() - interval '100 days', 1, 'partial', 'legacy', "
+                    "now(), now())"
+                )
+            )
+        marker_event = _insert_event(
+            schema_owner,
+            event_type="auth.logout",
+            outcome="success",
+            reason="user_requested",
+            created_at=now - timedelta(days=1),
+        )
+
+        # T1: runner cannot forge a run row.
+        try:
+            with runner.begin() as conn:
+                conn.execute(
+                    text(
+                        "INSERT INTO security_event_retention_runs "
+                        "(run_id, batch_index, scope, cutoff, deleted_count, status, "
+                        "executed_by, started_at, finished_at) VALUES "
+                        "('m14511-forged', 0, 'success_logout', "
+                        "now() - interval '100 days', 0, 'success', "
+                        "session_user, now(), now())"
+                    )
+                )
+            raise AssertionError("runner directly inserted a run-log row")
+        except SQLAlchemyError as exc:
+            assert "permission denied" in str(exc).lower(), str(exc)
+
+        # T2: runner cannot use the run-log sequence.
+        try:
+            with runner.begin() as conn:
+                conn.execute(text("SELECT nextval('security_event_retention_runs_id_seq')"))
+            raise AssertionError("runner used the run-log sequence")
+        except SQLAlchemyError as exc:
+            assert "permission denied" in str(exc).lower(), str(exc)
+
+        # T3/T4: app can neither insert nor read the run log.
+        for statement in (
+            "INSERT INTO security_event_retention_runs "
+            "(run_id, batch_index, scope, cutoff, deleted_count, status, "
+            "executed_by, started_at, finished_at) VALUES "
+            "('m14511-app-forged', 0, 'success_logout', "
+            "now() - interval '100 days', 0, 'success', "
+            "'utop14_app', now(), now())",
+            "SELECT count(*) FROM security_event_retention_runs",
+        ):
+            try:
+                with app_engine.begin() as conn:
+                    conn.execute(text(statement))
+                raise AssertionError(f"app unexpectedly executed: {statement}")
+            except SQLAlchemyError:
+                pass
+
+        # T5: runner telemetry SELECT is allowed.
+        with runner.connect() as conn:
+            assert (
+                conn.execute(
+                    text("SELECT count(*) FROM security_event_retention_runs")
+                ).scalar_one()
+                >= 0
+            )
+
+        # T6/T7/T9/T10: begin + prune success, DB-owned identity/state.
+        proto_run = str(uuid.uuid4())
+        _begin(
+            runner,
+            scope="success_logout",
+            cutoff=now - timedelta(days=100),
+            run_id=proto_run,
+            batch=0,
+        )
+        with admin.connect() as conn:
+            began = conn.execute(
+                text(
+                    "SELECT status, executed_by, deleted_count, finished_at "
+                    "FROM security_event_retention_runs "
+                    "WHERE run_id=:run_id AND batch_index=0"
+                ),
+                {"run_id": proto_run},
+            ).one()
+        assert began.status == "started", began
+        assert began.executed_by == "utop14_retention_runner", began
+        assert began.deleted_count == 0 and began.finished_at is None, began
+        with runner.begin() as conn:
+            proto_deleted = int(
+                conn.execute(
+                    text(
+                        "SELECT public.prune_security_events("
+                        "'success_logout', :cutoff, 100, CAST(:run_id AS uuid), 0)"
+                    ),
+                    {"cutoff": now - timedelta(days=100), "run_id": proto_run},
+                ).scalar_one()
+            )
+        with admin.connect() as conn:
+            completed = conn.execute(
+                text(
+                    "SELECT status, executed_by, deleted_count, finished_at "
+                    "FROM security_event_retention_runs "
+                    "WHERE run_id=:run_id AND batch_index=0"
+                ),
+                {"run_id": proto_run},
+            ).one()
+        assert completed.status == "success", completed
+        assert completed.executed_by == "utop14_retention_runner", completed
+        assert completed.deleted_count == proto_deleted, completed
+        assert completed.finished_at is not None, completed
+
+        # T8: prune without a begin is rejected and records nothing.
+        try:
+            with runner.begin() as conn:
+                conn.execute(
+                    text(
+                        "SELECT public.prune_security_events("
+                        "'success_logout', :cutoff, 100, CAST(:run_id AS uuid), 5)"
+                    ),
+                    {"cutoff": now - timedelta(days=100), "run_id": str(uuid.uuid4())},
+                )
+            raise AssertionError("prune succeeded without a begin row")
+        except SQLAlchemyError as exc:
+            assert "has not been started" in str(exc), str(exc)
+
+        # T11: abandon transitions started -> failed only.
+        failed_run = _begin(
+            runner,
+            scope="success_logout",
+            cutoff=now - timedelta(days=100),
+            run_id=str(uuid.uuid4()),
+            batch=0,
+        )
+        with runner.begin() as conn:
+            conn.execute(
+                text("SELECT public.abandon_retention_run(CAST(:run_id AS uuid), 0, 'DBAPIError')"),
+                {"run_id": failed_run},
+            )
+        with admin.connect() as conn:
+            abandoned = conn.execute(
+                text(
+                    "SELECT status, deleted_count, error_code "
+                    "FROM security_event_retention_runs "
+                    "WHERE run_id=:run_id AND batch_index=0"
+                ),
+                {"run_id": failed_run},
+            ).one()
+        assert abandoned.status == "failed", abandoned
+        assert abandoned.deleted_count == 0, abandoned
+        assert abandoned.error_code == "DBAPIError", abandoned
+
+        # T12/T13: terminal rows cannot be changed by abandon or prune.
+        try:
+            with runner.begin() as conn:
+                conn.execute(
+                    text(
+                        "SELECT public.abandon_retention_run("
+                        "CAST(:run_id AS uuid), 0, 'UnknownError')"
+                    ),
+                    {"run_id": proto_run},
+                )
+            raise AssertionError("abandon changed a success row")
+        except SQLAlchemyError as exc:
+            assert "not in started state" in str(exc), str(exc)
+        try:
+            with runner.begin() as conn:
+                conn.execute(
+                    text(
+                        "SELECT public.prune_security_events("
+                        "'success_logout', :cutoff, 100, CAST(:run_id AS uuid), 0)"
+                    ),
+                    {"cutoff": now - timedelta(days=100), "run_id": failed_run},
+                )
+            raise AssertionError("prune changed a failed row")
+        except SQLAlchemyError as exc:
+            assert "not in started state" in str(exc), str(exc)
+
+        # T14: duplicate (run_id, batch_index) is rejected.
+        try:
+            _begin(
+                runner,
+                scope="success_logout",
+                cutoff=now - timedelta(days=100),
+                run_id=proto_run,
+                batch=0,
+            )
+            raise AssertionError("duplicate run/batch was accepted")
+        except SQLAlchemyError:
+            pass
+
+        # T15: concurrent prune and abandon produce exactly one terminal state.
+        race_run = _begin(
+            runner,
+            scope="success_logout",
+            cutoff=now - timedelta(days=100),
+            run_id=str(uuid.uuid4()),
+            batch=0,
+        )
+        race_barrier = threading.Barrier(2)
+        race_outcomes: list[str] = []
+
+        def race_prune() -> None:
+            race_barrier.wait(timeout=5)
+            try:
+                with runner.begin() as conn:
+                    conn.execute(
+                        text(
+                            "SELECT public.prune_security_events("
+                            "'success_logout', :cutoff, 100, CAST(:run_id AS uuid), 0)"
+                        ),
+                        {"cutoff": now - timedelta(days=100), "run_id": race_run},
+                    )
+                race_outcomes.append("prune")
+            except SQLAlchemyError:
+                race_outcomes.append("prune_error")
+
+        def race_abandon() -> None:
+            race_barrier.wait(timeout=5)
+            try:
+                with runner.begin() as conn:
+                    conn.execute(
+                        text(
+                            "SELECT public.abandon_retention_run("
+                            "CAST(:run_id AS uuid), 0, 'UnknownError')"
+                        ),
+                        {"run_id": race_run},
+                    )
+                race_outcomes.append("abandon")
+            except SQLAlchemyError:
+                race_outcomes.append("abandon_error")
+
+        t_race_prune = threading.Thread(target=race_prune)
+        t_race_abandon = threading.Thread(target=race_abandon)
+        t_race_prune.start()
+        t_race_abandon.start()
+        t_race_prune.join(timeout=10)
+        t_race_abandon.join(timeout=10)
+        assert not t_race_prune.is_alive() and not t_race_abandon.is_alive(), "race hung"
+        assert len([item for item in race_outcomes if not item.endswith("_error")]) == 1, (
+            race_outcomes
+        )
+        with admin.connect() as conn:
+            race_status = conn.execute(
+                text(
+                    "SELECT status FROM security_event_retention_runs "
+                    "WHERE run_id=:run_id AND batch_index=0"
+                ),
+                {"run_id": race_run},
+            ).scalar_one()
+        assert race_status in ("success", "failed"), race_status
+
+        # T16/T17: a rolled-back prune leaves the row started, never success.
+        rollback_run = _begin(
+            runner,
+            scope="success_logout",
+            cutoff=now - timedelta(days=100),
+            run_id=str(uuid.uuid4()),
+            batch=0,
+        )
+        try:
+            with runner.begin() as conn:
+                conn.execute(
+                    text(
+                        "SELECT public.prune_security_events("
+                        "'success_logout', :cutoff, 100, CAST(:run_id AS uuid), 0)"
+                    ),
+                    {"cutoff": now - timedelta(days=100), "run_id": rollback_run},
+                )
+                raise RuntimeError("force rollback")
+        except RuntimeError:
+            pass
+        with admin.connect() as conn:
+            rolled_back = conn.execute(
+                text(
+                    "SELECT status, deleted_count, finished_at "
+                    "FROM security_event_retention_runs "
+                    "WHERE run_id=:run_id AND batch_index=0"
+                ),
+                {"run_id": rollback_run},
+            ).one()
+        assert rolled_back.status == "started", rolled_back
+        assert rolled_back.deleted_count == 0 and rolled_back.finished_at is None, rolled_back
+
+        # T18: a retry uses a new run_id and leaves the old row failed.
+        with runner.begin() as conn:
+            conn.execute(
+                text(
+                    "SELECT public.abandon_retention_run(CAST(:run_id AS uuid), 0, 'RuntimeError')"
+                ),
+                {"run_id": rollback_run},
+            )
+        retry_run = _begin(
+            runner,
+            scope="success_logout",
+            cutoff=now - timedelta(days=100),
+            run_id=str(uuid.uuid4()),
+            batch=0,
+        )
+        with runner.begin() as conn:
+            conn.execute(
+                text(
+                    "SELECT public.prune_security_events("
+                    "'success_logout', :cutoff, 100, CAST(:run_id AS uuid), 0)"
+                ),
+                {"cutoff": now - timedelta(days=100), "run_id": retry_run},
+            )
+        with admin.connect() as conn:
+            retry_rows = dict(
+                conn.execute(
+                    text(
+                        "SELECT run_id, status FROM security_event_retention_runs "
+                        "WHERE run_id IN (:old, :new)"
+                    ),
+                    {"old": rollback_run, "new": retry_run},
+                ).all()
+            )
+        assert retry_rows[rollback_run] == "failed", retry_rows
+        assert retry_rows[retry_run] == "success", retry_rows
+
+        # T19: error code outside the allowlist is rejected.
+        invalid_error_run = _begin(
+            runner,
+            scope="success_logout",
+            cutoff=now - timedelta(days=100),
+            run_id=str(uuid.uuid4()),
+            batch=0,
+        )
+        try:
+            with runner.begin() as conn:
+                conn.execute(
+                    text(
+                        "SELECT public.abandon_retention_run("
+                        "CAST(:run_id AS uuid), 0, 'forged-status')"
+                    ),
+                    {"run_id": invalid_error_run},
+                )
+            raise AssertionError("invalid error_code was accepted")
+        except SQLAlchemyError as exc:
+            assert "invalid retention error code" in str(exc), str(exc)
+
+        # T20: a hostile caller search_path cannot shadow the function's
+        # pg_catalog/public resolution.
+        assert _psql(port, "CREATE SCHEMA m14511_hostile").returncode == 0
+        assert (
+            _psql(
+                port,
+                "CREATE TABLE m14511_hostile.security_event_retention_runs "
+                "(run_id text, batch_index integer)",
+            ).returncode
+            == 0
+        )
+        hostile_run = str(uuid.uuid4())
+        with runner.begin() as conn:
+            conn.execute(text("SET LOCAL search_path = m14511_hostile, public"))
+            conn.execute(
+                text(
+                    "SELECT public.begin_retention_run("
+                    "'success_logout', :cutoff, CAST(:run_id AS uuid), 0)"
+                ),
+                {"cutoff": now - timedelta(days=100), "run_id": hostile_run},
+            )
+        with admin.connect() as conn:
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT count(*) FROM public.security_event_retention_runs "
+                        "WHERE run_id=:run_id"
+                    ),
+                    {"run_id": hostile_run},
+                ).scalar_one()
+                == 1
+            )
+            assert (
+                conn.execute(
+                    text("SELECT count(*) FROM m14511_hostile.security_event_retention_runs")
+                ).scalar_one()
+                == 0
+            )
+        assert _psql(port, "DROP SCHEMA m14511_hostile CASCADE").returncode == 0
+
+        # T21: runner cannot create a shadowing object.
+        try:
+            with runner.begin() as conn:
+                conn.execute(text("CREATE TABLE public.m14511_shadow_probe (id integer)"))
+            raise AssertionError("runner created an object in public")
+        except SQLAlchemyError:
+            pass
+
+        # T22: runner cannot change function ownership.  A GRANT attempt from a
+        # role without grant option returns a warning rather than an error, so
+        # verify the effective ACL is unchanged.
+        try:
+            with runner.begin() as conn:
+                conn.execute(
+                    text(
+                        "ALTER FUNCTION public.begin_retention_run("
+                        "text, timestamptz, uuid, integer) "
+                        "OWNER TO utop14_retention_runner"
+                    )
+                )
+            raise AssertionError("runner changed function ownership")
+        except SQLAlchemyError:
+            pass
+        try:
+            with runner.begin() as conn:
+                conn.execute(
+                    text(
+                        "GRANT EXECUTE ON FUNCTION public.begin_retention_run("
+                        "text, timestamptz, uuid, integer) TO utop14_app"
+                    )
+                )
+        except SQLAlchemyError:
+            pass
+        with admin.connect() as conn:
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT has_function_privilege('utop14_app', "
+                        "'public.begin_retention_run(text, timestamptz, uuid, integer)', "
+                        "'EXECUTE')"
+                    )
+                ).scalar_one()
+                is False
+            )
+
+        # T23: app has no effective run-log or protocol privilege.
+        with admin.connect() as conn:
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT has_table_privilege('utop14_app', "
+                        "'public.security_event_retention_runs', 'INSERT')"
+                    )
+                ).scalar_one()
+                is False
+            )
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT has_sequence_privilege('utop14_app', "
+                        "'public.security_event_retention_runs_id_seq', 'USAGE')"
+                    )
+                ).scalar_one()
+                is False
+            )
+            for function in (
+                "public.begin_retention_run(text, timestamptz, uuid, integer)",
+                "public.abandon_retention_run(uuid, integer, text)",
+                "public.prune_security_events(text, timestamptz, integer, uuid, integer)",
+            ):
+                assert (
+                    conn.execute(
+                        text("SELECT has_function_privilege('utop14_app', :fn, 'EXECUTE')"),
+                        {"fn": function},
+                    ).scalar_one()
+                    is False
+                )
+
+        # T24: the privilege verifier still passes with the new matrix.
+        verification_after_protocol = _verify(port)
+        assert verification_after_protocol.returncode == 0, (
+            verification_after_protocol.stdout + verification_after_protocol.stderr
+        )
+
+        # T25/T26: historical partial/legacy rows and unrelated events remain.
+        with admin.connect() as conn:
+            historical = conn.execute(
+                text(
+                    "SELECT status, executed_by FROM security_event_retention_runs "
+                    "WHERE run_id='m14511-legacy-partial'"
+                )
+            ).one()
+            marker_count = conn.execute(
+                text("SELECT count(*) FROM security_events WHERE id=:id"),
+                {"id": marker_event},
+            ).scalar_one()
+        assert historical.status == "partial", historical
+        assert historical.executed_by == "legacy", historical
+        assert marker_count == 1, marker_count
     finally:
         try:
             if (data_dir / "postmaster.pid").exists():

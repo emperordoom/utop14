@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from flask import Flask
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.extensions import db
@@ -72,42 +72,50 @@ def test_active_hold_prevents_duplicate(app: Flask) -> None:
         event_id=event.id,
         reason="incident investigation",
         created_by="operator-1",
-        expires_at=NOW + timedelta(days=7),
-        now=NOW,
+        duration=timedelta(days=7),
     )
 
     hold = db.session.get(SecurityEventRetentionHold, hold_id)
     assert hold is not None
     assert hold.security_event_id == event.id
-    assert hold.expires_at == NOW + timedelta(days=7)
+    assert hold.expires_at > datetime.now(UTC) + timedelta(days=6, hours=23)
 
     with pytest.raises(RetentionHoldExists):
         create_hold(
             event_id=event.id,
             reason="second hold",
             created_by="operator-2",
-            expires_at=NOW + timedelta(days=8),
-            now=NOW,
+            duration=timedelta(days=8),
         )
     assert _hold_count() == 1
 
 
 def test_expired_hold_can_be_replaced(app: Flask) -> None:
     event = _add_event()
-    first_id = create_hold(
-        event_id=event.id,
-        reason="temporary hold",
-        created_by="operator-1",
-        expires_at=NOW + timedelta(hours=1),
-        now=NOW,
+    # A hold expires through the passage of database time.  Seed an already
+    # expired row directly; the database trigger permits INSERT of an expired
+    # hold while rejecting direct expiry of an active one.
+    db.session.execute(
+        text(
+            "INSERT INTO security_event_retention_holds "
+            "(security_event_id, reason, created_by, created_at, expires_at) "
+            "VALUES (:event_id, 'temporary hold', 'operator-1', "
+            "now() - interval '2 hours', now() - interval '1 hour')"
+        ),
+        {"event_id": event.id},
+    )
+    db.session.commit()
+    first_id = db.session.scalar(
+        select(SecurityEventRetentionHold.id).where(
+            SecurityEventRetentionHold.security_event_id == event.id
+        )
     )
 
     second_id = create_hold(
         event_id=event.id,
         reason="extended investigation",
         created_by="operator-2",
-        expires_at=NOW + timedelta(days=2),
-        now=NOW + timedelta(hours=2),
+        duration=timedelta(days=2),
     )
 
     assert second_id == first_id
@@ -115,6 +123,7 @@ def test_expired_hold_can_be_replaced(app: Flask) -> None:
     assert hold is not None
     assert hold.reason == "extended investigation"
     assert hold.created_by == "operator-2"
+    assert hold.expires_at > datetime.now(UTC) + timedelta(days=1, hours=23)
     assert _hold_count() == 1
 
 
@@ -126,32 +135,28 @@ def test_invalid_hold_values_are_rejected(app: Flask) -> None:
             event_id=event.id,
             reason="bad @ email",
             created_by="operator",
-            expires_at=NOW + timedelta(days=1),
-            now=NOW,
+            duration=timedelta(days=1),
         )
     with pytest.raises(RetentionValidationError):
         create_hold(
             event_id=event.id,
             reason="valid reason",
             created_by="operator@example.com",
-            expires_at=NOW + timedelta(days=1),
-            now=NOW,
+            duration=timedelta(days=1),
         )
     with pytest.raises(RetentionValidationError):
         create_hold(
             event_id=event.id,
             reason="valid reason",
             created_by="operator",
-            expires_at=NOW,
-            now=NOW,
+            duration=timedelta(0),
         )
     with pytest.raises(RetentionValidationError):
         create_hold(
             event_id=event.id,
             reason="valid reason",
             created_by="operator",
-            expires_at=NOW + timedelta(days=400),
-            now=NOW,
+            duration=timedelta(days=400),
         )
     assert _hold_count() == 0
 
@@ -173,8 +178,7 @@ def test_hold_reason_rejects_ip_literals(app: Flask, reason: str) -> None:
             event_id=event.id,
             reason=reason,
             created_by="operator",
-            expires_at=NOW + timedelta(days=1),
-            now=NOW,
+            duration=timedelta(days=1),
         )
     assert _hold_count() == 0
 
@@ -186,8 +190,7 @@ def test_hold_reason_accepts_non_ip_text(app: Flask) -> None:
         event_id=event.id,
         reason="investigate suspicious account activity",
         created_by="operator",
-        expires_at=NOW + timedelta(days=1),
-        now=NOW,
+        duration=timedelta(days=1),
     )
 
     assert db.session.get(SecurityEventRetentionHold, hold_id) is not None
@@ -201,6 +204,7 @@ def test_retention_run_log_constraints(app: Flask) -> None:
         cutoff=NOW,
         deleted_count=2,
         status=RETENTION_STATUS_SUCCESS,
+        executed_by="test-suite",
         started_at=NOW,
         finished_at=NOW,
     )
@@ -215,6 +219,7 @@ def test_retention_run_log_constraints(app: Flask) -> None:
         cutoff=NOW,
         deleted_count=0,
         status="unknown",
+        executed_by="test-suite",
         started_at=NOW,
         finished_at=NOW,
     )
@@ -234,18 +239,41 @@ def test_retention_cli_requires_runner_dsn(app: Flask) -> None:
 
 
 class _FakeResult:
+    def __init__(self, *, scalar_value=None, scalar_one_value=None):
+        self._scalar_value = scalar_value
+        self._scalar_one_value = scalar_one_value
+
     def scalar(self):
-        return True
+        return self._scalar_value
 
     def scalar_one(self):
-        raise SQLAlchemyError("batch failed")
+        return self._scalar_one_value
 
 
 class _FakeConnection:
+    def __init__(self, *, fail_abandon: bool = False, deletes: list[int] | None = None):
+        self._fail_abandon = fail_abandon
+        self._deletes = deletes
+
     def execute(self, statement, params=None):
-        if "pg_try_advisory_lock" in str(statement) or "pg_advisory_unlock" in str(statement):
+        sql = str(statement)
+        if "pg_try_advisory_lock" in sql:
+            return _FakeResult(scalar_value=True)
+        if "SELECT now()" in sql:
+            return _FakeResult(scalar_one_value=datetime.now(UTC))
+        if "pg_advisory_unlock" in sql:
             return _FakeResult()
-        raise SQLAlchemyError("batch failed")
+        if "begin_retention_run" in sql:
+            return _FakeResult()
+        if "prune_security_events" in sql:
+            if self._deletes is None:
+                raise SQLAlchemyError("batch failed")
+            return _FakeResult(scalar_one_value=self._deletes.pop(0))
+        if "abandon_retention_run" in sql:
+            if self._fail_abandon:
+                raise SQLAlchemyError("abandon failed")
+            return _FakeResult()
+        raise SQLAlchemyError("unexpected statement")
 
     def close(self) -> None:
         return None
@@ -258,26 +286,61 @@ class _FakeConnection:
 
 
 class _FakeEngine:
+    def __init__(
+        self,
+        *,
+        fail_abandon: bool = False,
+        deletes: list[int] | None = None,
+    ):
+        self._fail_abandon = fail_abandon
+        self._deletes = deletes
+
     def connect(self):
-        return _FakeConnection()
+        return _FakeConnection(fail_abandon=self._fail_abandon, deletes=self._deletes)
 
     def begin(self):
-        return _FakeConnection()
+        return _FakeConnection(fail_abandon=self._fail_abandon, deletes=self._deletes)
 
 
-def test_failed_run_log_insert_is_normalized(
+def test_run_retention_success_uses_one_db_cutoff_per_scope(app: Flask) -> None:
+    from app.services import security_event_retention as service
+
+    summary = service.run_retention(_FakeEngine(deletes=[0, 0]))
+
+    assert summary.status == "success"
+    assert summary.batch_count == 2
+    assert summary.deleted_count == 0
+
+
+def test_run_retention_partial_when_batch_budget_exhausted(app: Flask) -> None:
+    from app.services import security_event_retention as service
+
+    summary = service.run_retention(
+        _FakeEngine(deletes=[2000]),
+        batch_size=2000,
+        max_batches=1,
+    )
+
+    assert summary.status == "partial"
+    assert summary.batch_count == 1
+
+
+def test_failed_batch_is_abandoned_without_success(
     app: Flask,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.services import security_event_retention as service
 
-    def fail_insert(*_args, **_kwargs):
-        raise SQLAlchemyError("run log insert failed")
+    with pytest.raises(RetentionRunError, match="batch failed"):
+        service.run_retention(_FakeEngine())
 
-    monkeypatch.setattr(service, "_insert_run", fail_insert)
+
+def test_failed_abandon_is_normalized(
+    app: Flask,
+) -> None:
+    from app.services import security_event_retention as service
 
     with pytest.raises(RetentionRunError, match="could not be logged"):
-        service.run_retention(_FakeEngine())
+        service.run_retention(_FakeEngine(fail_abandon=True))
 
 
 def test_cli_normalizes_retention_run_error_without_traceback(

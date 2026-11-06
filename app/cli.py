@@ -12,6 +12,7 @@ from app.catalog.seed import seed_catalog
 from app.extensions import db
 from app.models.user import ROLE_ADMIN, User
 from app.services.auth_rate_limit import RateLimitStoreError, delete_expired_buckets
+from app.services.clock_skew import check_clock_skew
 from app.services.security_event_filter_state import (
     FilterStateError,
     cleanup_expired_filter_states,
@@ -20,6 +21,7 @@ from app.services.security_event_retention import (
     RetentionLocked,
     RetentionRunError,
     RetentionValidationError,
+    find_orphan_started_runs,
     run_retention,
 )
 
@@ -126,6 +128,75 @@ def security_event_retention_cli() -> None:
     """Security-event retention maintenance commands."""
 
 
+def _retention_engine():
+    database_url = str(
+        current_app.config.get("SECURITY_EVENT_RETENTION_DATABASE_URL") or ""
+    ).strip()
+    if not database_url:
+        raise click.ClickException(
+            "SECURITY_EVENT_RETENTION_DATABASE_URL is required for retention runs."
+        )
+    return create_engine(database_url, pool_pre_ping=True)
+
+
+@security_event_retention_cli.command("check-clock")
+def check_clock_command() -> None:
+    """Report application/database clock skew without failing the process.
+
+    The diagnostic is advisory.  A missing or unreachable database, or a skew
+    above ``CLOCK_SKEW_WARNING_SECONDS``, is reported as a warning and does not
+    change the command's successful exit status.
+    """
+    result = check_clock_skew(db.engine)
+    if result is None:
+        click.echo(
+            "Clock-skew diagnostic unavailable; no application request was failed.",
+            err=True,
+        )
+        return
+    click.echo(f"Clock skew: {result.skew_seconds:.1f}s (threshold {result.threshold_seconds}s).")
+    if result.exceeded:
+        click.echo(
+            "WARNING: application and database clocks differ by more than the "
+            "configured threshold.",
+            err=True,
+        )
+
+
+@security_event_retention_cli.command("orphans")
+@click.option(
+    "--older-than-minutes",
+    type=click.IntRange(1, 525600),
+    default=60,
+    show_default=True,
+    help="Only report started rows older than this many minutes.",
+)
+def orphaned_runs_command(older_than_minutes: int) -> None:
+    """List abandoned ``started`` run-log rows for monitoring."""
+    engine = _retention_engine()
+    try:
+        rows = find_orphan_started_runs(
+            engine,
+            older_than_seconds=older_than_minutes * 60,
+        )
+    except RetentionValidationError as exc:
+        raise click.ClickException(str(exc)) from exc
+    except Exception as exc:  # pragma: no cover - defensive CLI boundary
+        raise click.ClickException("Unable to read retention run-log state.") from exc
+    finally:
+        engine.dispose()
+
+    if not rows:
+        click.echo("No orphaned started retention runs.")
+        return
+    for row in rows:
+        click.echo(
+            f"started run_id={row.run_id} batch={row.batch_index} "
+            f"scope={row.scope} executed_by={row.executed_by} "
+            f"started_at={row.started_at.isoformat()}"
+        )
+
+
 @security_event_retention_cli.command("run")
 @click.option(
     "--batch-size",
@@ -146,15 +217,12 @@ def run_security_event_retention_command(
     """Run bounded security-event retention using the dedicated runner DSN."""
     if not current_app.config.get("SECURITY_EVENT_RETENTION_ENABLED", True):
         raise click.ClickException("Security-event retention is disabled.")
-    database_url = str(
-        current_app.config.get("SECURITY_EVENT_RETENTION_DATABASE_URL") or ""
-    ).strip()
-    if not database_url:
-        raise click.ClickException(
-            "SECURITY_EVENT_RETENTION_DATABASE_URL is required for retention runs."
-        )
 
-    engine = create_engine(database_url, pool_pre_ping=True)
+    # Advisory diagnostic only; never fail the run because of clock skew or an
+    # unavailable diagnostic connection.
+    check_clock_skew(db.engine)
+
+    engine = _retention_engine()
     try:
         try:
             summary = run_retention(
