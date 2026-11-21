@@ -814,10 +814,12 @@ rows directly or use the run sequence.
 `executed_by` identifies the database principal (normally
 `utop14_retention_runner`), not a human or an OS job name. A process that dies
 after `begin` leaves a `started` row; `flask --app wsgi
-security-event-retention orphans --older-than-minutes N` lists these orphaned
-rows for monitoring. The old synthetic `partial` row is no longer written; an
-exhausted batch budget is reported with exit code `2` and a metric, while
-historical `partial` rows remain untouched.
+security-event-retention orphans --older-than-minutes N --limit M` lists a
+bounded page of these orphaned rows alongside the total count for monitoring
+without mutating state (reconciliation requires the DBA/operational runbook
+procedure tracked under B-07). The old synthetic `partial` row is no longer
+written; an exhausted batch budget is reported with exit code `2` and a metric,
+while historical `partial` rows remain untouched.
 
 The cleanup entry point is a `SECURITY DEFINER` function,
 `public.prune_security_events`, owned by `utop14_retention_owner`. It locks
@@ -1429,9 +1431,13 @@ in `admin_security_event_filter_states`, and returns `303` to
 - Logout deletes the admin's stored states and clears the cookie. Multiple tabs
   share one state because the cookie is per-browser-session; applying a filter
   in one tab replaces the state seen by the other tabs on their next load.
-- The login `next` target is stripped of `identifier_hash` and `request_id`, so
-  an expired admin session cannot move sensitive filters into the login URL or
-  the post-login redirect.
+- The unauthorized login redirect and login `next` target strip all nine
+  legacy security-event filter parameters (`event_type`, `outcome`, `reason`,
+  `date_from`, `date_to`, `request_id`, `identifier_hash`, `actor_user_id`,
+  and `subject_user_id`), and `/auth/login` responses set
+  `Cache-Control: private, no-store` and `Referrer-Policy: no-referrer`, so an
+  expired admin session cannot move sensitive filters into the login URL or the
+  post-login redirect.
 
 ##### Trust boundary (accepted — M14.4.1.1 F-01)
 

@@ -41,6 +41,7 @@ _MIN_TTL_MINUTES: Final = 1
 _MAX_TTL_MINUTES: Final = 240
 _DEFAULT_TTL_MINUTES: Final = 30
 _MAX_CLEANUP_BATCH: Final = 10_000
+_MAX_ACTIVE_STATES_PER_ADMIN: Final = 20
 
 _ALLOWED_PAYLOAD_KEYS: Final = frozenset(
     {
@@ -153,6 +154,23 @@ def create_filter_state(
     )
     try:
         db.session.add(state)
+        db.session.flush()
+        overflow_hashes = (
+            select(AdminSecurityEventFilterState.token_hash)
+            .where(AdminSecurityEventFilterState.admin_user_id == admin_user_id)
+            .order_by(
+                AdminSecurityEventFilterState.last_accessed_at.desc(),
+                AdminSecurityEventFilterState.created_at.desc(),
+                AdminSecurityEventFilterState.token_hash.desc(),
+            )
+            .offset(_MAX_ACTIVE_STATES_PER_ADMIN)
+        )
+        db.session.execute(
+            delete(AdminSecurityEventFilterState).where(
+                AdminSecurityEventFilterState.admin_user_id == admin_user_id,
+                AdminSecurityEventFilterState.token_hash.in_(overflow_hashes),
+            )
+        )
         db.session.commit()
     except SQLAlchemyError as exc:
         db.session.rollback()
@@ -190,7 +208,10 @@ def load_filter_state(
             return None
         db.session.execute(
             update(AdminSecurityEventFilterState)
-            .where(AdminSecurityEventFilterState.token_hash == digest)
+            .where(
+                AdminSecurityEventFilterState.token_hash == digest,
+                AdminSecurityEventFilterState.admin_user_id == admin_user_id,
+            )
             .values(last_accessed_at=reference)
         )
         db.session.commit()
@@ -245,8 +266,14 @@ def set_filter_state_cookie(response: Response, token: str) -> None:
 
 
 def clear_filter_state_cookie(response: Response) -> None:
-    """Remove the filter-state cookie from the browser."""
-    response.delete_cookie(FILTER_STATE_COOKIE, path=FILTER_STATE_COOKIE_PATH)
+    """Remove the filter-state cookie using matching security attributes."""
+    response.delete_cookie(
+        FILTER_STATE_COOKIE,
+        path=FILTER_STATE_COOKIE_PATH,
+        httponly=True,
+        secure=bool(current_app.config.get("SESSION_COOKIE_SECURE", False)),
+        samesite="Lax",
+    )
 
 
 def cleanup_expired_filter_states(

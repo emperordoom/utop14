@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from flask import (
     abort,
@@ -31,6 +30,7 @@ from app.auth.forms import (
     RemoveAvatarForm,
 )
 from app.auth.passwords import verify_dummy_password
+from app.auth.redirects import safe_next_url
 from app.extensions import db
 from app.models.security_event import (
     SECURITY_REASON_INACTIVE_ACCOUNT,
@@ -71,41 +71,7 @@ from app.services.security_events import (
     record_logout,
 )
 
-_SAFE_NEXT_MAX_LENGTH = 2048
-_SENSITIVE_NEXT_PARAMS = frozenset({"identifier_hash", "request_id"})
-
-
-def _strip_sensitive_query(target: str) -> str:
-    """Remove sensitive filter parameters from a local redirect target."""
-    parsed = urlsplit(target)
-    if not parsed.query:
-        return target
-    pairs = parse_qsl(parsed.query, keep_blank_values=True)
-    filtered = [(key, value) for key, value in pairs if key not in _SENSITIVE_NEXT_PARAMS]
-    if len(filtered) == len(pairs):
-        return target
-    return urlunsplit(("", "", parsed.path, urlencode(filtered), parsed.fragment))
-
-
-def _safe_next_url(target: str | None) -> str | None:
-    """Return a local redirect target, or ``None`` for unsafe input."""
-    if target is None:
-        return None
-
-    candidate = target.strip()
-    if not candidate or len(candidate) > _SAFE_NEXT_MAX_LENGTH:
-        return None
-    if not candidate.startswith("/") or candidate.startswith("//"):
-        return None
-    if "\\" in candidate or "\r" in candidate or "\n" in candidate:
-        return None
-    if candidate.lower().startswith(("/%2f", "/%5c")):
-        return None
-
-    parsed = urlsplit(candidate)
-    if parsed.scheme or parsed.netloc:
-        return None
-    return _strip_sensitive_query(candidate)
+_safe_next_url = safe_next_url
 
 
 def _clear_session() -> None:

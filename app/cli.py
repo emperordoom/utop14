@@ -21,6 +21,7 @@ from app.services.security_event_retention import (
     RetentionLocked,
     RetentionRunError,
     RetentionValidationError,
+    count_orphan_started_runs,
     find_orphan_started_runs,
     run_retention,
 )
@@ -176,13 +177,34 @@ def check_clock_command() -> None:
     show_default=True,
     help="Only report started rows older than this many minutes.",
 )
-def orphaned_runs_command(older_than_minutes: int) -> None:
-    """List abandoned ``started`` run-log rows for monitoring."""
+@click.option(
+    "--limit",
+    type=click.IntRange(1, 1000),
+    default=100,
+    show_default=True,
+    help="Maximum number of orphaned started rows to display.",
+)
+def orphaned_runs_command(older_than_minutes: int, limit: int) -> None:
+    """List bounded abandoned ``started`` run-log rows for monitoring.
+
+    This diagnostic is read-only and never mutates orphan rows; reconciliation
+    requires the DBA/operational runbook procedure (B-07).
+    """
     engine = _retention_engine()
+    older_than_seconds = older_than_minutes * 60
     try:
-        rows = find_orphan_started_runs(
+        total = count_orphan_started_runs(
             engine,
-            older_than_seconds=older_than_minutes * 60,
+            older_than_seconds=older_than_seconds,
+        )
+        rows = (
+            find_orphan_started_runs(
+                engine,
+                older_than_seconds=older_than_seconds,
+                limit=limit,
+            )
+            if total > 0
+            else []
         )
     except RetentionValidationError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -191,7 +213,7 @@ def orphaned_runs_command(older_than_minutes: int) -> None:
     finally:
         engine.dispose()
 
-    if not rows:
+    if total == 0:
         click.echo("No orphaned started retention runs.")
         return
     for row in rows:
@@ -200,6 +222,10 @@ def orphaned_runs_command(older_than_minutes: int) -> None:
             f"scope={row.scope} executed_by={row.executed_by} "
             f"started_at={row.started_at.isoformat()}"
         )
+    click.echo(
+        f"Showing {len(rows)} of {total} orphaned started retention run(s). "
+        "Reconciliation requires the DBA/operational runbook procedure (B-07)."
+    )
 
 
 @security_event_retention_cli.command("run")
