@@ -44,6 +44,8 @@ from app.models.security_event_retention import (
 
 _ADVISORY_LOCK_KEY = 0x55544F50313433  # "UTOP143"
 _EVENT_LOCK_NAMESPACE = 7381
+_DEFAULT_ORPHAN_LIMIT = 100
+_MAX_ORPHAN_LIMIT = 1000
 
 # The database function accepts only these caller-visible error codes.  Keeping
 # the allowlist finite prevents free-text error values in the audit trail.
@@ -358,6 +360,7 @@ def run_retention(
     except SQLAlchemyError as exc:
         raise RetentionRunError("Unable to connect to the retention database.") from exc
 
+    lock_acquired = False
     try:
         try:
             acquired = lock_connection.execute(
@@ -365,12 +368,18 @@ def run_retention(
                 {"key": _ADVISORY_LOCK_KEY},
             ).scalar()
             if not acquired:
+                lock_connection.rollback()
                 raise RetentionLocked("Another security-event retention run is active.")
+            lock_acquired = True
 
-            # One authoritative reference for this run.  ``now()`` is the
-            # transaction start time in PostgreSQL and therefore stays constant
-            # for every batch that uses this cutoff.
+            # One authoritative reference for this run.  ``now()`` is read once
+            # from PostgreSQL and reused for every scope and batch cutoff.
             reference = _database_now(lock_connection)
+            # End the read transaction immediately so ``lock_connection`` never
+            # sits ``idle in transaction`` while batches run on separate pooled
+            # connections.  Session-level ``pg_try_advisory_lock`` stays held
+            # until explicit unlock or connection close.
+            lock_connection.commit()
         except SQLAlchemyError as exc:
             # Initial connection/advisory-lock/clock failures must not expose
             # driver details (host, DSN or credentials) and must not create a
@@ -442,30 +451,62 @@ def run_retention(
         return RetentionRunSummary(run_id, total_deleted, total_batches, "success")
     finally:
         try:
-            # Closing the connection releases any remaining session lock.  Do
-            # not let an unlock failure mask the primary outcome.
-            with contextlib.suppress(SQLAlchemyError):
-                lock_connection.execute(
-                    text("SELECT pg_advisory_unlock(:key)"),
-                    {"key": _ADVISORY_LOCK_KEY},
-                )
+            # Release the session advisory lock only if this run acquired it,
+            # then close the connection.  Do not let an unlock failure mask the
+            # primary outcome.
+            if lock_acquired:
+                with contextlib.suppress(SQLAlchemyError):
+                    lock_connection.execute(
+                        text("SELECT pg_advisory_unlock(:key)"),
+                        {"key": _ADVISORY_LOCK_KEY},
+                    )
+                    lock_connection.commit()
         finally:
             lock_connection.close()
+
+
+def _validate_orphan_age(older_than_seconds: int) -> None:
+    if type(older_than_seconds) is not int or not 1 <= older_than_seconds <= 31_536_000:
+        raise RetentionValidationError("The orphan age threshold is invalid.")
+
+
+def count_orphan_started_runs(
+    engine: Engine,
+    *,
+    older_than_seconds: int = 3600,
+) -> int:
+    """Return total count of ``started`` rows older than ``older_than_seconds``."""
+    _validate_orphan_age(older_than_seconds)
+    with engine.connect() as connection:
+        return int(
+            connection.execute(
+                text(
+                    "SELECT count(*) "
+                    "FROM public.security_event_retention_runs "
+                    "WHERE status = 'started' "
+                    "AND started_at < now() - make_interval(secs => :seconds)"
+                ),
+                {"seconds": older_than_seconds},
+            ).scalar_one()
+        )
 
 
 def find_orphan_started_runs(
     engine: Engine,
     *,
     older_than_seconds: int = 3600,
+    limit: int = _DEFAULT_ORPHAN_LIMIT,
 ) -> list[OrphanRetentionRun]:
-    """Return ``started`` rows older than ``older_than_seconds``.
+    """Return at most ``limit`` ``started`` rows older than ``older_than_seconds``.
 
     These rows indicate a run that died between the begin phase and the prune
-    or abandon phase.  They are never success records; operators use this list
-    for monitoring and reconciliation.
+    or abandon phase.  They are never success records and are never mutated by
+    this diagnostic; reconciliation requires the DBA/operational runbook
+    procedure (B-07).
     """
-    if type(older_than_seconds) is not int or not 1 <= older_than_seconds <= 31_536_000:
-        raise RetentionValidationError("The orphan age threshold is invalid.")
+    _validate_orphan_age(older_than_seconds)
+    if type(limit) is not int or not 1 <= limit <= _MAX_ORPHAN_LIMIT:
+        raise RetentionValidationError("The orphan result limit is invalid.")
     with engine.connect() as connection:
         rows = connection.execute(
             text(
@@ -473,9 +514,10 @@ def find_orphan_started_runs(
                 "FROM public.security_event_retention_runs "
                 "WHERE status = 'started' "
                 "AND started_at < now() - make_interval(secs => :seconds) "
-                "ORDER BY started_at, run_id, batch_index"
+                "ORDER BY started_at, run_id, batch_index "
+                "LIMIT :limit"
             ),
-            {"seconds": older_than_seconds},
+            {"seconds": older_than_seconds, "limit": limit},
         ).mappings()
         return [
             OrphanRetentionRun(

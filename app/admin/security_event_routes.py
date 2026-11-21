@@ -20,6 +20,7 @@ from flask_login import current_user
 
 from app.admin import admin_bp
 from app.auth.permissions import role_required
+from app.auth.redirects import has_sensitive_query_params
 from app.models.user import ROLE_ADMIN
 from app.services.security_event_admin import (
     EVENT_TYPE_CHOICES,
@@ -39,22 +40,6 @@ from app.services.security_event_filter_state import (
     delete_filter_state,
     load_filter_state,
     set_filter_state_cookie,
-)
-
-# Query parameters that used to carry sensitive filter values.  They are never
-# echoed back, never copied into a redirect, and never kept in a URL.
-_LEGACY_SENSITIVE_PARAMS = frozenset(
-    {
-        "event_type",
-        "outcome",
-        "reason",
-        "date_from",
-        "date_to",
-        "request_id",
-        "identifier_hash",
-        "actor_user_id",
-        "subject_user_id",
-    }
 )
 
 
@@ -99,7 +84,7 @@ def _render_list(filters: AdminSecurityEventFilters, page: int) -> ResponseRetur
 @role_required(ROLE_ADMIN)
 def security_event_list() -> ResponseReturnValue:
     """List and filter authentication security events newest first."""
-    if _LEGACY_SENSITIVE_PARAMS.intersection(request.args):
+    if has_sensitive_query_params(request.args):
         # Never reflect old sensitive query parameters; send the browser to a
         # clean URL.  The old values are not copied into the Location header.
         # The active filter-state cookie is deliberately preserved: a legacy
@@ -124,10 +109,17 @@ def security_event_filter_apply() -> ResponseReturnValue:
         # sensitive values stay in the POST body, not the URL.
         return _render_list(filters, 1)
 
+    previous_token = request.cookies.get(FILTER_STATE_COOKIE)
     try:
         token = create_filter_state(current_user.id, filters)
     except FilterStateUnavailable:
         abort(503)
+
+    # Best-effort cleanup of the caller's superseded filter state.  Ownership is
+    # enforced inside delete_filter_state, and a cleanup error never invalidates
+    # the newly created state.
+    if previous_token is not None and previous_token != token:
+        delete_filter_state(previous_token, current_user.id)
 
     response = redirect(url_for("admin.security_event_list"), code=303)
     set_filter_state_cookie(response, token)

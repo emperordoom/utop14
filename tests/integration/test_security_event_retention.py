@@ -257,6 +257,12 @@ class _FakeConnection:
         self._fail_abandon = fail_abandon
         self._deletes = deletes
 
+    def commit(self) -> None:
+        return None
+
+    def rollback(self) -> None:
+        return None
+
     def execute(self, statement, params=None):
         sql = str(statement)
         if "pg_try_advisory_lock" in sql:
@@ -315,6 +321,12 @@ class _ConnectFailureEngine:
 class _InitialFailureConnection:
     def __init__(self, fail_on: str):
         self._fail_on = fail_on
+
+    def commit(self) -> None:
+        return None
+
+    def rollback(self) -> None:
+        return None
 
     def execute(self, statement, params=None):
         sql = str(statement)
@@ -548,3 +560,155 @@ def test_cli_create_engine_value_error_is_safe(app: Flask) -> None:
     assert "127.0.0.1" not in result.output
     assert "postgresql+psycopg" not in result.output
     assert db.session.scalar(select(func.count(SecurityEventRetentionRun.id))) == 0
+
+
+def test_lock_connection_is_not_idle_in_transaction_and_holds_advisory_lock(
+    app: Flask,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F-B05-01: lock connection must stay outside any transaction while holding lock."""
+    from sqlalchemy import create_engine, text
+
+    from app.services import security_event_retention as service
+
+    engine = create_engine(app.config["SQLALCHEMY_DATABASE_URI"], pool_pre_ping=True)
+    observed_lock_connections: list[object] = []
+    batch_observations: list[dict[str, object]] = []
+    original_connect = engine.connect
+    original_prune = service._prune_batch
+
+    def spying_connect():
+        conn = original_connect()
+        if not observed_lock_connections:
+            observed_lock_connections.append(conn)
+        return conn
+
+    def spying_prune(eng, **kwargs):
+        lock_conn = observed_lock_connections[0]
+        in_tx = lock_conn.in_transaction()
+        with original_connect() as probe:
+            lock_row = (
+                probe.execute(
+                    text(
+                        "SELECT a.pid, a.state "
+                        "FROM pg_catalog.pg_locks l "
+                        "JOIN pg_catalog.pg_stat_activity a ON a.pid = l.pid "
+                        "WHERE l.locktype = 'advisory' AND l.granted "
+                        "  AND ((l.classid::bigint << 32) | (l.objid::bigint & 4294967295)) = :key"
+                    ),
+                    {"key": service._ADVISORY_LOCK_KEY},
+                )
+                .mappings()
+                .one_or_none()
+            )
+        # A concurrent retention attempt must be rejected while batch is running.
+        with pytest.raises(RetentionLocked):
+            service.run_retention(eng)
+        batch_observations.append(
+            {
+                "in_transaction": in_tx,
+                "pg_state": lock_row["state"] if lock_row is not None else None,
+                "lock_held": 1 if lock_row is not None else 0,
+            }
+        )
+        return original_prune(eng, **kwargs)
+
+    monkeypatch.setattr(engine, "connect", spying_connect)
+    monkeypatch.setattr(service, "_prune_batch", spying_prune)
+
+    try:
+        summary = service.run_retention(engine, batch_size=10, max_batches=2)
+        assert summary.status == "success"
+        assert len(batch_observations) >= 1
+        for obs in batch_observations:
+            assert obs["in_transaction"] is False
+            assert obs["pg_state"] == "idle"
+            assert obs["lock_held"] == 1
+
+        # Restore spies and verify advisory lock was released after completion.
+        monkeypatch.setattr(engine, "connect", original_connect)
+        monkeypatch.setattr(service, "_prune_batch", original_prune)
+        followup = service.run_retention(engine, batch_size=10, max_batches=2)
+        assert followup.status == "success"
+    finally:
+        engine.dispose()
+
+
+def test_advisory_lock_released_after_batch_failure(
+    app: Flask,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F-B05-01: advisory lock must be released cleanly when a batch fails."""
+    from sqlalchemy import create_engine
+
+    from app.services import security_event_retention as service
+
+    engine = create_engine(app.config["SQLALCHEMY_DATABASE_URI"], pool_pre_ping=True)
+    original_prune = service._prune_batch
+
+    def failing_prune(*_args, **_kwargs):
+        raise SQLAlchemyError("simulated batch failure")
+
+    monkeypatch.setattr(service, "_prune_batch", failing_prune)
+    try:
+        with pytest.raises(RetentionRunError, match="batch failed"):
+            service.run_retention(engine, batch_size=10, max_batches=2)
+
+        monkeypatch.setattr(service, "_prune_batch", original_prune)
+        summary = service.run_retention(engine, batch_size=10, max_batches=2)
+        assert summary.status == "success"
+    finally:
+        engine.dispose()
+
+
+def test_orphan_detection_respects_limit_reports_total_and_does_not_mutate(
+    app: Flask,
+) -> None:
+    """F-B05-02: orphan lookup is bounded by limit, reports total, and stays read-only."""
+    from app.services.security_event_retention import (
+        count_orphan_started_runs,
+        find_orphan_started_runs,
+    )
+
+    app.config["SECURITY_EVENT_RETENTION_DATABASE_URL"] = app.config["SQLALCHEMY_DATABASE_URI"]
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(days=100)
+    for idx in range(3):
+        db.session.add(
+            SecurityEventRetentionRun(
+                run_id=f"orphan-bounded-{idx}",
+                batch_index=idx,
+                scope=RETENTION_SCOPE_FAILURE,
+                cutoff=cutoff,
+                deleted_count=0,
+                status=RETENTION_STATUS_STARTED,
+                executed_by="test-suite",
+                started_at=now - timedelta(hours=3 - idx),
+                finished_at=None,
+            )
+        )
+    db.session.commit()
+
+    with pytest.raises(RetentionValidationError, match="limit"):
+        find_orphan_started_runs(db.engine, older_than_seconds=3600, limit=0)
+    with pytest.raises(RetentionValidationError, match="limit"):
+        find_orphan_started_runs(db.engine, older_than_seconds=3600, limit=1001)
+
+    total = count_orphan_started_runs(db.engine, older_than_seconds=3600)
+    bounded = find_orphan_started_runs(db.engine, older_than_seconds=3600, limit=2)
+    assert total == 3
+    assert len(bounded) == 2
+
+    result = app.test_cli_runner().invoke(
+        args=["security-event-retention", "orphans", "--older-than-minutes", "60", "--limit", "2"],
+    )
+    assert result.exit_code == 0
+    assert "Showing 2 of 3 orphaned started retention run(s)." in result.output
+    assert "B-07" in result.output
+    # Diagnostic must never mutate orphan status.
+    still_started = db.session.scalar(
+        select(func.count(SecurityEventRetentionRun.id)).where(
+            SecurityEventRetentionRun.status == RETENTION_STATUS_STARTED
+        )
+    )
+    assert still_started == 3
