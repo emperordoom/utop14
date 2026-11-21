@@ -6,10 +6,21 @@ UTOP14 is a streetwear e-commerce platform built for Well Architected SOC 14.
 
 - See [`docs/PROJECT_ROADMAP.md`](docs/PROJECT_ROADMAP.md) for the durable
   phase-by-phase status, checkpoint evidence, and outstanding blockers.
-- Development is in Phase 4 (independent approval and M14.3 integration).
-  Phase 3 is complete based on the M14.3.23 approval of `a8e9a9b6…`.
-  Production readiness is deferred and is not authorized by development
-  completion.
+- PR #14 (M14.3, merge commit `75af830c8dcc53b42c621a36f3a8e99a64fc4881`) is
+  **MERGED** on `main`, and the Project Owner has accepted M14.3
+  code/integration (`d37648b61d0d5053cbd61c0ef4fc172f03d3d937`) and the B-10
+  trust boundary. Phase 4 administrative closure remains **PENDING** until the
+  closure documentation
+  ([`docs/M14.3_RELEASE_NOTES.md`](docs/M14.3_RELEASE_NOTES.md),
+  [`docs/M14.3_SECURITY_CHANGELOG.md`](docs/M14.3_SECURITY_CHANGELOG.md), and
+  roadmap updates) is integrated into `main`.
+- Phase 5 formal commencement is not yet approved. Statements in milestone
+  sections below describing code-level items (such as M14.2 F-02 or RR-04) as
+  remediated reflect code merged on `main` (PR #15 and PR #16) and do **not**
+  automatically close Phase 5 backlog items (B-01 through B-13) in
+  [`docs/PROJECT_ROADMAP.md`](docs/PROJECT_ROADMAP.md) without formal Phase 5
+  verification and approval. Development is not complete, and production
+  deployment is not authorized.
 
 ## Technology
 
@@ -998,9 +1009,12 @@ ownership template:
   data. Run provisioning only against the cluster that hosts UTOP14, during a
   change window, and expect `utop14_*` role settings to be removed from other
   databases on that cluster.
-- Catalog qualification and its regression tests are local implementation
-  results. They are not independent security approval; a separate review is
-  still required before merge or production use.
+- *(Historical M14.3.20 note: at the time of M14.3.20 implementation, catalog
+  qualification and its regression tests were local results pending independent
+  review. M14.3.23 subsequently returned verdict **APPROVED** for
+  `a8e9a9b6ea251f9bb183e373f218764e68538481`, PR #14 was merged at
+  `75af830c8dcc53b42c621a36f3a8e99a64fc4881`, and production deployment remains
+  unauthorized.)*
 
 #### Cluster-level GUC audit procedure
 
@@ -1051,6 +1065,16 @@ ORDER BY sourcefile, name;
 
 
 ### Production ownership model (OPS-01)
+
+> **Scope note:** In this README, `OPS-01` labels the M14.3.3 four-role
+> ownership model (`utop14_schema_owner`, `utop14_app`,
+> `utop14_retention_owner`, and `utop14_retention_runner`) delivered with PR #14.
+> At PR #14, `utop14_schema_owner` remained permitted to hold `LOGIN`/`SUPERUSER`,
+> and no separate `utop14_migrator` role existed. Any separate follow-on
+> migrator-separation workstream (`utop14_migrator`, `NOLOGIN` enforcement on
+> `utop14_schema_owner`, `SET ROLE` in `migrations/env.py`, and
+> base-role/prestep/rollback scripts) is outside PR #14 approval and is not
+> active as part of M14.3.
 
 The append-only and retention boundary depends on ownership separation. The
 following model is mandatory in production and must be verified on a disposable
