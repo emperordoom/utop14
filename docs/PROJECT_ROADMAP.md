@@ -1,6 +1,6 @@
 # UTOP14 — Project Roadmap and Status
 
-Last updated: Phase 4 administrative closure documentation — PENDING integration into `main` (2026-11-21)
+Last updated: Phase 4 / M14.3 formally CLOSED (`COMPLETE`) following Project Owner decision and PR #17 (`da869008feb177d88835ee54eac4c0ca4b37158c`) integration (2026-11-21)
 
 This document is the durable status record for the UTOP14 development effort.
 It separates **development completion** from **production readiness**: a phase
@@ -180,7 +180,7 @@ it does not authorize deployment.
 
 ## Phase 4 — Independent approval and M14.3 integration
 
-**Status: IN PROGRESS**
+**Status: COMPLETE**
 
 ### Phase objective
 
@@ -205,34 +205,50 @@ integrate the approved branch, without deploying.
 - No open HIGH or MEDIUM findings.
 - PR #14 merged and accepted by the Project Owner (historical governance note:
   no formal GitHub review was recorded on PR #14, `reviews: []`).
+- Administrative closure documentation integrated into `main` and formal
+  Project Owner closure decision recorded.
 - No production deployment performed as part of this phase.
 
 ### Dependencies and known blockers
 
+- None outstanding for Phase 4 closure (Phase 4 was previously `IN PROGRESS` /
+  `PENDING` until administrative closure documentation merged in PR #17 at
+  `da869008feb177d88835ee54eac4c0ca4b37158c` and the Project Owner issued formal
+  closure approval).
 - Phase 3 is COMPLETE based on the M14.3.23 approval of
   `a8e9a9b6ea251f9bb183e373f218764e68538481`.
 - PR #14 (`emperordoom/utop14`, `main` ←
   `feature/security-retention-ownership-fix`) is **MERGED** at
   `75af830c8dcc53b42c621a36f3a8e99a64fc4881` (`2026-11-05T20:59:55Z`).
-- Project Owner decisions on B-10 and final PR #14 head
-  `d37648b61d0d5053cbd61c0ef4fc172f03d3d937` are recorded below.
-- Remaining blocker to close Phase 4: integration of this closure
-  documentation (`README.md`, `docs/PROJECT_ROADMAP.md`,
-  `docs/M14.3_RELEASE_NOTES.md`, and `docs/M14.3_SECURITY_CHANGELOG.md`) into
-  `main`.
+- PR #17 (`emperordoom/utop14`, `main` ← `docs/phase4-m143-closure`, commit
+  `76c5c9735589bba007c2f871c1bc9b823e820ad9`) integrated the Phase 4 closure
+  documentation into `main` at `da869008feb177d88835ee54eac4c0ca4b37158c`
+  (`2026-11-21T10:21:37Z`).
+- Phase 4 completion does **not** close Phase 5 backlog items (B-01 through
+  B-13), does **not** authorize Phase 5 commencement, and does **not**
+  authorize production deployment or production provisioning.
 
 ### Integration and administrative closure record
 
-**Current Phase 4 status breakdown:**
+**Final Phase 4 status breakdown (historically `IN PROGRESS` / `PENDING` prior to PR #17 and formal Project Owner closure approval):**
 
-- PR #14: **MERGED**.
-- M14.3 code/integration: **ACCEPTED** by Project Owner.
+- PR #14: **MERGED** (`75af830c8dcc53b42c621a36f3a8e99a64fc4881`).
+- PR #17 (Phase 4 closure documentation): **MERGED** (`da869008feb177d88835ee54eac4c0ca4b37158c`).
+- M14.3 code/integration (`d37648b`): **ACCEPTED** by Project Owner.
 - B-10: **ACCEPTED** by Project Owner with documented scope.
-- Phase 4 administrative closure: **PENDING**.
-- Documentation integration into `main`: **PENDING**.
+- M14.3.23 independent review evidence: **ACCEPTED** by Project Owner.
+- Phase 4 formal closure: **COMPLETE** (**APPROVE COMPLETE** by Project Owner).
 - Production deployment: **NOT AUTHORIZED / NOT PERFORMED** as part of this
   phase.
-- Phase 5 formal commencement: **NOT YET APPROVED**.
+- Production provisioning: **NOT AUTHORIZED**.
+- Phase 5 formal commencement: **NOT STARTED / NOT YET APPROVED**.
+
+**Formal Project Owner decisions:**
+
+- **Independent review evidence decision:**
+  `ACCEPT — The durable M14.3.23 APPROVED record in docs/PROJECT_ROADMAP.md is accepted as administrative evidence of the independent review for Phase 4, notwithstanding the absence of a standalone review report committed to the repository. GitHub formal review records remain reviews: [].`
+- **Phase 4 closure decision:**
+  `APPROVE COMPLETE — Phase 4 / M14.3 is formally approved for closure following the completion and integration of its administrative closure documentation.`
 
 | Evidence | Result |
 |---|---|
@@ -242,18 +258,24 @@ integrate the approved branch, without deploying.
 | CI-only commit / final PR #14 head | `d37648b61d0d5053cbd61c0ef4fc172f03d3d937` (`.github/workflows/ci.yml` only — adds fail-closed disposable PostgreSQL privilege job; zero changes to `app/`, `scripts/`, `migrations/`, or `tests/`) |
 | Project Owner decision on `d37648b` | **ACCEPTED** as part of PR #14 integration |
 | Project Owner decision on B-10 | **ACCEPTED** with documented scope (see B-10 rationale below) |
+| Project Owner decision on M14.3.23 review evidence | **ACCEPTED** (durable roadmap record accepted; GitHub formal reviews remain `reviews: []`) |
 | PR #14 CI checks (`d37648b`) | **PASSED** — runs `42106435696` (`pull_request`) and `42106423779` (`push`), covering `Tests and quality gates` and `Disposable PostgreSQL ownership and privilege tests` |
 | PR #14 merge commit on `main` | `75af830c8dcc53b42c621a36f3a8e99a64fc4881` (merged `2026-11-05T20:59:55Z`) |
 | Post-merge `main` CI (`75af830`) | **SUCCESSFUL** (run `42108528343`) |
-| GitHub formal reviews on PR #14 | None recorded (`reviews: []`); documented as a historical governance fact |
-| Release notes & security changelog | [`docs/M14.3_RELEASE_NOTES.md`](M14.3_RELEASE_NOTES.md), [`docs/M14.3_SECURITY_CHANGELOG.md`](M14.3_SECURITY_CHANGELOG.md) (pending integration into `main`) |
+| GitHub formal reviews on PR #14 | None recorded (`reviews: []`); preserved as a historical governance fact |
+| Closure documentation PR (#17) | **MERGED** (`2026-11-21T10:21:37Z`) — commit `76c5c9735589bba007c2f871c1bc9b823e820ad9`, merge commit `da869008feb177d88835ee54eac4c0ca4b37158c`, CI runs `44893514786` (`pull_request`) & `44893971048` (`push`) **SUCCESSFUL** (GitHub formal reviews: `reviews: []`) |
+| Release notes & security changelog | [`docs/M14.3_RELEASE_NOTES.md`](M14.3_RELEASE_NOTES.md), [`docs/M14.3_SECURITY_CHANGELOG.md`](M14.3_SECURITY_CHANGELOG.md) (**INTEGRATED** on `main` via PR #17) |
+| Project Owner Phase 4 closure decision | **APPROVE COMPLETE** |
 
 ### Evidence required to mark complete
 
-- Review report with verdict and commit SHA — satisfied (M14.3.23 independent review APPROVED for `a8e9a9b6ea251f9bb183e373f218764e68538481`; subsequent doc-only `de32fe1eada8e5d39b8a86846c0fb50472a4e10f` and CI-only final PR #14 head `d37648b61d0d5053cbd61c0ef4fc172f03d3d937` verified via diff review and accepted by Project Owner; no formal GitHub review recorded on PR #14, `reviews: []`).
-- Remote PR head equal to the accepted SHA and CI green on that head — satisfied (`d37648b61d0d5053cbd61c0ef4fc172f03d3d937`, runs `42106435696` & `42106423779`).
-- Merge commit on the `main` branch — satisfied (`75af830c8dcc53b42c621a36f3a8e99a64fc4881`, post-merge CI run `42108528343`).
-- Closure documentation (`README.md`, `docs/PROJECT_ROADMAP.md`, `docs/M14.3_RELEASE_NOTES.md`, `docs/M14.3_SECURITY_CHANGELOG.md`) integrated into `main` — **PENDING**.
+- Review report with verdict and commit SHA — **satisfied** (M14.3.23 independent review APPROVED for `a8e9a9b6ea251f9bb183e373f218764e68538481`; subsequent doc-only `de32fe1eada8e5d39b8a86846c0fb50472a4e10f` and CI-only final PR #14 head `d37648b61d0d5053cbd61c0ef4fc172f03d3d937` verified via diff review and accepted by Project Owner; Project Owner formally **ACCEPTED** the durable M14.3.23 record in `docs/PROJECT_ROADMAP.md` as administrative review evidence, with GitHub formal reviews remaining `reviews: []`).
+- Remote PR head equal to the accepted SHA and CI green on that head — **satisfied** (`d37648b61d0d5053cbd61c0ef4fc172f03d3d937`, runs `42106435696` & `42106423779`).
+- Merge commit on the `main` branch — **satisfied** (`75af830c8dcc53b42c621a36f3a8e99a64fc4881`, post-merge CI run `42108528343`).
+- Closure documentation (`README.md`, `docs/PROJECT_ROADMAP.md`, `docs/M14.3_RELEASE_NOTES.md`, `docs/M14.3_SECURITY_CHANGELOG.md`) integrated into `main` — **satisfied** (PR #17 merged at `da869008feb177d88835ee54eac4c0ca4b37158c`, CI runs `44893514786` & `44893971048` successful).
+- Formal Project Owner closure decision — **satisfied** (**APPROVE COMPLETE**).
+
+Completion of Phase 4 means M14.3 approval, integration, and administrative closure records are complete. It does **not** close Phase 5 backlog items (B-01 through B-13), does **not** start Phase 5, and does **not** authorize production provisioning or deployment.
 
 ---
 
@@ -425,24 +447,27 @@ evidence and sign-off. Nothing in this roadmap authorizes a deployment.
 
 | Item | Value |
 |---|---|
-| Current phase | Phase 4 — Independent approval and M14.3 integration (`IN PROGRESS` — administrative closure **PENDING**) |
+| Last completed phase | Phase 4 — Independent approval and M14.3 integration (**COMPLETE** — Project Owner **APPROVE COMPLETE**) |
 | PR #14 status | **MERGED** (`75af830c8dcc53b42c621a36f3a8e99a64fc4881`, `2026-11-05T20:59:55Z`) |
+| PR #17 status (Phase 4 closure docs) | **MERGED** (`da869008feb177d88835ee54eac4c0ca4b37158c`, `2026-11-21T10:21:37Z`, CI `44893514786` / `44893971048` successful) |
 | M14.3 code / integration (`d37648b`) | **ACCEPTED** by Project Owner |
 | B-10 trust boundary | **ACCEPTED** by Project Owner with documented scope |
-| Documentation integration into `main` | **PENDING** |
+| M14.3.23 review evidence | **ACCEPTED** by Project Owner (durable roadmap record accepted; GitHub formal reviews remain `reviews: []`) |
 | Last completed independent review | M14.3.23 (**APPROVED** for `a8e9a9b6ea251f9bb183e373f218764e68538481`), followed by doc-only `de32fe1eada8e5d39b8a86846c0fb50472a4e10f` and diff review + Project Owner acceptance of CI-only `d37648b61d0d5053cbd61c0ef4fc172f03d3d937` (no formal GitHub review recorded, `reviews: []`) |
-| Next checkpoint | Integration of Phase 4 closure documentation into `main` |
-| Phase 5 formal commencement | **NOT YET APPROVED** (`NOT STARTED`) |
-| Remaining high-level phases | 3 (Phases 4, 5, 6) |
+| Next checkpoint | Project Owner decision on formal Phase 5 commencement (not yet approved) |
+| Phase 5 formal commencement | **NOT STARTED / NOT YET APPROVED** |
+| Remaining high-level phases | 2 (Phases 5, 6) |
 | Outstanding blockers | B-01 … B-13 (Phase 5; PR #15 & PR #16 merged on `main` but do not auto-close Phase 5 criteria) |
 | Development complete | **NO** |
+| Production provisioning authorized | **NO** |
 | Production deployment authorized | **NO** |
 
 ### Milestone history (most recent first)
 
 | Milestone | Outcome |
 |---|---|
-| Phase 4 closure docs | Prepared `docs/M14.3_RELEASE_NOTES.md`, `docs/M14.3_SECURITY_CHANGELOG.md`, and roadmap/README updates recording Project Owner acceptance of B-10 and `d37648b`; integration into `main` **PENDING** |
+| Phase 4 formal closure | Project Owner issued **ACCEPT** for M14.3.23 durable review evidence and **APPROVE COMPLETE** for Phase 4 / M14.3 following PR #17 (`da869008`); Phase 5 remains `NOT STARTED` and production remains `NOT AUTHORIZED` |
+| PR #17 (`da869008`) | Merged `docs/phase4-m143-closure` (`76c5c973`) into `main` (`2026-11-21T10:21:37Z`, CI `44893514786` / `44893971048` successful; `reviews: []`), integrating `docs/M14.3_RELEASE_NOTES.md`, `docs/M14.3_SECURITY_CHANGELOG.md`, and roadmap/README closure records |
 | PR #16 (`5fac70ee`) | Merged `feature/retention-time-runlog-integrity` (`64d15105`) into `main` (`2026-11-06T08:22:57Z`, CI `42187271370` successful); relevant to retention time/run-log integrity, does not auto-close Phase 5 criteria |
 | PR #15 (`661a75a1`) | Merged `feature/admin-security-event-filter-state` (`3a4a5294`) into `main` (`2026-11-06T06:00:34Z`, CI `42171754682` successful); relevant to B-01, does not auto-close B-01 criteria |
 | PR #14 (`75af830c`) | Merged `feature/security-retention-ownership-fix` (`d37648b6`) into `main` (`2026-11-05T20:59:55Z`, CI `42106435696` / `42106423779` / `42108528343` passed; no formal GitHub review recorded) |

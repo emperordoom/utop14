@@ -6,21 +6,26 @@ UTOP14 is a streetwear e-commerce platform built for Well Architected SOC 14.
 
 - See [`docs/PROJECT_ROADMAP.md`](docs/PROJECT_ROADMAP.md) for the durable
   phase-by-phase status, checkpoint evidence, and outstanding blockers.
-- PR #14 (M14.3, merge commit `75af830c8dcc53b42c621a36f3a8e99a64fc4881`) is
-  **MERGED** on `main`, and the Project Owner has accepted M14.3
-  code/integration (`d37648b61d0d5053cbd61c0ef4fc172f03d3d937`) and the B-10
-  trust boundary. Phase 4 administrative closure remains **PENDING** until the
-  closure documentation
-  ([`docs/M14.3_RELEASE_NOTES.md`](docs/M14.3_RELEASE_NOTES.md),
-  [`docs/M14.3_SECURITY_CHANGELOG.md`](docs/M14.3_SECURITY_CHANGELOG.md), and
-  roadmap updates) is integrated into `main`.
-- Phase 5 formal commencement is not yet approved. Statements in milestone
-  sections below describing code-level items (such as M14.2 F-02 or RR-04) as
-  remediated reflect code merged on `main` (PR #15 and PR #16) and do **not**
-  automatically close Phase 5 backlog items (B-01 through B-13) in
-  [`docs/PROJECT_ROADMAP.md`](docs/PROJECT_ROADMAP.md) without formal Phase 5
-  verification and approval. Development is not complete, and production
-  deployment is not authorized.
+- **Phase 4 / M14.3 is COMPLETE** (formally approved by the Project Owner
+  following integration of PR #14 at `75af830c8dcc53b42c621a36f3a8e99a64fc4881`
+  and administrative closure documentation via PR #17 at
+  `da869008feb177d88835ee54eac4c0ca4b37158c`, including
+  [`docs/M14.3_RELEASE_NOTES.md`](docs/M14.3_RELEASE_NOTES.md) and
+  [`docs/M14.3_SECURITY_CHANGELOG.md`](docs/M14.3_SECURITY_CHANGELOG.md)).
+  Project Owner decisions accepting `d37648b61d0d5053cbd61c0ef4fc172f03d3d937`,
+  the B-10 trust boundary, and the durable M14.3.23 review record (with GitHub
+  formal reviews remaining `reviews: []`) are recorded in
+  [`docs/PROJECT_ROADMAP.md`](docs/PROJECT_ROADMAP.md). Phase 4 completion is
+  a development/integration milestone only and does **not** constitute
+  production readiness.
+- **Phase 5 is NOT STARTED** (formal commencement is **NOT YET APPROVED**).
+  Statements in milestone sections below describing code-level items (such as
+  M14.2 F-02 or RR-04) as remediated reflect code merged on `main` (PR #15 and
+  PR #16) and do **not** automatically close Phase 5 backlog items (B-01
+  through B-13) in [`docs/PROJECT_ROADMAP.md`](docs/PROJECT_ROADMAP.md) without
+  formal Phase 5 verification and approval. Development is not complete;
+  production deployment and production provisioning are **NOT AUTHORIZED** and
+  have **NOT** been performed.
 
 ## Technology
 
