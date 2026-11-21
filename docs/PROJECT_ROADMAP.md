@@ -1,6 +1,6 @@
 # UTOP14 — Project Roadmap and Status
 
-Last updated: Phase 4 / M14.3 formally CLOSED (`COMPLETE`) following Project Owner decision and PR #17 (`da869008feb177d88835ee54eac4c0ca4b37158c`) integration (2026-11-21)
+Last updated: Phase 5 administrative roadmap update recording Project Owner decisions after PR #19 (`2add65e5a0bd9d8ba943e92df05945ba9ad0d0a9`) and M15.2 Remaining Security Findings Assessment (2026-11-21)
 
 This document is the durable status record for the UTOP14 development effort.
 It separates **development completion** from **production readiness**: a phase
@@ -281,7 +281,7 @@ Completion of Phase 4 means M14.3 approval, integration, and administrative clos
 
 ## Phase 5 — Remaining security and functional backlog
 
-**Status: NOT STARTED**
+**Status: IN PROGRESS** *(formally started upon Project Owner `APPROVE START` authorization at M15.1; Phase 4 closure did not start Phase 5 automatically)*
 
 ### Phase objective
 
@@ -290,62 +290,147 @@ outside the M14.3 hardening scope.
 
 ### Included milestones / workstreams
 
-The following items are known, open, and **not fixed**. None may be marked
-complete without its own milestone and evidence.
+No item may be marked closed or accepted without its own milestone evidence and
+explicit Project Owner decision.
 
 | ID | Item | State | Classification |
 |---|---|---|---|
-| B-01 | M14.2 F-02: query-string, access-log, redirect, and referrer exposure | Open | Required before development acceptance |
+| B-01 | M14.2 F-02: query-string, access-log, redirect, and referrer exposure | **CLOSED (code aspect)**; F-B01-05 **ACCEPTED**; F-B01-OPS **NEEDS VERIFICATION** | Code closed; Nginx/Gunicorn access-log verification required before production |
 | B-02 | Targeted login denial-of-service (identifier bucket) | Open | Required before development acceptance |
-| B-03 | Application clock-skew considerations | Open | Required before development acceptance |
+| B-03 | Application clock-skew considerations | Open (retention domain implemented; F-B03-01 **DEFERRED**; non-retention domains open) | Required before development acceptance |
 | B-04 | Retention hold extension and metadata mutation boundary (RR-03) | Open | Required before development acceptance |
-| B-05 | Retention run-log spoofing boundary (RR-04) | Open | Required before development acceptance |
+| B-05 | Retention run-log spoofing boundary (RR-04) | **CLOSED** (F-B05-04 **ACCEPTED WITH OPERATIONAL CONDITIONS**; F-B05-03 **DEFERRED**) | Closed with residual risk F-B05-04 and mandatory B-07 operational controls |
 | B-06 | Retention scheduler; rate-limit TTL and run-log cleanup | Open | Operational prerequisite for production only |
-| B-07 | Runner credentials, monitoring, backup/restore, operational runbook | Open | Operational prerequisite for production only |
+| B-07 | Runner credentials, monitoring, backup/restore, operational runbook | Open *(NOT complete)* | Operational prerequisite for production only |
 | B-08 | Privacy / data-classification sign-off | Open | Required before development acceptance |
-| B-09 | App `DELETE` privilege on `auth_rate_limits` | **Accepted risk** | Accepted risk requiring explicit documented acceptance |
+| B-09 | App `DELETE` privilege on `auth_rate_limits` | **ACCEPTED** *(confirmed at Phase 5 checkpoint)* | Accepted risk requiring explicit documented acceptance |
 | B-10 | DBA / schema-owner trust boundary | **Accepted boundary** | Accepted risk requiring explicit documented acceptance |
-| B-11 | Extension-owned objects outside the application ACL matrix | **Accepted exclusion** | Accepted risk requiring explicit documented acceptance |
+| B-11 | Extension-owned objects outside the application ACL matrix | **ACCEPTED** *(confirmed at Phase 5 checkpoint; F-B11-01 preventive rule)* | Accepted risk requiring explicit documented acceptance |
 | B-12 | Connection-pool recycling after provisioning | Documented operational step | Operational prerequisite for production only |
 | B-13 | Cluster-level configuration invisible to PostgreSQL catalogs | DBA audit procedure | Operational prerequisite for production only |
 
-Classification records where an item must be resolved; it does **not** close the
-item. Every row above remains open or accepted, never fixed.
+Classification records where an item must be resolved; it does **not** by itself
+close the item. Only items with verified evidence and an explicit Project Owner
+decision recorded below move to **CLOSED** or **ACCEPTED**.
 
-### Subsequent PRs merged on `main` (distinct from Phase 4 / M14.3 and Phase 5 closure)
+### Subsequent PRs merged on `main` (historical record prior to M15.1 review)
 
-Merging a pull request into `main` does **not** by itself close Phase 5 backlog
-items or start Phase 5 formally. Formal Phase 5 commencement is **NOT YET
-APPROVED**, and each backlog item requires its own acceptance-criteria
-verification before its state can change:
+Merging a pull request into `main` did **not** by itself close Phase 5 backlog
+items or start Phase 5 formally. Each item required independent review (M15.1),
+remediation where needed (M15.1b / PR #19), and explicit Project Owner approval:
 
 - **PR #15** (`feature/admin-security-event-filter-state`, head
   `3a4a52948dc1d562588caead3dbd8261b02ec240`) — merged into `main` at
   `661a75a195b161390756e84074a5598fa63eb522` (`2026-11-06T06:00:34Z`),
-  post-merge CI run `42171754682` successful. Relevant to **B-01**; does not
-  automatically close B-01's acceptance criteria.
+  post-merge CI run `42171754682` successful. Relevant to **B-01**; did not
+  automatically close B-01's acceptance criteria (subsequently reviewed in M15.1
+  and remediated in M15.1b / PR #19).
 - **PR #16** (`feature/retention-time-runlog-integrity`, head
   `64d1510558a3d4629757f30e61eb66c9127e560d`) — merged into `main` at
   `5fac70ee63628da06d4597d9a4ed4708743e6755` (`2026-11-06T08:22:57Z`),
   post-merge CI run `42187271370` successful. Relevant to retention time and
-  run-log integrity; does not automatically close Phase 5 acceptance criteria.
+  run-log integrity; did not automatically close Phase 5 acceptance criteria
+  (subsequently reviewed in M15.1 and remediated in M15.1b / PR #19).
 
 **Note on `README.md` status wording:** `README.md` on `main` contains
 `remediated` statements reflecting code implemented in subsequent PRs (PR #15
 and PR #16). Those statements describe code implementation on `main` only and
-do **not** automatically close Phase 5 backlog items B-01, B-03, or B-05 in this
-roadmap; formal backlog closure still requires verification and approval under
-the Phase 5 process.
+do **not** automatically close Phase 5 backlog items; formal backlog closure
+requires independent verification and Project Owner approval under the Phase 5
+process.
 
-**Deferred enhancement:** none recorded at this checkpoint. New candidates must
-be added here with an explicit decision before they are treated as deferred.
+### M15.1, M15.1b (PR #19), and M15.2 administrative decision record (2026-11-21)
+
+- **M15.1 Independent Security Review:** Read-only review of PR #15 (`661a75a1`)
+  and PR #16 (`5fac70ee`) on baseline `97d98531` returned verdict
+  **APPROVED WITH CONDITIONS**, identifying two MEDIUM findings (`F-B01-01`,
+  `F-B05-01`), one test-coverage defect (`F-B01-04`), and LOW/informational
+  items.
+- **M15.1b Integration (PR #19):**
+  - **PR #19** (`fix(security): remediate M15.1b review findings`, `main` ←
+    `fix/m15-1b-security-remediation`, head
+    `b13af181b9cf9af94a2c39036fc4f861373bdaa2`) is **MERGED** into `main` at
+    merge commit `2add65e5a0bd9d8ba943e92df05945ba9ad0d0a9`
+    (`2026-11-21T11:32:46Z`).
+  - **Post-merge CI run `44899619448`:** **SUCCESSFUL** on both jobs (`Tests and
+    quality gates` and `Disposable PostgreSQL ownership and privilege tests`).
+  - **Findings fixed in M15.1b:** `F-B01-01`, `F-B05-01`, `F-B01-04`,
+    `F-B01-02`, `F-B01-03`, and `F-B05-02` (no Alembic migration added; head
+    remains `f5d2b8c3e1a6`; the three SQL scripts were not modified).
+- **M15.2 Remaining Security Findings Assessment (`2026-11-21`, baseline
+  `2add65e5a0bd9d8ba943e92df05945ba9ad0d0a9`):** Formed the basis for the formal
+  Project Owner administrative decisions recorded below:
+  - **B-01 — Sensitive Query Parameter Exposure:**
+    - `F-B01-05`: **ACCEPTED** (basis: trust boundary M14.4.1.1 F-01 on
+      `admin_security_event_filter_states`, supported by verified application
+      controls and database privilege restrictions).
+    - Code aspect of B-01: **CLOSED**.
+    - `F-B01-OPS`: excluded from code closure and retained as **Production
+      Deployment Prerequisite — NEEDS VERIFICATION** (Nginx/Gunicorn access-log
+      configuration verification remains mandatory before production deployment
+      and has **not** been verified).
+  - **B-05 — Retention Run-Log Integrity:**
+    - `F-B05-04`: **ACCEPTED WITH OPERATIONAL CONDITIONS**:
+      1. Protect `utop14_retention_runner` credentials.
+      2. Isolate the OS/runner account.
+      3. Monitor orphan `started` runs and run-log flooding indications.
+      4. Establish a DBA orphan reconciliation procedure in operational runbook
+         **B-07** *(runbook B-07 remains Open / NOT complete)*.
+    - `F-B05-03`: **DEFERRED** until a future migration naturally modifies the
+      retention functions (no dedicated migration solely for `pg_catalog.`
+      qualification or cosmetic cleanup).
+    - B-05: **CLOSED** with accepted residual risk `F-B05-04` and mandatory
+      operational controls tracked under **B-07**.
+  - **B-09 — `auth_rate_limits`:** Confirmed **ACCEPTED** at the Phase 5
+    checkpoint (no change in risk context requiring re-review).
+  - **B-11 — Extension-Owned Objects:** Confirmed **ACCEPTED** at the Phase 5
+    checkpoint. Preventive obligation `F-B11-01` recorded: any new PostgreSQL
+    extension added in the future must undergo an explicit ACL audit. Current
+    approved extension allowlist remains `plpgsql`.
+  - **B-03 — Security Event Retention (`F-B03-01`):** `F-B03-01` is
+    **DEFERRED**; same-cluster architecture remains the recommended baseline
+    until database architecture and credential-separation requirements are
+    finalized (no `check-clock` or runner-DSN code change performed here).
+    **B-03 as a whole remains OPEN** because unreviewed non-retention domains
+    remain open for subsequent work.
+
+**Deferred items:**
+
+- **`F-B05-03` (DEFERRED):** Explicit `pg_catalog.` qualification of catalog
+  function calls inside retention migration `f5d2b8c3e1a6` and cosmetic ORM
+  cleanup (`finished_at` default) — deferred until a future migration naturally
+  modifies retention functions (currently protected by
+  `SET search_path = pg_catalog, public`).
+- **`F-B03-01` (DEFERRED):** Supporting `SECURITY_EVENT_RETENTION_DATABASE_URL`
+  in `check-clock` / retention clock diagnostics — deferred while same-cluster
+  remains the recommended baseline until database architecture and credential
+  separation requirements are decided.
+
+New deferred candidates must be added here with an explicit decision before they
+are treated as deferred.
 
 ### Acceptance rationale (accepted items only)
 
+- **F-B01-05 (B-01) — `admin_security_event_filter_states` app-role trust
+  boundary (M14.4.1.1 F-01).** Project Owner decision: **ACCEPTED** (2026-11-21)
+  based on verified application-layer admin authorization, opaque 256-bit token
+  SHA-256 hashing, per-admin scoping, M15.1b redirect/header hardening, and
+  least-privilege database role restrictions (`utop14_app` CRUD only; retention
+  roles and `PUBLIC` denied). Does **not** close `F-B01-OPS` (Nginx/Gunicorn
+  access-log verification remains **NEEDS VERIFICATION** prior to production).
+- **F-B05-04 (B-05) — `utop14_retention_runner` residual trust boundary.**
+  Project Owner decision: **ACCEPTED WITH OPERATIONAL CONDITIONS** (2026-11-21).
+  The runner cannot forge `deleted_count`, spoof `executed_by`, bypass 90/180-day
+  cutoffs, or write run-log rows directly, but a compromised runner credential
+  could still create `started`/`failed`/`deleted_count=0` noise. Mandatory
+  operational conditions: runner credential protection, OS/runner account
+  isolation, orphan/flooding monitoring, and a DBA orphan reconciliation
+  procedure in runbook **B-07** *(runbook B-07 is NOT complete)*.
 - **B-09 — App `DELETE` on `auth_rate_limits`.** Accepted because the
   application must remove expired rate-limit buckets to keep the table bounded,
   and the table contains no audit-grade data. Decision checkpoint: Phase 5
-  review; revisit if rate-limit history becomes an investigation requirement.
+  review (**CONFIRMED ACCEPTED**, 2026-11-21; no change in risk context; revisit
+  if rate-limit history becomes an investigation requirement).
 - **B-10 — DBA / schema-owner trust boundary.** Project Owner decision:
   `ACCEPT — B-10 is accepted as an infrastructure trust boundary. The verifier's guarantees apply to application and retention roles. DBA/schema-owner authority remains outside that guarantee and must be governed through separate operational controls.`
   Scope limitation at PR #14 (`d37648b61d0d5053cbd61c0ef4fc172f03d3d937` /
@@ -362,7 +447,10 @@ be added here with an explicit decision before they are treated as deferred.
   checkpoint: Phase 4 owner sign-off (**ACCEPTED**).
 - **B-11 — Extension-owned objects.** Accepted exclusion: extension-managed
   objects are outside the application ACL matrix and are inventoried separately.
-  Decision checkpoint: Phase 5 review.
+  Baseline extension allowlist remains `plpgsql`. Preventive obligation
+  `F-B11-01`: every future PostgreSQL extension addition requires an explicit
+  ACL audit. Decision checkpoint: Phase 5 review (**CONFIRMED ACCEPTED**,
+  2026-11-21).
 - **B-12 — Connection-pool recycling.** Documented operational step: pooled
   connections keep their old `search_path` until they reconnect. Decision
   checkpoint: deployment runbook (deferred, see below).
@@ -378,8 +466,12 @@ be added here with an explicit decision before they are treated as deferred.
 
 ### Dependencies and known blockers
 
-- B-01 and B-08 require product/security decisions outside engineering.
-- B-07 requires infrastructure work that is deferred (see below).
+- B-08 requires product/security privacy sign-off outside engineering.
+- B-02, B-03 (non-retention domains), and B-04 remain open engineering/design
+  decisions.
+- B-06, B-07 (including F-B05-04 operational conditions and DBA orphan
+  reconciliation runbook), and F-B01-OPS (Nginx/Gunicorn access-log
+  verification) require deferred production infrastructure work (see below).
 
 ### Evidence required to mark complete
 
@@ -432,6 +524,12 @@ the development phases complete:
 - PostgreSQL VM configuration, tuning, and hardening.
 - Gunicorn process management and supervision.
 - Nginx reverse proxy, TLS termination, and static asset serving.
+- **F-B01-OPS (`NEEDS VERIFICATION`):** Nginx and Gunicorn access-log
+  configuration verification ensuring legacy or third-party sensitive query
+  parameters are not logged in production (not yet verified).
+- **B-07 operational controls for F-B05-04 (`Open` — NOT complete):**
+  `utop14_retention_runner` credential protection, OS/runner account isolation,
+  orphan/flooding monitoring, and DBA orphan reconciliation runbook.
 - Production secrets management and key rotation.
 - Backup, restore, and disaster-recovery procedures.
 - Production monitoring, alerting, and log aggregation.
@@ -447,17 +545,21 @@ evidence and sign-off. Nothing in this roadmap authorizes a deployment.
 
 | Item | Value |
 |---|---|
-| Last completed phase | Phase 4 — Independent approval and M14.3 integration (**COMPLETE** — Project Owner **APPROVE COMPLETE**) |
+| Current phase | Phase 5 — Remaining security and functional backlog (`IN PROGRESS`) |
+| Last completed phase | Phase 4 — Independent approval and M14.3 integration (**COMPLETE** — PR #18 `97d98531`) |
+| Latest merged PR | **PR #19** (`2add65e5a0bd9d8ba943e92df05945ba9ad0d0a9`, `2026-11-21T11:32:46Z`, post-merge CI `44899619448` successful on both jobs) |
 | PR #14 status | **MERGED** (`75af830c8dcc53b42c621a36f3a8e99a64fc4881`, `2026-11-05T20:59:55Z`) |
 | PR #17 status (Phase 4 closure docs) | **MERGED** (`da869008feb177d88835ee54eac4c0ca4b37158c`, `2026-11-21T10:21:37Z`, CI `44893514786` / `44893971048` successful) |
 | M14.3 code / integration (`d37648b`) | **ACCEPTED** by Project Owner |
 | B-10 trust boundary | **ACCEPTED** by Project Owner with documented scope |
 | M14.3.23 review evidence | **ACCEPTED** by Project Owner (durable roadmap record accepted; GitHub formal reviews remain `reviews: []`) |
-| Last completed independent review | M14.3.23 (**APPROVED** for `a8e9a9b6ea251f9bb183e373f218764e68538481`), followed by doc-only `de32fe1eada8e5d39b8a86846c0fb50472a4e10f` and diff review + Project Owner acceptance of CI-only `d37648b61d0d5053cbd61c0ef4fc172f03d3d937` (no formal GitHub review recorded, `reviews: []`) |
-| Next checkpoint | Project Owner decision on formal Phase 5 commencement (not yet approved) |
-| Phase 5 formal commencement | **NOT STARTED / NOT YET APPROVED** |
+| Phase 5 closed backlog items | **B-01** (code aspect **CLOSED**; F-B01-05 **ACCEPTED**; F-B01-OPS **NEEDS VERIFICATION** before production), **B-05** (**CLOSED**; F-B05-04 **ACCEPTED WITH OPERATIONAL CONDITIONS** under B-07; F-B05-03 **DEFERRED**) |
+| Phase 5 confirmed accepted items | **B-09** (**ACCEPTED**), **B-11** (**ACCEPTED**; F-B11-01 preventive ACL audit rule; allowlist `plpgsql`) |
+| Phase 5 open development items | **B-02**, **B-03** (F-B03-01 **DEFERRED**; non-retention domains open), **B-04**, **B-08** |
+| Phase 5 open production prerequisites | **B-06**, **B-07** *(runbook NOT complete)*, **F-B01-OPS** (`NEEDS VERIFICATION`), **B-12**, **B-13** |
+| Last completed security assessment | M15.2 Remaining Security Findings Assessment (`2026-11-21`, baseline `2add65e5a0bd9d8ba943e92df05945ba9ad0d0a9`) |
+| Next checkpoint | Project Owner decision on next Phase 5 workstream (B-02, B-03 non-retention domains, B-04, B-08) |
 | Remaining high-level phases | 2 (Phases 5, 6) |
-| Outstanding blockers | B-01 … B-13 (Phase 5; PR #15 & PR #16 merged on `main` but do not auto-close Phase 5 criteria) |
 | Development complete | **NO** |
 | Production provisioning authorized | **NO** |
 | Production deployment authorized | **NO** |
@@ -466,7 +568,12 @@ evidence and sign-off. Nothing in this roadmap authorizes a deployment.
 
 | Milestone | Outcome |
 |---|---|
-| Phase 4 formal closure | Project Owner issued **ACCEPT** for M14.3.23 durable review evidence and **APPROVE COMPLETE** for Phase 4 / M14.3 following PR #17 (`da869008`); Phase 5 remains `NOT STARTED` and production remains `NOT AUTHORIZED` |
+| Phase 5 admin update (2026-11-21) | Recorded Project Owner decisions from M15.2: B-01 code aspect **CLOSED** (`F-B01-05` **ACCEPTED**, `F-B01-OPS` **NEEDS VERIFICATION**), B-05 **CLOSED** (`F-B05-04` **ACCEPTED WITH OPERATIONAL CONDITIONS** under B-07, `F-B05-03` **DEFERRED**), B-09 & B-11 confirmed **ACCEPTED** (`F-B11-01` recorded), and `F-B03-01` **DEFERRED** (B-03 non-retention domains remain Open) |
+| M15.2 assessment (2026-11-21) | Read-only Remaining Security Findings Assessment on baseline `2add65e5a0bd9d8ba943e92df05945ba9ad0d0a9`; 0 CRITICAL, HIGH, or MEDIUM findings within the assessed scope |
+| PR #19 / M15.1b (`2add65e5`) | Merged `fix/m15-1b-security-remediation` (`b13af181`) into `main` (`2026-11-21T11:32:46Z`, post-merge CI `44899619448` successful on both jobs); fixed `F-B01-01`, `F-B05-01`, `F-B01-04`, `F-B01-02`, `F-B01-03`, and `F-B05-02` |
+| M15.1 review (2026-11-21) | Phase 5 started upon Project Owner approval; independent read-only review of PR #15 & PR #16 on `97d98531` returned **APPROVED WITH CONDITIONS** |
+| PR #18 (`97d98531`) | Merged `docs/phase4-formal-closure` (`a11e861c`) into `main` (`2026-11-21T10:46:31Z`, CI `44895507794` / `44895928793` successful), formally closing Phase 4 / M14.3 |
+| Phase 4 formal closure | Project Owner issued **ACCEPT** for M14.3.23 durable review evidence and **APPROVE COMPLETE** for Phase 4 / M14.3 following PR #17 (`da869008`); Phase 5 remained `NOT STARTED` at Phase 4 closure and production remains `NOT AUTHORIZED` |
 | PR #17 (`da869008`) | Merged `docs/phase4-m143-closure` (`76c5c973`) into `main` (`2026-11-21T10:21:37Z`, CI `44893514786` / `44893971048` successful; `reviews: []`), integrating `docs/M14.3_RELEASE_NOTES.md`, `docs/M14.3_SECURITY_CHANGELOG.md`, and roadmap/README closure records |
 | PR #16 (`5fac70ee`) | Merged `feature/retention-time-runlog-integrity` (`64d15105`) into `main` (`2026-11-06T08:22:57Z`, CI `42187271370` successful); relevant to retention time/run-log integrity, does not auto-close Phase 5 criteria |
 | PR #15 (`661a75a1`) | Merged `feature/admin-security-event-filter-state` (`3a4a5294`) into `main` (`2026-11-06T06:00:34Z`, CI `42171754682` successful); relevant to B-01, does not auto-close B-01 criteria |
