@@ -96,7 +96,7 @@
         <div class="admin-order-card">
           <div class="order-panel__header">
             <p class="mono" id="admin-order-summary-title">Financials</p>
-            <p class="mono">USD</p>
+            <p class="mono">IDR</p>
           </div>
           <dl class="checkout-totals">
             <div>
@@ -117,7 +117,13 @@
         <div class="admin-order-card">
           <div class="order-panel__header">
             <p class="mono">Payment attempts</p>
-            <p class="mono">Read-only / IDR</p>
+            <p class="mono">
+              {% if order.payments and order.payments|rejectattr("currency", "equalto", "IDR")|list %}
+                Read-only / Currency check required
+              {% else %}
+                Read-only / IDR
+              {% endif %}
+            </p>
           </div>
 
           {% if order.payments %}
@@ -126,9 +132,12 @@
                 <li class="payment-attempt">
                   <div>
                     <p class="mono">{{ payment.payment_reference }}</p>
-                    <p class="payment-attempt__amount">{{ payment.amount|money }}</p>
+                    <p class="payment-attempt__amount">{{ payment|payment_money }}</p>
                     <p class="payment-attempt__meta">
                       {{ payment.provider }} / {{ payment.payment_method }}
+                      {% if payment.currency != "IDR" %}
+                        · unsupported currency ({{ payment.currency or 'unknown' }})
+                      {% endif %}
                       {% if payment.status == 'pending' %}
                         · expires {{ payment.expires_at.strftime("%d %b %Y, %H:%M UTC") }}
                       {% elif payment.paid_at %}
@@ -146,7 +155,11 @@
             <p class="order-summary__note">No payment attempt yet.</p>
           {% endif %}
 
-          <p class="simulation-note">SIMULATION ONLY — NO REAL MONEY</p>
+          {% if has_simulated_payments or (not order.payments and simulation_enabled) %}
+            <p class="simulation-note">SIMULATION ONLY — NO REAL MONEY</p>
+          {% elif has_manual_payments %}
+            <p class="simulation-note">Manual bank transfer requires admin proof review.</p>
+          {% endif %}
         </div>
 
         <div class="admin-order-card">

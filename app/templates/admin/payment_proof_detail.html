@@ -111,19 +111,27 @@
 
         {% if proof.status == "pending_review" %}
           <div class="proof-review-actions">
-            <form
-              class="proof-review-form"
-              method="post"
-              action="{{ url_for('admin.payment_proof_approve', proof_id=proof.id) }}"
-              data-confirm="Approve this proof and mark order {{ proof.payment.order.order_number }} as paid?"
-            >
-              {{ approve_form.hidden_tag() }}
-              <p class="admin-note">
-                Approval marks this payment attempt paid, sets the order payment
-                status to paid and closes other pending attempts for the order.
-              </p>
-              <button class="button button--primary" type="submit">Approve proof</button>
-            </form>
+            {% if proof.payment.currency == "IDR" %}
+              <form
+                class="proof-review-form"
+                method="post"
+                action="{{ url_for('admin.payment_proof_approve', proof_id=proof.id) }}"
+                data-confirm="Approve this proof and mark order {{ proof.payment.order.order_number }} as paid?"
+              >
+                {{ approve_form.hidden_tag() }}
+                <p class="admin-note">
+                  Approval marks this payment attempt paid, sets the order payment
+                  status to paid and closes other pending attempts for the order.
+                </p>
+                <button class="button button--primary" type="submit">Approve proof</button>
+              </form>
+            {% else %}
+              <div class="proof-review-form">
+                <p class="proof-rejection-reason" role="alert">
+                  Approval is unavailable because this payment uses an unsupported currency ({{ proof.payment.currency or 'unknown' }}). Only IDR payments can be approved.
+                </p>
+              </div>
+            {% endif %}
 
             <form
               class="proof-review-form"
@@ -184,8 +192,22 @@
           </div>
           <div>
             <dt>Amount</dt>
-            <dd>{{ proof.payment.amount|money }} {{ proof.payment.currency }}</dd>
+            <dd>
+              {% if proof.payment.currency == "IDR" %}
+                {{ proof.payment|payment_money }} IDR
+              {% else %}
+                {{ proof.payment|payment_money }}
+              {% endif %}
+            </dd>
           </div>
+          {% if proof.payment.currency != "IDR" %}
+            <div>
+              <dt>Currency status</dt>
+              <dd class="proof-rejection-reason">
+                Unsupported currency ({{ proof.payment.currency or 'unknown' }}). Only IDR payments can be approved.
+              </dd>
+            </div>
+          {% endif %}
           <div>
             <dt>Deadline</dt>
             <dd>{{ proof.payment.expires_at.strftime("%d %b %Y, %H:%M UTC") }}</dd>

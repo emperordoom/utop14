@@ -18,6 +18,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from app.models.base import Base, TimestampMixin, validate_image_path
+from app.money import validate_whole_rupiah
 
 if TYPE_CHECKING:
     from app.models.category import Category
@@ -72,6 +73,10 @@ class Product(TimestampMixin, Base):
         passive_deletes=True,
         order_by="ProductReview.created_at.desc(), ProductReview.id.desc()",
     )
+
+    @validates("price")
+    def _validate_price(self, _key: str, value: Decimal) -> Decimal:
+        return validate_whole_rupiah(value, label="Product price", allow_zero=True)
 
     @validates("image_path")
     def _validate_image_path(self, _key: str, value: str) -> str:

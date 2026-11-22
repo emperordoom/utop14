@@ -12,9 +12,9 @@ from sqlalchemy.orm import joinedload, selectinload
 
 from app.extensions import db
 from app.models import Cart, CartItem, Category, Product, ProductVariant
+from app.money import MoneyValidationError, validate_whole_rupiah
 
 MAX_CART_QUANTITY: Final = 99
-_CENT: Final = Decimal("0.01")
 
 
 class CartError(Exception):
@@ -113,6 +113,15 @@ def add_to_cart(user_id: int, variant_id: int, quantity: int = 1) -> Cart:
     if variant is None:
         raise CartError("That size and colour is not available.")
 
+    try:
+        validate_whole_rupiah(
+            variant.product.price,
+            label="Product price",
+            allow_zero=True,
+        )
+    except (TypeError, MoneyValidationError) as exc:
+        raise CartError("This product cannot be added because its price is invalid.") from exc
+
     if quantity > variant.stock:
         raise CartError(f"Only {variant.stock} available for {variant.size} / {variant.color}.")
 
@@ -176,6 +185,15 @@ def update_cart_item(user_id: int, item_id: int, quantity: int) -> CartItem:
     if variant is None:
         db.session.rollback()
         raise CartError("That item is no longer available.")
+    try:
+        validate_whole_rupiah(
+            variant.product.price,
+            label="Product price",
+            allow_zero=True,
+        )
+    except (TypeError, MoneyValidationError) as exc:
+        db.session.rollback()
+        raise CartError("This product cannot be updated because its price is invalid.") from exc
     if quantity > variant.stock:
         db.session.rollback()
         raise CartError(f"Only {variant.stock} available for {variant.size} / {variant.color}.")
@@ -223,4 +241,4 @@ def clear_cart(user_id: int) -> int:
 
 def calculate_subtotal(cart: Cart) -> Decimal:
     """Calculate the cart subtotal from current database product prices."""
-    return cart.subtotal.quantize(_CENT)
+    return cart.subtotal

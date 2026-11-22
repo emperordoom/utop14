@@ -718,9 +718,11 @@ def test_zero_review_product_renders_empty_state(
 
     assert response.status_code == 200
     html = _html(response)
-    assert "No published reviews" in html
-    assert "Be the first to" in html
-    assert "0.0" not in html
+    reviews_section = html.split('id="reviews"', 1)[1]
+    assert "No published reviews" in reviews_section
+    assert "Be the first to" in reviews_section
+    assert "review-score__average" not in reviews_section
+    assert "0.0" not in reviews_section
 
 
 def test_product_page_paginates_published_reviews(

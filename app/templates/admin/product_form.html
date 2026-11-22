@@ -71,8 +71,8 @@
 
           <div class="admin-form__field">
             {{ form.price.label(class_="form-label") }}
-            {{ form.price(class_="form-control", maxlength="15", inputmode="decimal", placeholder="0.00", autocomplete="off") }}
-            <p class="form-hint">USD, non-negative, at most two decimal places.</p>
+            {{ form.price(class_="form-control", maxlength="15", inputmode="numeric", placeholder="149000", autocomplete="off") }}
+            <p class="form-hint">IDR whole rupiah only, non-negative (e.g. 149000; exact .00 is also accepted).</p>
             {{ field_errors(form.price) }}
           </div>
 

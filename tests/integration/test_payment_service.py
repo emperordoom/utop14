@@ -695,3 +695,52 @@ def test_concurrent_same_key_on_different_orders_creates_one_payment(
         db.session.scalar(select(func.count(Payment.id)).where(Payment.order_id == other_order_id))
         == 0
     )
+
+
+def test_payment_creation_rejects_fractional_order_total(
+    app: Flask,
+    make_user,
+    make_order,
+) -> None:
+    user: User = make_user(email="payment-fractional-create@example.com")
+    order = make_order(user)
+    order.total = Decimal("164000.50")
+    db.session.commit()
+
+    with pytest.raises(PaymentStateError, match="whole rupiah"):
+        create_payment_attempt(user.id, order.order_number, "fractional-create-key")
+
+    assert db.session.scalar(select(func.count(Payment.id))) == 0
+
+
+@pytest.mark.parametrize(
+    ("order_total", "payment_amount"),
+    [
+        (Decimal("164000.00"), Decimal("164000.50")),
+        (Decimal("164000.50"), Decimal("164000.50")),
+    ],
+)
+def test_simulated_settlement_rejects_fractional_amounts(
+    app: Flask,
+    make_user,
+    make_order,
+    order_total: Decimal,
+    payment_amount: Decimal,
+) -> None:
+    user: User = make_user(
+        email=f"payment-fractional-settle-{order_total}-{payment_amount}@example.com"
+    )
+    order = make_order(user)
+    payment = create_payment_attempt(user.id, order.order_number, f"frac-settle-{order_total}")
+    order.total = order_total
+    payment.amount = payment_amount
+    db.session.commit()
+
+    result = process_simulated_payment(user.id, payment.payment_reference, "success")
+
+    assert result.payment.status == PAYMENT_STATUS_FAILED
+    assert "whole rupiah" in result.message.lower()
+    refreshed_payment = _reload_payment(payment)
+    assert refreshed_payment.status == PAYMENT_STATUS_FAILED
+    assert refreshed_payment.paid_at is None
+    assert _reload_order(order).payment_status == "unpaid"

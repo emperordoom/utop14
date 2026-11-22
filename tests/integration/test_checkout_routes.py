@@ -7,7 +7,7 @@ from collections.abc import Callable
 from decimal import Decimal
 
 from flask.testing import FlaskClient
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from app.catalog.seed import SeedSummary
 from app.extensions import db
@@ -84,9 +84,12 @@ def test_checkout_get_renders_form_and_server_totals(
     assert 'value="Form Customer"' in html
     assert "UT014-VT-WBK-M" not in html  # checkout summary uses names, not SKUs
     assert "Void Tee" in html
-    assert "Rp 150" in html
-    assert "Rp 12" in html
-    assert "Rp 162" in html
+    assert "Rp 298.000" in html
+    assert "Rp 15.000" in html
+    assert "Rp 313.000" in html
+    assert "Rp 350.000" in html
+    assert "Payment is not collected in this milestone." not in html
+    assert "USD" not in html
     assert "/static/css/cart.css" in html
 
 
@@ -170,9 +173,9 @@ def test_checkout_success_creates_order_and_confirmation(
 
     order = db.session.scalar(select(Order).where(Order.order_number == order_number))
     assert order is not None
-    assert order.subtotal == 150
-    assert order.shipping_cost == 12
-    assert order.total == 162
+    assert order.subtotal == Decimal("298000.00")
+    assert order.shipping_cost == Decimal("15000.00")
+    assert order.total == Decimal("313000.00")
     assert order.status == "pending"
     assert order.payment_status == "unpaid"
 
@@ -190,9 +193,9 @@ def test_checkout_success_creates_order_and_confirmation(
     assert "Signal" in html
     assert "Void Tee" in html
     assert "UT014-VT-WBK-M" in html
-    assert "Rp 150" in html
-    assert "Rp 12" in html
-    assert "Rp 162" in html
+    assert "Rp 298.000" in html
+    assert "Rp 15.000" in html
+    assert "Rp 313.000" in html
     assert "Pending" in html
     assert "Unpaid" in html
 
@@ -222,9 +225,9 @@ def test_checkout_ignores_browser_supplied_prices(
     assert response.status_code == 302
     order = db.session.scalar(select(Order))
     assert order is not None
-    assert order.subtotal == 150
-    assert order.shipping_cost == 12
-    assert order.total == 162
+    assert order.subtotal == Decimal("298000.00")
+    assert order.shipping_cost == Decimal("15000.00")
+    assert order.total == Decimal("313000.00")
 
 
 def test_checkout_inactive_product_is_rejected(
@@ -383,5 +386,40 @@ def test_order_snapshot_survives_later_catalog_change(
     html = client.get(order_url).get_data(as_text=True)
     assert "Void Tee" in html
     assert "Renamed Product" not in html
-    assert "Rp 75" in html
+    assert "Rp 149.000" in html
     assert "Rp 999" not in html
+
+
+def test_checkout_route_rejects_fractional_legacy_price_cleanly(
+    client: FlaskClient,
+    login: Callable[..., object],
+    make_user: Callable[..., User],
+    csrf_token: Callable[[str], str],
+    seeded_catalog: SeedSummary,
+) -> None:
+    user: User = make_user(email="checkout-frac-route@example.com")
+    login("checkout-frac-route@example.com")
+    variant = _variant("UT014-VT-WBK-M")
+    initial_stock = variant.stock
+    add_to_cart(user.id, variant.id, 1)
+    token = csrf_token("/checkout")
+
+    db.session.execute(
+        update(Product).where(Product.id == variant.product_id).values(price=Decimal("149000.50"))
+    )
+    db.session.commit()
+
+    response = client.post(
+        "/checkout",
+        data=_checkout_data(token),
+    )
+
+    assert response.status_code == 302
+    assert db.session.scalar(select(func.count(Order.id))) == 0
+    db.session.expire_all()
+    refreshed = db.session.get(ProductVariant, variant.id)
+    assert refreshed is not None
+    assert refreshed.stock == initial_stock
+    cart = get_cart_for_user(user.id)
+    assert cart is not None
+    assert len(cart.items) == 1

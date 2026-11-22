@@ -37,7 +37,11 @@ def view_checkout() -> ResponseReturnValue:
     form = CheckoutForm()
     form.recipient_name.data = current_user.full_name
 
-    context = _checkout_context(form)
+    try:
+        context = _checkout_context(form)
+    except CheckoutError as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("storefront.shop"))
     if context is None:
         flash("Your cart is empty.", "info")
         return redirect(url_for("cart.view_cart"))
@@ -51,7 +55,11 @@ def place_order() -> ResponseReturnValue:
     """Validate the destination and create the order transactionally."""
     form = CheckoutForm()
     if not form.validate_on_submit():
-        context = _checkout_context(form)
+        try:
+            context = _checkout_context(form)
+        except CheckoutError as exc:
+            flash(str(exc), "error")
+            return redirect(url_for("storefront.shop"))
         if context is None:
             flash("Your cart is empty.", "info")
             return redirect(url_for("cart.view_cart"))
@@ -68,7 +76,10 @@ def place_order() -> ResponseReturnValue:
         )
     except CheckoutError as exc:
         flash(str(exc), "error")
-        context = _checkout_context(form)
+        try:
+            context = _checkout_context(form)
+        except CheckoutError:
+            return redirect(url_for("storefront.shop"))
         if context is None:
             return redirect(url_for("cart.view_cart"))
         return (

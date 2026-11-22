@@ -6,7 +6,7 @@ from decimal import Decimal
 
 import pytest
 from flask import Flask
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 import app.services.checkout as checkout_service
 from app.catalog.seed import SeedSummary
@@ -17,7 +17,9 @@ from app.services.cart import add_to_cart, get_cart_for_user
 from app.services.checkout import (
     CartEmptyError,
     CartUnavailableError,
+    InvalidAmountError,
     StockError,
+    calculate_shipping,
     checkout,
     get_order_for_user,
 )
@@ -54,9 +56,9 @@ def test_successful_checkout_creates_order_snapshots_and_deducts_stock(
     assert order.order_number.startswith("UT014-")
     assert order.status == ORDER_STATUS_PENDING
     assert order.payment_status == PAYMENT_STATUS_UNPAID
-    assert order.subtotal == Decimal("150.00")
-    assert order.shipping_cost == Decimal("12.00")
-    assert order.total == Decimal("162.00")
+    assert order.subtotal == Decimal("298000.00")
+    assert order.shipping_cost == Decimal("15000.00")
+    assert order.total == Decimal("313000.00")
 
     stored = get_order_for_user(user.id, order.order_number)
     assert stored is not None
@@ -66,9 +68,9 @@ def test_successful_checkout_creates_order_snapshots_and_deducts_stock(
     assert line.sku == "UT014-VT-WBK-M"
     assert line.size == "M"
     assert line.color == "Washed Black"
-    assert line.unit_price == Decimal("75.00")
+    assert line.unit_price == Decimal("149000.00")
     assert line.quantity == 2
-    assert line.line_total == Decimal("150.00")
+    assert line.line_total == Decimal("298000.00")
 
     refreshed_variant = db.session.get(ProductVariant, variant.id)
     assert refreshed_variant is not None
@@ -90,9 +92,65 @@ def test_free_shipping_threshold_uses_server_subtotal(
 
     order = _checkout(user.id)
 
-    assert order.subtotal == Decimal("255.00")
+    assert order.subtotal == Decimal("478000.00")
     assert order.shipping_cost == Decimal("0.00")
-    assert order.total == Decimal("255.00")
+    assert order.total == Decimal("478000.00")
+
+
+def test_free_shipping_threshold_boundary_at_exactly_350000(
+    app: Flask,
+    seeded_catalog: SeedSummary,
+    make_user,
+) -> None:
+    assert calculate_shipping(Decimal("349999.00")) == Decimal("15000.00")
+    assert calculate_shipping(Decimal("350000.00")) == Decimal("0.00")
+    assert calculate_shipping(Decimal("350001.00")) == Decimal("0.00")
+
+    user: User = make_user(email="checkout-exact-threshold@example.com")
+    variant = _variant("UT014-VT-WBK-M")
+    product = db.session.get(Product, variant.product_id)
+    assert product is not None
+    product.price = Decimal("350000.00")
+    db.session.commit()
+
+    add_to_cart(user.id, variant.id, 1)
+    order = _checkout(user.id)
+
+    assert order.subtotal == Decimal("350000.00")
+    assert order.shipping_cost == Decimal("0.00")
+    assert order.total == Decimal("350000.00")
+
+
+def test_checkout_rejects_fractional_legacy_product_price_without_side_effects(
+    app: Flask,
+    seeded_catalog: SeedSummary,
+    make_user,
+) -> None:
+    user: User = make_user(email="checkout-fractional-legacy@example.com")
+    variant = _variant("UT014-VT-WBK-M")
+    initial_stock = variant.stock
+    add_to_cart(user.id, variant.id, 2)
+
+    # Simulate a legacy fractional price persisted directly in the database.
+    db.session.execute(
+        update(Product).where(Product.id == variant.product_id).values(price=Decimal("149000.50"))
+    )
+    db.session.commit()
+
+    with pytest.raises(InvalidAmountError, match="whole rupiah"):
+        _checkout(user.id)
+
+    assert db.session.scalar(select(func.count(Order.id))) == 0
+    assert db.session.scalar(select(func.count(OrderItem.id))) == 0
+    db.session.expire_all()
+    refreshed_variant = db.session.get(ProductVariant, variant.id)
+    assert refreshed_variant is not None
+    assert refreshed_variant.stock == initial_stock
+    cart = get_cart_for_user(user.id)
+    assert cart is not None
+    assert len(cart.items) == 1
+    assert cart.items[0].variant_id == variant.id
+    assert cart.items[0].quantity == 2
 
 
 def test_checkout_uses_current_price_and_preserves_historical_snapshot(
@@ -106,22 +164,22 @@ def test_checkout_uses_current_price_and_preserves_historical_snapshot(
 
     product = db.session.get(Product, variant.product_id)
     assert product is not None
-    product.price = Decimal("80.00")
+    product.price = Decimal("155000.00")
     db.session.commit()
 
     order = _checkout(user.id)
-    assert order.subtotal == Decimal("80.00")
-    assert order.items[0].unit_price == Decimal("80.00")
+    assert order.subtotal == Decimal("155000.00")
+    assert order.items[0].unit_price == Decimal("155000.00")
 
     product = db.session.get(Product, variant.product_id)
     assert product is not None
-    product.price = Decimal("95.00")
+    product.price = Decimal("175000.00")
     db.session.commit()
 
     stored = get_order_for_user(user.id, order.order_number)
     assert stored is not None
-    assert stored.items[0].unit_price == Decimal("80.00")
-    assert stored.total == Decimal("92.00")
+    assert stored.items[0].unit_price == Decimal("155000.00")
+    assert stored.total == Decimal("170000.00")
 
 
 def test_empty_cart_cannot_be_checked_out(

@@ -31,7 +31,7 @@
           <div class="cart-lines">
             <div class="cart-list-head">
               <p class="mono">{{ cart.line_count }} line{% if cart.line_count != 1 %}s{% endif %} / {{ cart.item_count }} item{% if cart.item_count != 1 %}s{% endif %}</p>
-              <p class="mono">Prices in USD</p>
+              <p class="mono">Prices in IDR</p>
             </div>
 
             <ul class="cart-list" role="list">
@@ -108,7 +108,7 @@
             </dl>
 
             <p class="cart-summary__note">
-              Flat shipping is Rp 12. Orders over Rp 200 ship free. Stock is checked
+              Flat shipping is {{ shipping_flat_idr|money }}. Orders of {{ free_shipping_threshold_idr|money }} or more ship free. Stock is checked
               again when your order is placed.
             </p>
 

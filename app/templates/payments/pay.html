@@ -30,8 +30,8 @@
               Create manual bank transfer instructions for this order. Transfer
               evidence is reviewed by an admin before the order is marked paid.
             {% else %}
-              Payment attempts are priced from the order total on the server.
-              This milestone uses a simulated provider only.
+              Payment attempts are priced in IDR from the server-calculated order
+              total. No payment method is currently enabled in this environment.
             {% endif %}
           </p>
         </div>
@@ -156,7 +156,7 @@
                 <li class="payment-attempt">
                   <div>
                     <p class="mono">{{ payment.payment_reference }}</p>
-                    <p class="payment-attempt__amount">{{ payment.amount|money }}</p>
+                    <p class="payment-attempt__amount">{{ payment|payment_money }}</p>
                     <p class="payment-attempt__meta">
                       {{ payment.provider|replace('_', ' ')|title }}
                       {% if payment.status == 'pending' %}

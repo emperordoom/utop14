@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from pathlib import PurePosixPath
 from typing import Final
 
@@ -25,6 +25,7 @@ from sqlalchemy.orm import joinedload, selectinload
 from app.extensions import db
 from app.models import Category, Product, ProductImage, ProductVariant
 from app.models.base import validate_image_path
+from app.money import MoneyValidationError, parse_whole_rupiah
 
 MAX_CATEGORY_NAME: Final = 80
 MAX_CATEGORY_DESCRIPTION: Final = 1_000
@@ -46,7 +47,6 @@ STOCK_FILTERS: Final = ("out", "low", "healthy")
 
 _SLUG_PATTERN: Final = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _SKU_PATTERN: Final = re.compile(r"^[A-Z0-9]+(?:-[A-Z0-9]+)*$")
-_PRICE_PATTERN: Final = re.compile(r"^\d{1,10}(?:\.\d{1,2})?$")
 _IMAGE_PATH_PATTERN: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._/-]*$")
 _IMAGE_SUFFIXES: Final = frozenset({".avif", ".gif", ".jpeg", ".jpg", ".png", ".svg", ".webp"})
 _FORBIDDEN_IMAGE_TOKENS: Final = (
@@ -58,7 +58,6 @@ _FORBIDDEN_IMAGE_TOKENS: Final = (
     "javascript:",
     "vbscript:",
 )
-_MAX_PRICE: Final = Decimal("9999999999.99")
 
 
 class CatalogAdminError(Exception):
@@ -695,22 +694,10 @@ def _normalize_image_path(value: object, label: str) -> str:
 
 
 def _parse_price(value: object) -> Decimal:
-    if isinstance(value, bool) or value is None:
-        raise CatalogValidationError(
-            "Price must be a non-negative amount with at most 2 decimal places."
-        )
-    raw = str(value).strip()
-    if not _PRICE_PATTERN.fullmatch(raw):
-        raise CatalogValidationError(
-            "Price must be a non-negative amount with at most 2 decimal places."
-        )
     try:
-        amount = Decimal(raw).quantize(Decimal("0.01"))
-    except InvalidOperation as exc:
-        raise CatalogValidationError("Price must be a valid amount.") from exc
-    if amount > _MAX_PRICE:
-        raise CatalogValidationError("Price is too large.")
-    return amount
+        return parse_whole_rupiah(value, label="Price", allow_zero=True)
+    except (TypeError, MoneyValidationError) as exc:
+        raise CatalogValidationError(str(exc)) from exc
 
 
 def _parse_bounded_int(

@@ -513,3 +513,89 @@ def test_admin_order_detail_shows_payment_attempts_read_only(
     assert payment.payment_reference in html
     assert "SIMULATION ONLY — NO REAL MONEY" in html
     assert "Simulation controls" not in html
+
+
+def test_non_idr_simulated_payment_hides_rp_and_simulation_and_rejects_post(
+    client: FlaskClient,
+    login: Callable[..., object],
+    csrf_token: Callable[[str], str],
+    make_user,
+    make_order,
+    make_payment,
+) -> None:
+    customer: User = make_user(email="non-idr-sim-customer@example.com")
+    make_user(email="non-idr-sim-admin@example.com", role=ROLE_ADMIN)
+    order = make_order(customer)
+    payment = make_payment(customer, order=order)
+    original_amount = payment.amount
+    original_status = payment.status
+
+    # Normal IDR payment renders with Rp formatting and simulation controls.
+    login(customer.email)
+    idr_detail_html = client.get(f"/payments/{payment.payment_reference}").get_data(as_text=True)
+    assert '<p class="payment-amount">Rp 164.000</p>' in idr_detail_html
+    assert "Run simulation" in idr_detail_html
+
+    payment.currency = "USD"
+    db.session.commit()
+
+    detail = client.get(f"/payments/{payment.payment_reference}")
+    assert detail.status_code == 200
+    detail_html = detail.get_data(as_text=True)
+    assert payment.payment_reference in detail_html
+    assert "Unsupported currency (USD) — amount unavailable" in detail_html
+    assert "Run simulation" not in detail_html
+    assert '<p class="payment-amount">Unsupported currency (USD) — amount unavailable</p>' in (
+        detail_html
+    )
+    assert '<p class="payment-amount">Rp ' not in detail_html
+
+    order_html = client.get(f"/orders/{order.order_number}").get_data(as_text=True)
+    assert payment.payment_reference in order_html
+    assert (
+        '<p class="payment-attempt__amount">Unsupported currency (USD) — amount unavailable</p>'
+        in order_html
+    )
+
+    pay_html = client.get(f"/orders/{order.order_number}/pay").get_data(as_text=True)
+    assert payment.payment_reference in pay_html
+    assert (
+        '<p class="payment-attempt__amount">Unsupported currency (USD) — amount unavailable</p>'
+        in pay_html
+    )
+
+    # Historical payment row was not altered by viewing.
+    db.session.expire_all()
+    viewed = db.session.get(Payment, payment.id)
+    assert viewed is not None
+    assert viewed.currency == "USD"
+    assert viewed.amount == original_amount
+    assert viewed.status == original_status
+
+    # Backend POST handler still rejects non-IDR simulation attempts.
+    token = csrf_token(f"/orders/{order.order_number}")
+    post_response = client.post(
+        f"/payments/{payment.payment_reference}/simulate",
+        data={"csrf_token": token, "outcome": "success"},
+        follow_redirects=True,
+    )
+    assert post_response.status_code == 200
+    db.session.expire_all()
+    failed_payment = db.session.get(Payment, payment.id)
+    refreshed_order = db.session.get(Order, order.id)
+    assert failed_payment is not None
+    assert failed_payment.status == PAYMENT_STATUS_FAILED
+    assert refreshed_order is not None
+    assert refreshed_order.payment_status == "unpaid"
+
+    # Admin order detail displays the historical attempt without mislabeling it as Rp.
+    client.post("/auth/logout", data={"csrf_token": csrf_token("/auth/account")})
+    login("non-idr-sim-admin@example.com")
+    admin_html = client.get(f"/admin/orders/{order.order_number}").get_data(as_text=True)
+    assert payment.payment_reference in admin_html
+    assert "Read-only / Currency check required" in admin_html
+    assert (
+        '<p class="payment-attempt__amount">Unsupported currency (USD) — amount unavailable</p>'
+        in admin_html
+    )
+    assert "unsupported currency (USD)" in admin_html

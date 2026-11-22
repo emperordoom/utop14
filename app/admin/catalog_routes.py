@@ -22,6 +22,7 @@ from app.admin.forms import (
 from app.auth.permissions import role_required
 from app.models import ProductVariant
 from app.models.user import ROLE_ADMIN
+from app.money import MoneyValidationError, whole_rupiah_to_int
 from app.services.catalog_admin import (
     CatalogAdminError,
     CatalogNotFound,
@@ -228,6 +229,13 @@ def product_edit(product_id: int) -> ResponseReturnValue:
         abort(404)
 
     form = ProductForm(obj=product) if request.method == "GET" else ProductForm()
+    if request.method == "GET":
+        try:
+            form.price.data = str(
+                whole_rupiah_to_int(product.price, label="Price", allow_zero=True)
+            )
+        except (TypeError, MoneyValidationError):
+            form.price.data = str(product.price)
     form.category_id.choices = list_category_choices()
     if form.validate_on_submit():
         try:

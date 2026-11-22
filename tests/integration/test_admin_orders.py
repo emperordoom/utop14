@@ -123,6 +123,31 @@ def test_operator_order_detail_contains_customer_and_snapshots(
     assert "Void Tee" in html
     assert "Shipping address" in html
     assert "Update status" in html
+    assert "IDR" in html
+    assert "USD" not in html
+
+
+def test_admin_order_detail_does_not_label_manual_transfer_as_simulation(
+    client: FlaskClient,
+    login: Callable[..., object],
+    make_user: Callable[..., User],
+    make_order: Callable[..., Order],
+    bank_transfer_config: dict[str, str],
+) -> None:
+    from app.services.payments import create_manual_payment_attempt
+
+    customer: User = make_user(email="order-detail-manual-customer@example.com")
+    make_user(email="order-detail-manual-operator@example.com", role=ROLE_OPERATOR)
+    order = make_order(customer)
+    payment = create_manual_payment_attempt(customer.id, order.order_number, "admin-manual-key")
+    login("order-detail-manual-operator@example.com")
+
+    html = client.get(f"/admin/orders/{order.order_number}").get_data(as_text=True)
+
+    assert payment.payment_reference in html
+    assert "SIMULATION ONLY — NO REAL MONEY" not in html
+    assert "Manual bank transfer requires admin proof review." in html
+    assert "USD" not in html
 
 
 def test_operator_can_progress_order_through_valid_lifecycle(

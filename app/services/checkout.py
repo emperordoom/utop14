@@ -22,12 +22,11 @@ from app.models import (
     ProductVariant,
 )
 from app.models.order import ORDER_STATUS_PENDING, PAYMENT_STATUS_UNPAID
+from app.money import MoneyValidationError, validate_whole_rupiah
 
-_CENT: Final = Decimal("0.01")
-# Shipping values are stored and interpreted as IDR; M7 does not apply FX
-# conversion to existing order or catalog amounts.
-SHIPPING_FLAT_IDR: Final = Decimal("12.00")
-FREE_SHIPPING_THRESHOLD_IDR: Final = Decimal("200.00")
+# All catalog, shipping, and order amounts are whole-rupiah IDR values.
+SHIPPING_FLAT_IDR: Final = Decimal("15000.00")
+FREE_SHIPPING_THRESHOLD_IDR: Final = Decimal("350000.00")
 
 
 class CheckoutError(Exception):
@@ -46,6 +45,10 @@ class StockError(CheckoutError):
     """Raised when current stock cannot cover a cart line."""
 
 
+class InvalidAmountError(CheckoutError):
+    """Raised when a catalog price or calculated checkout amount is not valid whole rupiah."""
+
+
 @dataclass(frozen=True, slots=True)
 class CheckoutTotals:
     """Server-calculated monetary summary for a cart or order."""
@@ -56,17 +59,72 @@ class CheckoutTotals:
 
 
 def calculate_shipping(subtotal: Decimal) -> Decimal:
-    """Return the flat IDR shipping fee, waived above the IDR threshold."""
-    if subtotal >= FREE_SHIPPING_THRESHOLD_IDR:
-        return Decimal("0.00")
-    return SHIPPING_FLAT_IDR.quantize(_CENT)
+    """Return the flat IDR shipping fee, waived at or above the IDR threshold."""
+    try:
+        validated_subtotal = validate_whole_rupiah(
+            subtotal,
+            label="Subtotal",
+            allow_zero=True,
+        )
+        if validated_subtotal >= FREE_SHIPPING_THRESHOLD_IDR:
+            return Decimal("0.00")
+        return validate_whole_rupiah(
+            SHIPPING_FLAT_IDR,
+            label="Shipping cost",
+            allow_zero=True,
+        )
+    except (TypeError, MoneyValidationError) as exc:
+        raise InvalidAmountError(str(exc)) from exc
+
+
+def _calculate_item_amounts(
+    items: list[CartItem],
+) -> tuple[list[tuple[CartItem, Decimal, Decimal]], Decimal]:
+    """Validate whole-rupiah unit prices, line totals and subtotal for cart items."""
+    priced_items: list[tuple[CartItem, Decimal, Decimal]] = []
+    subtotal = Decimal("0.00")
+
+    try:
+        for item in items:
+            variant = item.variant
+            product = variant.product if variant is not None else None
+            raw_price = product.price if product is not None else Decimal("0.00")
+            unit_price = validate_whole_rupiah(
+                raw_price,
+                label="Product price",
+                allow_zero=True,
+            )
+            line_total = validate_whole_rupiah(
+                unit_price * item.quantity,
+                label="Line total",
+                allow_zero=True,
+            )
+            priced_items.append((item, unit_price, line_total))
+            subtotal += line_total
+
+        validated_subtotal = validate_whole_rupiah(
+            subtotal,
+            label="Subtotal",
+            allow_zero=True,
+        )
+    except (TypeError, MoneyValidationError) as exc:
+        raise InvalidAmountError(str(exc)) from exc
+
+    return priced_items, validated_subtotal
 
 
 def calculate_totals(cart: Cart) -> CheckoutTotals:
-    """Calculate a display summary from current database prices."""
-    subtotal = cart.subtotal.quantize(_CENT)
+    """Calculate a validated whole-rupiah summary from current database prices."""
+    _, subtotal = _calculate_item_amounts(list(cart.items))
     shipping_cost = calculate_shipping(subtotal)
-    total = (subtotal + shipping_cost).quantize(_CENT)
+    try:
+        total = validate_whole_rupiah(
+            subtotal + shipping_cost,
+            label="Order total",
+            allow_zero=True,
+        )
+    except (TypeError, MoneyValidationError) as exc:
+        raise InvalidAmountError(str(exc)) from exc
     return CheckoutTotals(
         subtotal=subtotal,
         shipping_cost=shipping_cost,
@@ -161,9 +219,16 @@ def checkout(
         cart, items = _load_cart_for_checkout(user_id)
         items = _validate_items(items)
 
-        subtotal = sum((item.line_total for item in items), Decimal("0.00")).quantize(_CENT)
+        priced_items, subtotal = _calculate_item_amounts(items)
         shipping_cost = calculate_shipping(subtotal)
-        total = (subtotal + shipping_cost).quantize(_CENT)
+        try:
+            total = validate_whole_rupiah(
+                subtotal + shipping_cost,
+                label="Order total",
+                allow_zero=True,
+            )
+        except (TypeError, MoneyValidationError) as exc:
+            raise InvalidAmountError(str(exc)) from exc
 
         order = Order(
             order_number=_generate_order_number(),
@@ -182,11 +247,9 @@ def checkout(
         db.session.add(order)
         db.session.flush()
 
-        for item in items:
+        for item, unit_price, line_total in priced_items:
             variant = item.variant
             product = variant.product
-            unit_price = product.price.quantize(_CENT)
-            line_total = (unit_price * item.quantity).quantize(_CENT)
 
             db.session.add(
                 OrderItem(

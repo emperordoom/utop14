@@ -46,7 +46,7 @@ def test_shop_lists_the_launch_catalog(
     for category in ("T-shirts", "Hoodies", "Pants", "Accessories"):
         assert category in html
 
-    for price in ("Rp 75", "Rp 180", "Rp 160", "Rp 55"):
+    for price in ("Rp 149.000", "Rp 329.000", "Rp 279.000", "Rp 119.000"):
         assert price in html
 
 

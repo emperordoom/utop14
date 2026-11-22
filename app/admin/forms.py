@@ -20,6 +20,10 @@ def _strip(value: str | None) -> str | None:
     return value.strip() if isinstance(value, str) else value
 
 
+def _strip_ascii_spaces(value: str | None) -> str | None:
+    return value.strip(" ") if isinstance(value, str) else value
+
+
 def _normalize_email(value: str | None) -> str | None:
     return normalize_email(value) if isinstance(value, str) else value
 
@@ -92,8 +96,8 @@ class ProductForm(FlaskForm):
         validators=[Optional(), Length(max=5000)],
     )
     price = StringField(
-        "Price",
-        filters=[_strip],
+        "Price (IDR)",
+        filters=[_strip_ascii_spaces],
         validators=[DataRequired(), Length(max=15)],
     )
     image_path = StringField(

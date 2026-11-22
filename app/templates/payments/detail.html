@@ -24,7 +24,10 @@
             Attempt <em>status.</em>
           </h1>
           <p class="payment-copy">
-            {% if payment.provider == "manual_transfer" %}
+            {% if not currency_supported %}
+              This payment uses an unsupported currency ({{ payment.currency or 'unknown' }}).
+              Only IDR payments are supported.
+            {% elif payment.provider == "manual_transfer" %}
               Complete the bank transfer using the exact reference and amount
               below, then upload your transfer evidence for manual admin review.
             {% else %}
@@ -49,8 +52,14 @@
             <p class="mono">Payment amount</p>
             {{ payment_badge(payment.status) }}
           </div>
-          <p class="payment-amount">{{ payment.amount|money }}</p>
-          <p class="payment-currency">{{ payment.currency }} / {{ payment.provider }}</p>
+          <p class="payment-amount">{{ payment|payment_money }}</p>
+          <p class="payment-currency">{{ payment.currency or 'unknown' }} / {{ payment.provider }}</p>
+
+          {% if not currency_supported %}
+            <p class="payment-alert" role="alert">
+              Unsupported currency ({{ payment.currency or 'unknown' }}). Only IDR payments are supported; this payment attempt cannot be processed and its amount is unavailable.
+            </p>
+          {% endif %}
 
           <dl class="payment-meta">
             <div>
@@ -93,7 +102,7 @@
             {% endif %}
           </dl>
 
-          {% if payment.provider == "manual_transfer" %}
+          {% if payment.provider == "manual_transfer" and currency_supported %}
             <div class="manual-transfer-block">
               <div class="payment-panel__header">
                 <p class="mono">Bank transfer instructions</p>
@@ -116,7 +125,7 @@
                   </div>
                   <div>
                     <dt>Transfer amount</dt>
-                    <dd class="mono">{{ payment.amount|money }}</dd>
+                    <dd class="mono">{{ payment|payment_money }}</dd>
                   </div>
                   <div>
                     <dt>Use reference</dt>
@@ -279,6 +288,8 @@
                   <span class="button__arrow" aria-hidden="true">→</span>
                 </button>
               </form>
+            {% elif not currency_supported %}
+              <p class="payment-empty">Unsupported currency ({{ payment.currency or 'unknown' }}). Simulated payments are only available for IDR attempts.</p>
             {% elif simulation_enabled %}
               <p class="payment-empty">This attempt is no longer pending and cannot be simulated again.</p>
             {% else %}
