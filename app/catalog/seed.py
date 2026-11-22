@@ -123,7 +123,7 @@ PRODUCT_SEEDS: Final[tuple[ProductSeed, ...]] = (
             "shoulder and finished with a small acid-green chest mark. The "
             "cotton is garment-dyed so every piece settles into its own tone."
         ),
-        price=Decimal("75.00"),
+        price=Decimal("149000.00"),
         image_path="images/product-void-tee.svg",
         image_alt="Oversized washed-black UTOP14 t-shirt with a small lime chest print.",
         badge="New",
@@ -143,7 +143,7 @@ PRODUCT_SEEDS: Final[tuple[ProductSeed, ...]] = (
             "and a wide body. The chest graphic carries the only hit of acid "
             "green in the collection."
         ),
-        price=Decimal("180.00"),
+        price=Decimal("329000.00"),
         image_path="images/product-signal-hoodie.svg",
         image_alt="Heavyweight charcoal hoodie with a lime graphic across the chest.",
         badge="Drop 014",
@@ -164,7 +164,7 @@ PRODUCT_SEEDS: Final[tuple[ProductSeed, ...]] = (
             "articulated knee and a single technical pocket. Cut long so the "
             "hem stacks cleanly over boots."
         ),
-        price=Decimal("160.00"),
+        price=Decimal("279000.00"),
         image_path="images/product-utility-pant.svg",
         image_alt="Wide-leg storm-grey utility trousers with a technical pocket.",
         badge=None,
@@ -183,7 +183,7 @@ PRODUCT_SEEDS: Final[tuple[ProductSeed, ...]] = (
             "A six-panel structured cap in jet black with a curved brim, metal "
             "eyelets and a small embroidered UTOP14 mark. Adjustable at the back."
         ),
-        price=Decimal("55.00"),
+        price=Decimal("119000.00"),
         image_path="images/product-orbit-cap.svg",
         image_alt="Structured black cap with a small lime embroidered UTOP14 mark.",
         badge=None,

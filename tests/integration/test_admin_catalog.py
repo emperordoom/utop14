@@ -386,6 +386,11 @@ def test_admin_product_create_search_filter_edit_and_deactivate(
     empty_html = client.get("/admin/products").get_data(as_text=True)
     assert "No matching products" in empty_html
 
+    new_form_html = client.get("/admin/products/new").get_data(as_text=True)
+    assert "USD" not in new_form_html
+    assert 'placeholder="149000"' in new_form_html
+    assert 'inputmode="numeric"' in new_form_html
+
     token = csrf_token("/admin/products/new")
     response = client.post(
         "/admin/products/new",
@@ -395,7 +400,7 @@ def test_admin_product_create_search_filter_edit_and_deactivate(
                 category,
                 name="Test Hoodie",
                 slug="test-hoodie",
-                price="149.95",
+                price="149000",
             ),
         },
         follow_redirects=True,
@@ -409,7 +414,7 @@ def test_admin_product_create_search_filter_edit_and_deactivate(
     product = db.session.scalar(select(Product).where(Product.slug == "test-hoodie"))
     assert product is not None
     assert isinstance(product.price, Decimal)
-    assert product.price == Decimal("149.95")
+    assert product.price == Decimal("149000.00")
     product_id = product.id
 
     token = csrf_token(f"/admin/products/{product_id}/variants/new")
@@ -446,6 +451,10 @@ def test_admin_product_create_search_filter_edit_and_deactivate(
     ).get_data(as_text=True)
     assert "Test Hoodie" in filtered_html
 
+    edit_form_html = client.get(f"/admin/products/{product_id}/edit").get_data(as_text=True)
+    assert "USD" not in edit_form_html
+    assert 'value="149000"' in edit_form_html
+
     token = csrf_token(f"/admin/products/{product_id}/edit")
     response = client.post(
         f"/admin/products/{product_id}/edit",
@@ -455,7 +464,7 @@ def test_admin_product_create_search_filter_edit_and_deactivate(
                 category,
                 name="Test Hoodie 2",
                 slug="test-hoodie-2",
-                price="99.50",
+                price="149000.00",
             ),
         },
         follow_redirects=True,
@@ -469,7 +478,7 @@ def test_admin_product_create_search_filter_edit_and_deactivate(
     assert product is not None
     assert product.name == "Test Hoodie 2"
     assert product.slug == "test-hoodie-2"
-    assert product.price == Decimal("99.50")
+    assert product.price == Decimal("149000.00")
 
     token = csrf_token("/admin/products")
     response = client.post(
@@ -497,6 +506,13 @@ def test_admin_product_create_search_filter_edit_and_deactivate(
     ("field", "value", "message"),
     [
         ("price", "-1", "Price must be a non-negative"),
+        ("price", "149000.0", "whole rupiah"),
+        ("price", "149000.50", "whole rupiah"),
+        ("price", "149000.01", "whole rupiah"),
+        ("price", "\u0661\u0664\u0669\u0660\u0660\u0660", "whole rupiah"),
+        ("price", "149 000", "whole rupiah"),
+        ("price", "149\t000", "whole rupiah"),
+        ("price", "149000\t", "whole rupiah"),
         ("slug", "Bad Slug!", "Slug must use lowercase"),
     ],
 )

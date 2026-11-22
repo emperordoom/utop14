@@ -1,6 +1,6 @@
 # UTOP14 — Project Roadmap and Status
 
-Last updated: Phase 5 administrative roadmap update recording Project Owner decisions after PR #19 (`2add65e5a0bd9d8ba943e92df05945ba9ad0d0a9`) and M15.2 Remaining Security Findings Assessment (2026-11-21)
+Last updated: Phase 1H administrative closure recording Project Owner decision that no production database is provisioned yet (2026-11-22); builds on Phase 5 administrative roadmap update after PR #19 (`2add65e5a0bd9d8ba943e92df05945ba9ad0d0a9`) and M15.2 Remaining Security Findings Assessment (2026-11-21)
 
 This document is the durable status record for the UTOP14 development effort.
 It separates **development completion** from **production readiness**: a phase
@@ -530,6 +530,12 @@ the development phases complete:
 - **B-07 operational controls for F-B05-04 (`Open` — NOT complete):**
   `utop14_retention_runner` credential protection, OS/runner account isolation,
   orphan/flooding monitoring, and DBA orphan reconciliation runbook.
+- **Currency & Whole-Rupiah Production DB Audit Gate (`Phase 1H` / `P1E-02` / `P1G-01`):**
+  - **Phase 1H:** `BLOCKED — No Production Database Available` (administrative closure, 2026-11-22; production database is believed never to have been provisioned).
+  - **P1E-02:** `N/A — No Existing Production Database Provisioned Yet`.
+  - **P1G-01:** `OPEN — Legacy fractional data risk remains unverified` (strict fail-closed `format_idr()` raises `MoneyValidationError` / HTTP 500 if non-zero fractional legacy `IDR` values exist on read pages).
+  - **Mandatory pre-go-live gate:** A read-only production database audit (`BEGIN TRANSACTION READ ONLY`) checking fractional IDR amounts (`products.price`, `orders.(subtotal, shipping_cost, total)`, `order_items.(unit_price, line_total)`, `payments.amount`) and `payments.currency` (`IDR` / non-`IDR` / `NULL`) is mandatory before go-live whenever any legacy data will be used.
+  - DB-level whole-rupiah/IDR `CHECK` constraints (`P1E-03` / `P1G-02`) remain deferred to a separate migration phase.
 - Production secrets management and key rotation.
 - Backup, restore, and disaster-recovery procedures.
 - Production monitoring, alerting, and log aggregation.
@@ -556,9 +562,12 @@ evidence and sign-off. Nothing in this roadmap authorizes a deployment.
 | Phase 5 closed backlog items | **B-01** (code aspect **CLOSED**; F-B01-05 **ACCEPTED**; F-B01-OPS **NEEDS VERIFICATION** before production), **B-05** (**CLOSED**; F-B05-04 **ACCEPTED WITH OPERATIONAL CONDITIONS** under B-07; F-B05-03 **DEFERRED**) |
 | Phase 5 confirmed accepted items | **B-09** (**ACCEPTED**), **B-11** (**ACCEPTED**; F-B11-01 preventive ACL audit rule; allowlist `plpgsql`) |
 | Phase 5 open development items | **B-02**, **B-03** (F-B03-01 **DEFERRED**; non-retention domains open), **B-04**, **B-08** |
-| Phase 5 open production prerequisites | **B-06**, **B-07** *(runbook NOT complete)*, **F-B01-OPS** (`NEEDS VERIFICATION`), **B-12**, **B-13** |
+| Phase 5 open production prerequisites | **B-06**, **B-07** *(runbook NOT complete)*, **F-B01-OPS** (`NEEDS VERIFICATION`), **B-12**, **B-13**, **Production DB IDR/fractional audit gate** *(mandatory before go-live if legacy data is used)* |
+| Currency & Whole-Rupiah Phase 1 (1A–1G) | Phase 1G technical review **PASS WITH FINDINGS** (zero code blockers; `P1E-01` **RESOLVED**; working changes on `feat/phase1-currency-whole-rupiah` @ `808e9ec3` pending Project Owner publication approval) |
+| Phase 1H (Production DB read-only audit) | **BLOCKED — No Production Database Available** (administrative closure, 2026-11-22) |
+| P1E-02 / P1G-01 status | **P1E-02:** `N/A — No Existing Production Database Provisioned Yet`; **P1G-01:** `OPEN — Legacy fractional data risk remains unverified` |
 | Last completed security assessment | M15.2 Remaining Security Findings Assessment (`2026-11-21`, baseline `2add65e5a0bd9d8ba943e92df05945ba9ad0d0a9`) |
-| Next checkpoint | Project Owner decision on next Phase 5 workstream (B-02, B-03 non-retention domains, B-04, B-08) |
+| Next checkpoint | Project Owner decision on Phase 1 currency publication and next Phase 5 workstream (B-02, B-03 non-retention domains, B-04, B-08) |
 | Remaining high-level phases | 2 (Phases 5, 6) |
 | Development complete | **NO** |
 | Production provisioning authorized | **NO** |
@@ -568,6 +577,7 @@ evidence and sign-off. Nothing in this roadmap authorizes a deployment.
 
 | Milestone | Outcome |
 |---|---|
+| Phase 1H admin closure (2026-11-22) | Recorded Project Owner decision (production DB believed never provisioned): **Phase 1H** set to `BLOCKED — No Production Database Available`, **P1E-02** set to `N/A — No Existing Production Database Provisioned Yet`, **P1G-01** kept `OPEN — Legacy fractional data risk remains unverified`, and production DB read-only audit established as a mandatory pre-go-live gate whenever legacy data will be used |
 | Phase 5 admin update (2026-11-21) | Recorded Project Owner decisions from M15.2: B-01 code aspect **CLOSED** (`F-B01-05` **ACCEPTED**, `F-B01-OPS` **NEEDS VERIFICATION**), B-05 **CLOSED** (`F-B05-04` **ACCEPTED WITH OPERATIONAL CONDITIONS** under B-07, `F-B05-03` **DEFERRED**), B-09 & B-11 confirmed **ACCEPTED** (`F-B11-01` recorded), and `F-B03-01` **DEFERRED** (B-03 non-retention domains remain Open) |
 | M15.2 assessment (2026-11-21) | Read-only Remaining Security Findings Assessment on baseline `2add65e5a0bd9d8ba943e92df05945ba9ad0d0a9`; 0 CRITICAL, HIGH, or MEDIUM findings within the assessed scope |
 | PR #19 / M15.1b (`2add65e5`) | Merged `fix/m15-1b-security-remediation` (`b13af181`) into `main` (`2026-11-21T11:32:46Z`, post-merge CI `44899619448` successful on both jobs); fixed `F-B01-01`, `F-B05-01`, `F-B01-04`, `F-B01-02`, `F-B01-03`, and `F-B05-02` |

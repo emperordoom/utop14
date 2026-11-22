@@ -705,3 +705,120 @@ def test_private_proof_file_requires_admin_role(
     assert client.get(f"/admin/payment-proofs/{proof.id}/file").status_code == 403
     _logout(client, csrf_token)
     assert client.get(f"/admin/payment-proofs/{proof.id}/file").status_code == 302
+
+
+@pytest.mark.parametrize(
+    ("order_total", "payment_amount"),
+    [
+        (Decimal("164000.00"), Decimal("164000.50")),
+        (Decimal("164000.50"), Decimal("164000.50")),
+    ],
+)
+def test_approve_payment_proof_rejects_fractional_amounts(
+    app: Flask,
+    make_user: Callable[..., User],
+    make_order: Callable[..., Order],
+    bank_transfer_config: dict[str, str],
+    payment_proof_storage: Path,
+    order_total: Decimal,
+    payment_amount: Decimal,
+) -> None:
+    from app.services.payment_proofs import PaymentProofStateError
+
+    customer = make_user(
+        email=f"proof-fractional-customer-{order_total}-{payment_amount}@example.com"
+    )
+    admin = make_user(
+        email=f"proof-fractional-admin-{order_total}-{payment_amount}@example.com",
+        role=ROLE_ADMIN,
+    )
+    order = make_order(customer)
+    payment = _manual_payment(
+        customer,
+        order,
+        key=f"proof-frac-{order_total}-{payment_amount}",
+    )
+    proof = _upload_proof(customer, payment)
+
+    order.total = order_total
+    payment.amount = payment_amount
+    db.session.commit()
+
+    with pytest.raises(PaymentProofStateError, match="whole rupiah"):
+        approve_payment_proof(proof.id, admin.id)
+
+    db.session.expire_all()
+    refreshed_proof = db.session.get(PaymentProof, proof.id)
+    refreshed_payment = db.session.get(Payment, payment.id)
+    refreshed_order = db.session.get(Order, order.id)
+    assert refreshed_proof is not None
+    assert refreshed_proof.status == PAYMENT_PROOF_STATUS_PENDING_REVIEW
+    assert refreshed_payment is not None
+    assert refreshed_payment.status == "pending"
+    assert refreshed_payment.paid_at is None
+    assert refreshed_order is not None
+    assert refreshed_order.payment_status == "unpaid"
+
+
+def test_admin_payment_proof_views_flag_non_idr_payment_and_reject_approval(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    login: Callable[..., object],
+    make_user: Callable[..., User],
+    make_order: Callable[..., Order],
+    bank_transfer_config: dict[str, str],
+    payment_proof_storage: Path,
+) -> None:
+    customer = make_user(email="proof-non-idr-customer@example.com")
+    _login_admin(make_user, login, email="proof-non-idr-admin@example.com")
+    order = make_order(customer)
+    payment = _manual_payment(customer, order, key="proof-non-idr-key")
+    proof = _upload_proof(customer, payment)
+
+    # Normal IDR payment proof renders Rp amount and approval action.
+    idr_list_html = client.get("/admin/payment-proofs").get_data(as_text=True)
+    assert '<td class="mono">Rp 164.000</td>' in idr_list_html
+    idr_detail_html = client.get(f"/admin/payment-proofs/{proof.id}").get_data(as_text=True)
+    assert "Rp 164.000 IDR" in idr_detail_html
+    assert "Approve proof" in idr_detail_html
+
+    payment.currency = "USD"
+    db.session.commit()
+
+    list_html = client.get("/admin/payment-proofs").get_data(as_text=True)
+    assert payment.payment_reference in list_html
+    assert '<td class="mono">Unsupported currency (USD) — amount unavailable</td>' in list_html
+    assert '<td class="mono">Rp 164.000</td>' not in list_html
+
+    detail_html = client.get(f"/admin/payment-proofs/{proof.id}").get_data(as_text=True)
+    assert payment.payment_reference in detail_html
+    assert "Unsupported currency (USD) — amount unavailable" in detail_html
+    assert "Only IDR payments can be approved." in detail_html
+    assert "Approve proof" not in detail_html
+    assert "Reject proof" in detail_html
+    assert "Rp 164.000" not in detail_html
+
+    # Historical rows remain unchanged after admin inspection.
+    db.session.expire_all()
+    inspected_payment = db.session.get(Payment, payment.id)
+    inspected_proof = db.session.get(PaymentProof, proof.id)
+    assert inspected_payment is not None
+    assert inspected_payment.currency == "USD"
+    assert inspected_proof is not None
+    assert inspected_proof.status == PAYMENT_PROOF_STATUS_PENDING_REVIEW
+
+    # Backend POST approval still rejects non-IDR payments fail-closed.
+    token = csrf_token(f"/admin/payment-proofs/{proof.id}")
+    approve_response = client.post(
+        f"/admin/payment-proofs/{proof.id}/approve",
+        data={"csrf_token": token},
+        follow_redirects=True,
+    )
+    assert approve_response.status_code == 200
+    assert "does not match" in approve_response.get_data(as_text=True).lower()
+
+    db.session.expire_all()
+    assert db.session.get(PaymentProof, proof.id).status == PAYMENT_PROOF_STATUS_PENDING_REVIEW
+    assert db.session.get(Payment, payment.id).status == "pending"
+    assert db.session.get(Order, order.id).payment_status == "unpaid"

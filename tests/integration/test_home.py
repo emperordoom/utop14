@@ -57,8 +57,10 @@ def test_homepage_presents_featured_products_and_prices(
     for product in ("Void Tee", "Signal Hoodie", "Utility Pant", "Orbit Cap"):
         assert product in html
 
-    for price in ("Rp 75", "Rp 180", "Rp 160", "Rp 55"):
+    for price in ("Rp 149.000", "Rp 329.000", "Rp 279.000", "Rp 119.000"):
         assert price in html
+    assert "Rp 350.000" in html
+    assert "Rp 200" not in html
 
     for category in ("T-shirts", "Hoodies", "Pants", "Accessories"):
         assert category in html

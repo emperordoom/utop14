@@ -10,6 +10,7 @@ from app.admin import admin_bp
 from app.admin.forms import OrderStatusForm
 from app.auth.permissions import role_required
 from app.models.order import ORDER_STATUSES, PAYMENT_STATUSES
+from app.models.payment import PAYMENT_PROVIDER_MANUAL_TRANSFER, PAYMENT_PROVIDER_SIMULATED
 from app.models.user import ROLE_ADMIN, ROLE_OPERATOR
 from app.services.admin import get_admin_stats
 from app.services.orders import (
@@ -21,6 +22,7 @@ from app.services.orders import (
     list_staff_orders,
     transition_staff_order,
 )
+from app.services.payments import simulation_enabled
 
 
 @admin_bp.get("/admin")
@@ -69,11 +71,20 @@ def order_detail(order_number: str) -> ResponseReturnValue:
     form = OrderStatusForm()
     allowed = allowed_staff_transitions(order)
     form.status.choices = [(status, status.replace("_", " ").title()) for status in allowed]
+    has_simulated_payments = any(
+        payment.provider == PAYMENT_PROVIDER_SIMULATED for payment in order.payments
+    )
+    has_manual_payments = any(
+        payment.provider == PAYMENT_PROVIDER_MANUAL_TRANSFER for payment in order.payments
+    )
     return render_template(
         "admin/order_detail.html",
         order=order,
         form=form,
         allowed_transitions=allowed,
+        has_simulated_payments=has_simulated_payments,
+        has_manual_payments=has_manual_payments,
+        simulation_enabled=simulation_enabled(),
     )
 
 

@@ -31,6 +31,7 @@ from app.models.payment_proof import (
     PAYMENT_PROOF_STATUS_CANCELLED,
     PAYMENT_PROOF_STATUS_PENDING_REVIEW,
 )
+from app.money import MoneyValidationError, validate_whole_rupiah
 from app.payments.providers.simulated import (
     SIMULATED_OUTCOME_FAILURE,
     SIMULATED_OUTCOME_SUCCESS,
@@ -39,7 +40,6 @@ from app.payments.providers.simulated import (
 )
 
 PAYMENT_ELIGIBLE_ORDER_STATUSES: Final = frozenset({"pending", "processing"})
-_CENT: Final = Decimal("0.01")
 _DEFAULT_TTL_MINUTES: Final = 15
 _DEFAULT_MANUAL_TTL_HOURS: Final = 24
 _MAX_BANK_NAME_LENGTH: Final = 120
@@ -146,15 +146,20 @@ def manual_transfer_available() -> bool:
 
 def can_pay_order(order: Order) -> bool:
     """Whether an order is currently eligible for a new payment attempt."""
-    return (
-        order.status in PAYMENT_ELIGIBLE_ORDER_STATUSES
-        and order.payment_status == PAYMENT_STATUS_UNPAID
-        and order.total > 0
-    )
+    if (
+        order.status not in PAYMENT_ELIGIBLE_ORDER_STATUSES
+        or order.payment_status != PAYMENT_STATUS_UNPAID
+    ):
+        return False
+    try:
+        validate_whole_rupiah(order.total, label="Order total", allow_zero=False)
+    except (TypeError, MoneyValidationError):
+        return False
+    return True
 
 
-def validate_payment_eligibility(order: Order) -> None:
-    """Raise a clear payment error when an order cannot be paid."""
+def validate_payment_eligibility(order: Order) -> Decimal:
+    """Raise a clear payment error when an order cannot be paid and return its validated total."""
     if order.status == ORDER_STATUS_CANCELLED:
         raise PaymentStateError("This order is cancelled.")
     if order.status not in PAYMENT_ELIGIBLE_ORDER_STATUSES:
@@ -163,8 +168,10 @@ def validate_payment_eligibility(order: Order) -> None:
         raise PaymentStateError("This order is already paid.")
     if order.payment_status != PAYMENT_STATUS_UNPAID:
         raise PaymentStateError("This order is not eligible for payment.")
-    if order.total <= 0:
-        raise PaymentStateError("Order total must be positive before payment.")
+    try:
+        return validate_whole_rupiah(order.total, label="Order total", allow_zero=False)
+    except (TypeError, MoneyValidationError) as exc:
+        raise PaymentStateError(str(exc)) from exc
 
 
 def _normalize_order_number(order_number: str) -> str:
@@ -324,9 +331,7 @@ def _create_payment_attempt(
         if conflicting is not None:
             raise PaymentStateError("This idempotency key has already been used for another order.")
 
-        validate_payment_eligibility(order)
-
-        amount = order.total.quantize(_CENT)
+        amount = validate_payment_eligibility(order)
         now = datetime.now(UTC)
 
         payment = Payment(
@@ -561,8 +566,27 @@ def process_simulated_payment(
                 "error",
             )
 
-        expected_amount = order.total.quantize(_CENT)
-        if payment.amount != expected_amount or payment.currency != PAYMENT_CURRENCY_IDR:
+        try:
+            expected_amount = validate_whole_rupiah(
+                order.total,
+                label="Order total",
+                allow_zero=False,
+            )
+            payment_amount = validate_whole_rupiah(
+                payment.amount,
+                label="Payment amount",
+                allow_zero=False,
+            )
+        except (TypeError, MoneyValidationError):
+            _fail_locked_payment(payment, now)
+            db.session.commit()
+            return PaymentProcessResult(
+                payment,
+                "Payment amount must be a valid whole rupiah amount. The attempt failed.",
+                "error",
+            )
+
+        if payment_amount != expected_amount or payment.currency != PAYMENT_CURRENCY_IDR:
             _fail_locked_payment(payment, now)
             db.session.commit()
             return PaymentProcessResult(

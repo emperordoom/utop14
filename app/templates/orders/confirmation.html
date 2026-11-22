@@ -98,7 +98,13 @@
           <div class="order-payments">
             <div class="order-payments__header">
               <p class="mono">Payments</p>
-              <p class="mono">IDR</p>
+              <p class="mono">
+                {% if order.payments and order.payments|rejectattr("currency", "equalto", "IDR")|list %}
+                  Currency check
+                {% else %}
+                  IDR
+                {% endif %}
+              </p>
             </div>
 
             {% if can_pay and payments_available %}
@@ -116,7 +122,7 @@
                   <li class="payment-attempt">
                     <div>
                       <p class="mono">{{ payment.payment_reference }}</p>
-                      <p class="payment-attempt__amount">{{ payment.amount|money }}</p>
+                      <p class="payment-attempt__amount">{{ payment|payment_money }}</p>
                       {% if payment.status == 'pending' %}
                         <p class="payment-attempt__meta">Expires {{ payment.expires_at.strftime("%d %b %Y, %H:%M UTC") }}</p>
                       {% elif payment.paid_at %}
@@ -161,9 +167,9 @@
               This order was cancelled and its stock was restored where the
               original variant still existed.
             {% else %}
-              Stock has been deducted for this order. Payment collection follows
-              the available method; shipping integration is not part of this
-              milestone.
+              Stock has been deducted for this order. Payment follows the
+              available IDR method, and flat-rate shipping is calculated at
+              checkout.
             {% endif %}
           </p>
 

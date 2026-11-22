@@ -5,7 +5,6 @@ from __future__ import annotations
 import contextlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import Decimal
 from typing import Final
 
 from sqlalchemy import or_, select
@@ -29,6 +28,7 @@ from app.models.payment_proof import (
     PAYMENT_PROOF_STATUS_REJECTED,
     PAYMENT_PROOF_STATUSES,
 )
+from app.money import MoneyValidationError, validate_whole_rupiah
 from app.services.payments import PAYMENT_ELIGIBLE_ORDER_STATUSES
 from app.services.proof_storage import (
     PreparedProof,
@@ -39,7 +39,6 @@ from app.services.proof_storage import (
     store_proof_file,
 )
 
-_CENT: Final = Decimal("0.01")
 _MAX_FILTER_LENGTH: Final = 80
 _MAX_REJECTION_REASON: Final = 500
 
@@ -142,6 +141,25 @@ def upload_payment_proof(
             raise PaymentProofStateError("This order is not eligible for payment.")
         if order.payment_status != PAYMENT_STATUS_UNPAID:
             raise PaymentProofStateError("This order is not eligible for payment.")
+
+        try:
+            expected_amount = validate_whole_rupiah(
+                order.total,
+                label="Order total",
+                allow_zero=False,
+            )
+            payment_amount = validate_whole_rupiah(
+                payment.amount,
+                label="Payment amount",
+                allow_zero=False,
+            )
+        except (TypeError, MoneyValidationError) as exc:
+            raise PaymentProofStateError(
+                "Payment and order amounts must be valid whole rupiah values."
+            ) from exc
+
+        if payment_amount != expected_amount or payment.currency != PAYMENT_CURRENCY_IDR:
+            raise PaymentProofStateError("The transfer amount does not match the order total.")
 
         pending = db.session.scalar(
             select(PaymentProof)
@@ -315,8 +333,23 @@ def approve_payment_proof(
         if order.payment_status != PAYMENT_STATUS_UNPAID:
             raise PaymentProofStateError("This order is not eligible for payment.")
 
-        expected_amount = order.total.quantize(_CENT)
-        if payment.amount != expected_amount or payment.currency != PAYMENT_CURRENCY_IDR:
+        try:
+            expected_amount = validate_whole_rupiah(
+                order.total,
+                label="Order total",
+                allow_zero=False,
+            )
+            payment_amount = validate_whole_rupiah(
+                payment.amount,
+                label="Payment amount",
+                allow_zero=False,
+            )
+        except (TypeError, MoneyValidationError) as exc:
+            raise PaymentProofStateError(
+                "Payment and order amounts must be valid whole rupiah values."
+            ) from exc
+
+        if payment_amount != expected_amount or payment.currency != PAYMENT_CURRENCY_IDR:
             raise PaymentProofStateError("The transfer amount does not match the order total.")
 
         other_paid = db.session.scalar(

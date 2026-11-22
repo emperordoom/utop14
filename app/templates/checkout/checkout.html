@@ -145,8 +145,8 @@
             {% endif %}
 
             <p class="checkout-panel__note">
-              Payment is not collected in this milestone. Your order will be
-              created as unpaid and stock will be deducted immediately.
+              Your order is created as unpaid and stock is deducted immediately.
+              Continue to payment options from the order confirmation page.
             </p>
           </form>
         </div>
@@ -185,8 +185,8 @@
           </dl>
 
           <p class="checkout-summary__note">
-            All prices are calculated from the current catalog. Shipping is
-            free on orders over Rp 200; otherwise a flat Rp 12 applies.
+            All prices are in IDR and calculated from the current catalog. Shipping is
+            free on orders of {{ free_shipping_threshold_idr|money }} or more; otherwise a flat {{ shipping_flat_idr|money }} applies.
           </p>
         </aside>
       </div>

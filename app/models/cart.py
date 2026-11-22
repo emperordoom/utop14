@@ -21,8 +21,6 @@ if TYPE_CHECKING:
     from app.models.product_variant import ProductVariant
     from app.models.user import User
 
-_CENT = Decimal("0.01")
-
 
 class Cart(TimestampMixin, Base):
     """One persistent cart per authenticated account."""
@@ -56,8 +54,8 @@ class Cart(TimestampMixin, Base):
 
     @property
     def subtotal(self) -> Decimal:
-        """Return the current database-price subtotal, rounded to cents."""
-        return sum((item.line_total for item in self.items), Decimal("0.00")).quantize(_CENT)
+        """Return the current database-price subtotal in IDR."""
+        return sum((item.line_total for item in self.items), Decimal("0.00"))
 
     def __repr__(self) -> str:
         return f"<Cart user_id={self.user_id!r}>"
@@ -97,12 +95,12 @@ class CartItem(TimestampMixin, Base):
         """Return the current database price for this item's product."""
         if self.variant is None or self.variant.product is None:
             return Decimal("0.00")
-        return self.variant.product.price.quantize(_CENT)
+        return self.variant.product.price
 
     @property
     def line_total(self) -> Decimal:
         """Return the current price multiplied by the requested quantity."""
-        return (self.unit_price * self.quantity).quantize(_CENT)
+        return self.unit_price * self.quantity
 
     @property
     def available_stock(self) -> int:

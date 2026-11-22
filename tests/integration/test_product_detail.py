@@ -67,8 +67,10 @@ def test_product_detail_renders_catalog_record(
 
     html = response.get_data(as_text=True)
     assert "Void Tee" in html
-    assert "Rp 75" in html
-    assert "Rp 75,00" not in html
+    assert "Rp 149.000" in html
+    assert "Rp 149.000,00" not in html
+    assert "later milestone" not in html
+    assert "USD" not in html
     assert "T-shirts / Drop 014" in html
     assert "Washed Black" in html
     assert "In stock and ready to ship" in html

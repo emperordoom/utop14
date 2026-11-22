@@ -6,6 +6,7 @@ import io
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -776,3 +777,116 @@ def test_order_cancellation_expires_manual_payment_and_cancels_proof(
     assert refreshed_order is not None
     assert refreshed_order.status == "cancelled"
     assert refreshed_order.payment_status == "unpaid"
+
+
+def test_manual_transfer_creation_rejects_fractional_order_total(
+    app: Flask,
+    make_user: Callable[..., User],
+    make_order: Callable[..., Order],
+    bank_transfer_config: dict[str, str],
+) -> None:
+    from app.services.payments import PaymentStateError
+
+    user = make_user(email="manual-fractional-total@example.com")
+    order = make_order(user)
+    order.total = Decimal("164000.50")
+    db.session.commit()
+
+    with pytest.raises(PaymentStateError, match="whole rupiah"):
+        create_manual_payment_attempt(user.id, order.order_number, "manual-fractional-key")
+
+    assert db.session.scalar(select(func.count(Payment.id))) == 0
+
+
+@pytest.mark.parametrize(
+    ("order_total", "payment_amount"),
+    [
+        (Decimal("164000.00"), Decimal("164000.50")),
+        (Decimal("164000.50"), Decimal("164000.50")),
+    ],
+)
+def test_upload_payment_proof_rejects_fractional_amounts_before_storing_file(
+    app: Flask,
+    make_user: Callable[..., User],
+    make_order: Callable[..., Order],
+    bank_transfer_config: dict[str, str],
+    payment_proof_storage: Path,
+    order_total: Decimal,
+    payment_amount: Decimal,
+) -> None:
+    from werkzeug.datastructures import FileStorage
+
+    from app.services.payment_proofs import PaymentProofStateError, upload_payment_proof
+
+    user = make_user(email=f"manual-proof-frac-{order_total}-{payment_amount}@example.com")
+    order = make_order(user)
+    payment = _manual_payment(user, order, key=f"proof-upload-frac-{order_total}-{payment_amount}")
+    order.total = order_total
+    payment.amount = payment_amount
+    db.session.commit()
+
+    upload = FileStorage(
+        stream=io.BytesIO(_image_bytes("PNG")),
+        filename="receipt.png",
+        content_type="image/png",
+    )
+
+    with pytest.raises(PaymentProofStateError, match="whole rupiah"):
+        upload_payment_proof(user.id, payment.payment_reference, upload)
+
+    assert db.session.scalar(select(func.count(PaymentProof.id))) == 0
+    assert not payment_proof_storage.exists() or list(payment_proof_storage.iterdir()) == []
+
+
+def test_non_idr_manual_payment_hides_idr_instructions_and_rejects_proof_upload(
+    app: Flask,
+    client: FlaskClient,
+    csrf_token: Callable[[str], str],
+    login: Callable[..., object],
+    make_user: Callable[..., User],
+    make_order: Callable[..., Order],
+    bank_transfer_config: dict[str, str],
+    payment_proof_storage: Path,
+) -> None:
+    user = make_user(email="manual-non-idr-ui@example.com")
+    order = make_order(user)
+    payment = _manual_payment(user, order, key="manual-non-idr-ui-key")
+
+    # Normal IDR manual payment renders Rp amount, bank details and upload form.
+    login(user.email)
+    idr_html = client.get(f"/payments/{payment.payment_reference}").get_data(as_text=True)
+    assert '<p class="payment-amount">Rp 164.000</p>' in idr_html
+    assert "Bank transfer instructions" in idr_html
+    assert "Submit proof for review" in idr_html
+
+    payment.currency = "USD"
+    db.session.commit()
+
+    detail = client.get(f"/payments/{payment.payment_reference}")
+    assert detail.status_code == 200
+    html = detail.get_data(as_text=True)
+
+    assert payment.payment_reference in html
+    assert '<p class="payment-amount">Unsupported currency (USD) — amount unavailable</p>' in html
+    assert '<p class="payment-amount">Rp ' not in html
+    assert "Bank transfer instructions" not in html
+    assert bank_transfer_config["BANK_TRANSFER_ACCOUNT_NUMBER"] not in html
+    assert "Submit proof for review" not in html
+
+    # Backend POST handler still rejects proof upload for non-IDR attempts.
+    token = csrf_token(f"/orders/{order.order_number}")
+    upload_response = _upload_proof(
+        client,
+        token,
+        payment.payment_reference,
+        _image_bytes("PNG"),
+    )
+    assert upload_response.status_code == 200
+    assert db.session.scalar(select(func.count(PaymentProof.id))) == 0
+    assert not payment_proof_storage.exists() or list(payment_proof_storage.iterdir()) == []
+
+    db.session.expire_all()
+    refreshed = db.session.get(Payment, payment.id)
+    assert refreshed is not None
+    assert refreshed.currency == "USD"
+    assert refreshed.status == PAYMENT_STATUS_PENDING

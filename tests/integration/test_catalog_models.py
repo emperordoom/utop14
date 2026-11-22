@@ -6,12 +6,13 @@ from decimal import Decimal
 
 import pytest
 from flask import Flask
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
 from app.models import Category, Product, ProductImage, ProductVariant
 from app.models.base import validate_image_path
+from app.money import MoneyValidationError
 
 
 def _category(slug: str = "t-shirts") -> Category:
@@ -156,12 +157,22 @@ def test_variant_combinations_are_unique_per_product(app: Flask) -> None:
     db.session.rollback()
 
 
-def test_product_price_must_be_non_negative(app: Flask) -> None:
+def test_product_price_must_be_non_negative_whole_rupiah(app: Flask) -> None:
     product = _product(_category())
-    product.price = Decimal("-0.01")
+    with pytest.raises(MoneyValidationError):
+        product.price = Decimal("-1.00")
+    with pytest.raises(MoneyValidationError):
+        product.price = Decimal("149000.50")
+    with pytest.raises(MoneyValidationError):
+        product.price = Decimal("149000.01")
+
     db.session.add(product)
+    db.session.commit()
 
     with pytest.raises(IntegrityError):
+        db.session.execute(
+            update(Product).where(Product.id == product.id).values(price=Decimal("-1.00"))
+        )
         db.session.commit()
     db.session.rollback()
 

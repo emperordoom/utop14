@@ -110,7 +110,7 @@
                     <p>{{ proof.payment.order.user.full_name }}</p>
                     <p class="admin-meta mono">{{ proof.payment.order.user.email }}</p>
                   </td>
-                  <td class="mono">{{ proof.payment.amount|money }}</td>
+                  <td class="mono">{{ proof.payment|payment_money }}</td>
                   <td>
                     <p>{{ "PDF" if proof.mime_type == "application/pdf" else "Image" }}</p>
                     <p class="admin-meta mono">{{ proof.file_size|filesizeformat }}</p>

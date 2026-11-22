@@ -6,7 +6,7 @@ from decimal import Decimal
 
 import pytest
 from flask import Flask
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from app.catalog.seed import SeedSummary
 from app.extensions import db
@@ -58,9 +58,9 @@ def test_add_item_calculates_subtotal_from_database_price(
     assert cart.line_count == 1
     assert cart.item_count == 2
     assert cart.items[0].quantity == 2
-    assert cart.items[0].unit_price == Decimal("75.00")
-    assert cart.items[0].line_total == Decimal("150.00")
-    assert calculate_subtotal(cart) == Decimal("150.00")
+    assert cart.items[0].unit_price == Decimal("149000.00")
+    assert cart.items[0].line_total == Decimal("298000.00")
+    assert calculate_subtotal(cart) == Decimal("298000.00")
 
 
 def test_adding_same_variant_merges_quantity(
@@ -294,3 +294,167 @@ def test_item_not_found_errors_are_owned(
         update_cart_item(user.id, 999999, 1)
     with pytest.raises(CartItemNotFound):
         remove_cart_item(user.id, 999999)
+
+
+def test_add_to_cart_rejects_fractional_legacy_product_price_without_mutating_cart(
+    app: Flask,
+    seeded_catalog: SeedSummary,
+    make_user,
+) -> None:
+    empty_user: User = make_user(email="cart-frac-empty@example.com")
+    existing_user: User = make_user(email="cart-frac-existing@example.com")
+    valid_variant = _variant("UT014-SH-FCH-M")
+    legacy_variant = _variant("UT014-VT-WBK-M")
+
+    add_to_cart(existing_user.id, valid_variant.id, 1)
+
+    db.session.execute(
+        update(Product)
+        .where(Product.id == legacy_variant.product_id)
+        .values(price=Decimal("149000.50"))
+    )
+    db.session.commit()
+
+    with pytest.raises(CartError, match="price is invalid"):
+        add_to_cart(empty_user.id, legacy_variant.id, 1)
+    assert get_cart_for_user(empty_user.id) is None
+
+    with pytest.raises(CartError, match="price is invalid"):
+        add_to_cart(existing_user.id, legacy_variant.id, 2)
+
+    cart = get_cart_for_user(existing_user.id)
+    assert cart is not None
+    assert len(cart.items) == 1
+    assert cart.items[0].variant_id == valid_variant.id
+    assert cart.items[0].quantity == 1
+    assert calculate_subtotal(cart) == Decimal("329000.00")
+
+
+def test_update_cart_item_succeeds_for_whole_rupiah_price_and_updates_subtotal(
+    app: Flask,
+    seeded_catalog: SeedSummary,
+    make_user,
+) -> None:
+    user: User = make_user(email="cart-update-whole-rupiah@example.com")
+    variant = _variant("UT014-VT-WBK-M")
+    add_to_cart(user.id, variant.id, 1)
+
+    cart = get_cart_for_user(user.id)
+    assert cart is not None
+    item_id = cart.items[0].id
+
+    updated = update_cart_item(user.id, item_id, 3)
+
+    assert updated.quantity == 3
+    refreshed = get_cart_for_user(user.id)
+    assert refreshed is not None
+    assert len(refreshed.items) == 1
+    assert refreshed.items[0].quantity == 3
+    assert refreshed.items[0].unit_price == Decimal("149000.00")
+    assert refreshed.items[0].line_total == Decimal("447000.00")
+    assert calculate_subtotal(refreshed) == Decimal("447000.00")
+
+
+def test_update_cart_item_rejects_fractional_legacy_price_without_mutating_cart(
+    app: Flask,
+    seeded_catalog: SeedSummary,
+    make_user,
+) -> None:
+    user: User = make_user(email="cart-update-frac-single@example.com")
+    variant = _variant("UT014-VT-WBK-M")
+    add_to_cart(user.id, variant.id, 2)
+
+    cart = get_cart_for_user(user.id)
+    assert cart is not None
+    item_id = cart.items[0].id
+
+    db.session.execute(
+        update(Product).where(Product.id == variant.product_id).values(price=Decimal("149000.50"))
+    )
+    db.session.commit()
+
+    before_cart = get_cart_for_user(user.id)
+    assert before_cart is not None
+    subtotal_before = calculate_subtotal(before_cart)
+
+    with pytest.raises(CartError, match="price is invalid"):
+        update_cart_item(user.id, item_id, 4)
+
+    db.session.expire_all()
+    after_cart = get_cart_for_user(user.id)
+    assert after_cart is not None
+    assert len(after_cart.items) == 1
+    assert after_cart.items[0].id == item_id
+    assert after_cart.items[0].variant_id == variant.id
+    assert after_cart.items[0].quantity == 2
+    assert calculate_subtotal(after_cart) == subtotal_before
+
+
+def test_update_cart_item_rejects_fractional_legacy_price_in_multi_item_cart(
+    app: Flask,
+    seeded_catalog: SeedSummary,
+    make_user,
+) -> None:
+    user: User = make_user(email="cart-update-frac-multi@example.com")
+    valid_variant = _variant("UT014-SH-FCH-M")
+    legacy_variant = _variant("UT014-VT-WBK-M")
+    add_to_cart(user.id, valid_variant.id, 1)
+    add_to_cart(user.id, legacy_variant.id, 2)
+
+    cart = get_cart_for_user(user.id)
+    assert cart is not None
+    items_by_variant = {item.variant_id: item.id for item in cart.items}
+    legacy_item_id = items_by_variant[legacy_variant.id]
+
+    db.session.execute(
+        update(Product)
+        .where(Product.id == legacy_variant.product_id)
+        .values(price=Decimal("149000.50"))
+    )
+    db.session.commit()
+
+    before_cart = get_cart_for_user(user.id)
+    assert before_cart is not None
+    subtotal_before = calculate_subtotal(before_cart)
+
+    with pytest.raises(CartError, match="price is invalid"):
+        update_cart_item(user.id, legacy_item_id, 5)
+
+    db.session.expire_all()
+    after_cart = get_cart_for_user(user.id)
+    assert after_cart is not None
+    assert len(after_cart.items) == 2
+    quantities = {item.variant_id: item.quantity for item in after_cart.items}
+    assert quantities == {
+        valid_variant.id: 1,
+        legacy_variant.id: 2,
+    }
+    assert calculate_subtotal(after_cart) == subtotal_before
+
+
+def test_update_cart_item_allows_zero_rupiah_product_price(
+    app: Flask,
+    seeded_catalog: SeedSummary,
+    make_user,
+) -> None:
+    user: User = make_user(email="cart-update-zero-price@example.com")
+    variant = _variant("UT014-VT-WBK-M")
+    product = db.session.get(Product, variant.product_id)
+    assert product is not None
+    product.price = Decimal("0.00")
+    db.session.commit()
+
+    add_to_cart(user.id, variant.id, 1)
+    cart = get_cart_for_user(user.id)
+    assert cart is not None
+    item_id = cart.items[0].id
+
+    updated = update_cart_item(user.id, item_id, 3)
+
+    assert updated.quantity == 3
+    refreshed = get_cart_for_user(user.id)
+    assert refreshed is not None
+    assert refreshed.items[0].quantity == 3
+    assert refreshed.items[0].unit_price == Decimal("0.00")
+    assert refreshed.items[0].line_total == Decimal("0.00")
+    assert calculate_subtotal(refreshed) == Decimal("0.00")

@@ -10,6 +10,7 @@ from flask.typing import ResponseReturnValue
 from flask_login import current_user, login_required
 
 from app.models.payment import (
+    PAYMENT_CURRENCY_IDR,
     PAYMENT_PROVIDER_MANUAL_TRANSFER,
     PAYMENT_PROVIDER_SIMULATED,
     PAYMENT_STATUS_PENDING,
@@ -81,8 +82,11 @@ def _payment_detail_context(
 ) -> dict[str, object]:
     order = payment.order
     proofs = list_payment_proofs(payment.id)
+    currency_supported = payment.currency == PAYMENT_CURRENCY_IDR
     details = (
-        manual_transfer_details() if payment.provider == PAYMENT_PROVIDER_MANUAL_TRANSFER else None
+        manual_transfer_details()
+        if currency_supported and payment.provider == PAYMENT_PROVIDER_MANUAL_TRANSFER
+        else None
     )
     payment_expired = (
         payment.status == PAYMENT_STATUS_PENDING and datetime.now(UTC) >= payment.expires_at
@@ -92,7 +96,8 @@ def _payment_detail_context(
         None,
     )
     can_upload_proof = (
-        payment.provider == PAYMENT_PROVIDER_MANUAL_TRANSFER
+        currency_supported
+        and payment.provider == PAYMENT_PROVIDER_MANUAL_TRANSFER
         and details is not None
         and payment.status == PAYMENT_STATUS_PENDING
         and not payment_expired
@@ -101,7 +106,8 @@ def _payment_detail_context(
         and pending_proof is None
     )
     simulation_allowed = (
-        simulation_enabled()
+        currency_supported
+        and simulation_enabled()
         and payment.provider == PAYMENT_PROVIDER_SIMULATED
         and payment.status == PAYMENT_STATUS_PENDING
     )
@@ -110,6 +116,7 @@ def _payment_detail_context(
         "order": order,
         "proofs": proofs,
         "proof_form": proof_form or PaymentProofForm(),
+        "currency_supported": currency_supported,
         "manual_details": details,
         "manual_available": details is not None,
         "payment_expired": payment_expired,

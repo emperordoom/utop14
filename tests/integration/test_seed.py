@@ -50,10 +50,10 @@ def test_seed_catalog_creates_the_launch_catalog(app: Flask) -> None:
 
     products = {product.slug: product for product in db.session.scalars(select(Product))}
     assert products.keys() == {"void-tee", "signal-hoodie", "utility-pant", "orbit-cap"}
-    assert products["void-tee"].price == Decimal("75.00")
-    assert products["signal-hoodie"].price == Decimal("180.00")
-    assert products["utility-pant"].price == Decimal("160.00")
-    assert products["orbit-cap"].price == Decimal("55.00")
+    assert products["void-tee"].price == Decimal("149000.00")
+    assert products["signal-hoodie"].price == Decimal("329000.00")
+    assert products["utility-pant"].price == Decimal("279000.00")
+    assert products["orbit-cap"].price == Decimal("119000.00")
     assert all(isinstance(product.price, Decimal) for product in products.values())
 
 
