@@ -563,11 +563,11 @@ evidence and sign-off. Nothing in this roadmap authorizes a deployment.
 | Phase 5 confirmed accepted items | **B-09** (**ACCEPTED**), **B-11** (**ACCEPTED**; F-B11-01 preventive ACL audit rule; allowlist `plpgsql`) |
 | Phase 5 open development items | **B-02**, **B-03** (F-B03-01 **DEFERRED**; non-retention domains open), **B-04**, **B-08** |
 | Phase 5 open production prerequisites | **B-06**, **B-07** *(runbook NOT complete)*, **F-B01-OPS** (`NEEDS VERIFICATION`), **B-12**, **B-13**, **Production DB IDR/fractional audit gate** *(mandatory before go-live if legacy data is used)* |
-| Currency & Whole-Rupiah Phase 1 (1A–1G) | Phase 1G technical review **PASS WITH FINDINGS** (zero code blockers; `P1E-01` **RESOLVED**; working changes on `feat/phase1-currency-whole-rupiah` @ `808e9ec3` pending Project Owner publication approval) |
+| Currency & Whole-Rupiah Phase 1 (1A–1G) | Phase 1G technical review **PASS WITH FINDINGS** (zero code blockers; `P1E-01` **RESOLVED**; published via **PR #21** on `feat/phase1-currency-whole-rupiah`, awaiting Project Owner merge decision) |
 | Phase 1H (Production DB read-only audit) | **BLOCKED — No Production Database Available** (administrative closure, 2026-11-22) |
 | P1E-02 / P1G-01 status | **P1E-02:** `N/A — No Existing Production Database Provisioned Yet`; **P1G-01:** `OPEN — Legacy fractional data risk remains unverified` |
 | Last completed security assessment | M15.2 Remaining Security Findings Assessment (`2026-11-21`, baseline `2add65e5a0bd9d8ba943e92df05945ba9ad0d0a9`) |
-| Next checkpoint | Project Owner decision on Phase 1 currency publication and next Phase 5 workstream (B-02, B-03 non-retention domains, B-04, B-08) |
+| Next checkpoint | Project Owner merge decision on **PR #21** (Phase 1 Currency & Whole-Rupiah Alignment) and next Phase 5 workstream (B-02, B-03 non-retention domains, B-04, B-08) |
 | Remaining high-level phases | 2 (Phases 5, 6) |
 | Development complete | **NO** |
 | Production provisioning authorized | **NO** |
